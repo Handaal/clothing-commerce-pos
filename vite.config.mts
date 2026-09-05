@@ -10,6 +10,9 @@ export default defineConfig(({ mode }) => {
       "import.meta.env.COMMERCE_API_URL": JSON.stringify(
         environment.COMMERCE_API_URL ?? "http://localhost:3000",
       ),
+      "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(
+        environment.VITE_CLERK_PUBLISHABLE_KEY ?? "",
+      ),
     },
     build: {
       outDir: "dist",
