@@ -1,6 +1,7 @@
 # Clothing Commerce POS
 
-Secure Electron cashier application for Connected POS Sale V1. An authenticated Clerk operator can
+Secure Electron cashier application with Connected POS Sale V1 and the Phase 2I PR2 local durability
+foundation. An authenticated Clerk operator can
 select an authorized tenant and register, browse active products and variants, build an in-memory
 cart, complete one cash sale through the Commerce API, and view the authoritative receipt.
 
@@ -11,19 +12,21 @@ interaction state. The Commerce API remains authoritative for operator authoriza
 branch context, default inventory location, selling currency, prices, orders, payments,
 fulfillments, and inventory issues.
 
-This release is connected-only. It contains no SQLite database, durable local sale state, offline
-queue, sync/outbox, device enrollment or trust, hardware integration, card or split tender,
-refunds/returns, discounts/promotions, loyalty, barcode scanning, receipt printing, cash-drawer
-control, or tax engine.
+The connected cashier remains the only renderer checkout workflow. Electron main now owns a local
+SQLite ledger, protected enrolled-device identity, server-issued offline cache, offline eligibility,
+projected advisory stock, immutable local cash-sale persistence, and an exact signed outbox. PR2 does
+not start a sync worker or expose a full offline cashier/reconciliation UI. Hardware integration,
+card or split tender, refunds/returns, discounts/promotions, loyalty, barcode scanning, receipt
+printing, cash-drawer control, and a tax engine remain absent.
 
 ## Technology and contract
 
 Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.4.0**:
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.5.0**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.4.0.tgz`
-- SHA-256: `dc25109cd790d21e640a1501cf967e3926e79eb03e13345e29e08cf2a712410d`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.4.0.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.5.0.tgz`
+- SHA-256: `58fd0f89bed94080a624a1d0e7af8db906a3b282bb473199beef3f6a019ca931`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.5.0.tgz`
 
 There is no API workspace link or API source import. The renderer supplies only the current Clerk
 session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and
@@ -104,7 +107,8 @@ pnpm.cmd dev
 | `VITE_CLERK_PUBLISHABLE_KEY` | Public key for the operator Clerk instance |
 
 Electron web security remains enabled with context isolation, renderer sandboxing, and Node
-integration disabled. The preload exposes immutable runtime metadata only.
+integration disabled. The preload exposes immutable runtime metadata and only fixed, typed offline
+capabilities; it exposes no generic invoke, SQL, filesystem, SDK, or key access.
 
 The observed renderer origins are exact and non-opaque:
 
@@ -149,6 +153,7 @@ pnpm.cmd format:check
 pnpm.cmd lint
 pnpm.cmd typecheck
 pnpm.cmd test
+pnpm.cmd acceptance:persistence
 pnpm.cmd origin:check
 pnpm.cmd build
 ```
