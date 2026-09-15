@@ -22,6 +22,8 @@ describe("offline IPC and process boundary", () => {
       "offline:get-pending-sync-summary",
       "offline:get-projected-inventory",
       "offline:get-readiness",
+      "offline:get-sync-status",
+      "offline:request-sync",
     ]);
     const preload = readFileSync(path.join(process.cwd(), "src", "preload", "preload.ts"), "utf8");
     expect(preload).not.toMatch(/executeSql|execute\s*\(|filesystem|database.*path|private.*key/i);

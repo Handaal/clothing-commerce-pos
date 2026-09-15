@@ -9,6 +9,7 @@ import { ApiHttpError } from "@shifted/clothing-commerce-sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { OfflineBridge } from "../shared/offline";
 import { PosApplication, type PosAuth } from "./App";
 import type { CommerceClientFactory } from "./commerce/client";
 
@@ -173,6 +174,60 @@ function connectedFixture(
   return { auth, clientFactory, rootClient, tenantClient, createPosSale };
 }
 
+function offlineEnablementFixture(): OfflineBridge {
+  let ready = false;
+  return {
+    getReadiness: vi.fn(async () =>
+      ready
+        ? {
+            ready: true as const,
+            deviceId: "device-1",
+            registerId: "register-1",
+            inventoryLocationId: "location-1",
+            currency: "USD",
+            acceptedUntil: "2026-09-08T20:00:00.000Z",
+            catalogValidUntil: "2026-09-08T20:00:00.000Z",
+          }
+        : {
+            ready: false as const,
+            reason: "DEVICE_NOT_ENROLLED" as const,
+            message: "This register has not been enabled for offline sales.",
+          },
+    ),
+    getCachedCatalog: vi.fn(async () => []),
+    getProjectedInventory: vi.fn(async () => []),
+    acceptCashSale: vi.fn(),
+    getLocalReceipt: vi.fn(),
+    getPendingSyncSummary: vi.fn(async () => ({ pending: 0, leased: 0, retryWait: 0, blocked: 0 })),
+    getSyncStatus: vi.fn(async () => ({
+      pending: 0,
+      leased: 0,
+      retryWait: 0,
+      blocked: 0,
+      synced: 0,
+      needsReconciliation: 0,
+      networkOnline: true,
+      synchronizing: false,
+      lastAttemptAt: null,
+      lastError: null,
+    })),
+    requestSync: vi.fn(),
+    bootstrap: vi.fn(async () => {
+      ready = true;
+      return {
+        deviceId: "device-1",
+        registerId: "register-1",
+        grantId: "grant-1",
+        snapshotId: "snapshot-1",
+        acceptedUntil: "2026-09-08T20:00:00.000Z",
+        catalogValidUntil: "2026-09-08T20:00:00.000Z",
+        catalogItemCount: 1,
+        releasedProjectionCount: 0,
+      };
+    }),
+  };
+}
+
 describe("connected cashier application", () => {
   it("renders a clear unauthenticated state without bootstrapping tenants", () => {
     const getMyTenants = vi.fn();
@@ -199,6 +254,30 @@ describe("connected cashier application", () => {
     expect(screen.getByText("Front register")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(fixture.auth.signOut).toHaveBeenCalledTimes(1));
+  });
+
+  it("uses the real Clerk token and selected register to enable offline selling", async () => {
+    const fixture = connectedFixture();
+    const offlineBridge = offlineEnablementFixture();
+    render(
+      <PosApplication
+        auth={fixture.auth}
+        clientFactory={fixture.clientFactory}
+        offlineBridge={offlineBridge}
+      />,
+    );
+    await screen.findByRole("heading", { name: "Products" });
+    fireEvent.click(screen.getByRole("button", { name: "Enable offline selling" }));
+    await waitFor(() =>
+      expect(offlineBridge.bootstrap).toHaveBeenCalledWith({
+        tenantId: "tenant-1",
+        registerId: "register-1",
+        displayName: "Front register",
+        accessToken: "token",
+      }),
+    );
+    expect(await screen.findByText(/Offline selling is ready/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Work offline" })).toBeTruthy();
   });
 
   it("combines cart lines, submits only sale intent, shows receipt, and resets", async () => {

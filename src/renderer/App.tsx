@@ -6,6 +6,14 @@ import type {
 } from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import type {
+  CachedCatalogItem,
+  OfflineBridge,
+  OfflineReadiness,
+  OfflineSyncStatus,
+  ProjectedInventoryItem,
+} from "../shared/offline";
+
 import {
   addVariant,
   cartTotal,
@@ -19,6 +27,7 @@ import { SaleExecutor, type SaleExecutionState } from "./checkout/sale-executor"
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
 import { formatMoney } from "./money";
+import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { resolveRegisters, type PosRegister } from "./pos/context";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
 
@@ -36,6 +45,7 @@ interface PosApplicationProps {
   signedOutContent?: ReactNode;
   clientFactory?: CommerceClientFactory;
   createKey?: () => string;
+  offlineBridge?: OfflineBridge;
 }
 
 type LoadPhase = "idle" | "loading" | "ready" | "choosing" | "empty" | "error";
@@ -63,6 +73,7 @@ export function PosApplication({
   signedOutContent,
   clientFactory = createConfiguredCommerceClient,
   createKey,
+  offlineBridge = typeof window === "undefined" ? undefined : window.offline,
 }: PosApplicationProps) {
   const tokenRef = useRef(auth.getToken);
   useEffect(() => {
@@ -100,6 +111,30 @@ export function PosApplication({
   const [priceConfirmationRequired, setPriceConfirmationRequired] = useState(false);
   const [priceChangedTotal, setPriceChangedTotal] = useState<number | null>(null);
   const [priceRefreshPending, setPriceRefreshPending] = useState(false);
+  const [sellingMode, setSellingMode] = useState<"connected" | "offline">("connected");
+  const [offlineReadiness, setOfflineReadiness] = useState<OfflineReadiness>({
+    ready: false,
+    reason: "NOT_INITIALIZED",
+    message: "Checking offline availability.",
+  });
+  const [syncStatus, setSyncStatus] = useState<OfflineSyncStatus>({
+    pending: 0,
+    leased: 0,
+    retryWait: 0,
+    blocked: 0,
+    synced: 0,
+    needsReconciliation: 0,
+    networkOnline: false,
+    synchronizing: false,
+    lastAttemptAt: null,
+    lastError: null,
+  });
+  const [offlineCatalog, setOfflineCatalog] = useState<readonly CachedCatalogItem[]>([]);
+  const [projectedInventory, setProjectedInventory] = useState<readonly ProjectedInventoryItem[]>(
+    [],
+  );
+  const [offlineActionPending, setOfflineActionPending] = useState(false);
+  const [offlineActionMessage, setOfflineActionMessage] = useState<string | null>(null);
 
   const tenantClient = useMemo<TenantCommerceClient | null>(
     () => (tenantId && client ? client.withTenant(tenantId) : null),
@@ -109,6 +144,42 @@ export function PosApplication({
   const total = cartTotal(cart);
 
   useEffect(() => executor.subscribe(setSaleState), [executor]);
+
+  const refreshOfflineState = useCallback(async () => {
+    if (!offlineBridge) return;
+    try {
+      const [readiness, status] = await Promise.all([
+        offlineBridge.getReadiness(),
+        offlineBridge.getSyncStatus(),
+      ]);
+      setOfflineReadiness(readiness);
+      setSyncStatus(status);
+      if (readiness.ready) {
+        const [catalog, inventory] = await Promise.all([
+          offlineBridge.getCachedCatalog(),
+          offlineBridge.getProjectedInventory(),
+        ]);
+        setOfflineCatalog(catalog);
+        setProjectedInventory(inventory);
+      }
+    } catch (error) {
+      setOfflineReadiness({
+        ready: false,
+        reason: "DATABASE_UNHEALTHY",
+        message: error instanceof Error ? error.message : "Offline state is unavailable.",
+      });
+    }
+  }, [offlineBridge]);
+
+  useEffect(() => {
+    if (!auth.isLoaded || !auth.isSignedIn || !offlineBridge) return;
+    const initial = window.setTimeout(() => void refreshOfflineState(), 0);
+    const timer = window.setInterval(() => void refreshOfflineState(), 2_000);
+    return () => {
+      window.clearTimeout(initial);
+      window.clearInterval(timer);
+    };
+  }, [auth.isLoaded, auth.isSignedIn, offlineBridge, refreshOfflineState]);
 
   const resetTransaction = useCallback(() => {
     executor.reset();
@@ -316,9 +387,39 @@ export function PosApplication({
 
   async function signOut() {
     resetTransaction();
+    setSellingMode("connected");
     setTenantId(null);
     setTenants([]);
     await auth.signOut();
+  }
+
+  async function enableOfflineSelling() {
+    if (!offlineBridge || !tenantId || !register) return;
+    setOfflineActionPending(true);
+    setOfflineActionMessage(null);
+    try {
+      const accessToken = await auth.getToken();
+      if (!accessToken)
+        throw new Error("Your session must be refreshed before enabling offline sales.");
+      const result = await offlineBridge.bootstrap({
+        tenantId,
+        registerId: register.registerId,
+        displayName: register.registerName,
+        accessToken,
+      });
+      await refreshOfflineState();
+      setOfflineActionMessage(
+        result.releasedProjectionCount > 0
+          ? `Offline data refreshed. ${result.releasedProjectionCount} synchronized sale projection(s) reconciled.`
+          : "Offline selling is ready with current server-issued prices and projected stock.",
+      );
+    } catch (error) {
+      setOfflineActionMessage(
+        error instanceof Error ? error.message : "Offline selling could not be enabled.",
+      );
+    } finally {
+      setOfflineActionPending(false);
+    }
   }
 
   if (!auth.isLoaded)
@@ -333,6 +434,21 @@ export function PosApplication({
         </section>
         <section className="auth-card">{signedOutContent}</section>
       </main>
+    );
+  }
+
+  if (sellingMode === "offline" && offlineReadiness.ready && offlineBridge) {
+    return (
+      <OfflineCashier
+        bridge={offlineBridge}
+        currency={offlineReadiness.currency}
+        catalog={offlineCatalog}
+        inventory={projectedInventory}
+        syncStatus={syncStatus}
+        onRefresh={refreshOfflineState}
+        onUseConnected={() => setSellingMode("connected")}
+        onSignOut={signOut}
+      />
     );
   }
 
@@ -354,6 +470,7 @@ export function PosApplication({
         error={tenantError}
         onRetry={() => setBootstrapNonce((value) => value + 1)}
         onSignOut={signOut}
+        onUseOffline={offlineReadiness.ready ? () => setSellingMode("offline") : undefined}
       />
     );
   if (tenantPhase === "choosing") {
@@ -388,6 +505,7 @@ export function PosApplication({
         error={contextError}
         onRetry={() => setContextNonce((value) => value + 1)}
         onSignOut={signOut}
+        onUseOffline={offlineReadiness.ready ? () => setSellingMode("offline") : undefined}
       />
     );
   if (contextPhase === "choosing") {
@@ -445,6 +563,15 @@ export function PosApplication({
               ))}
             </select>
           ) : null}
+          {offlineReadiness.ready ? (
+            <button
+              className="button button--quiet"
+              onClick={() => setSellingMode("offline")}
+              disabled={submitting}
+            >
+              Work offline
+            </button>
+          ) : null}
           <button
             className="button button--quiet"
             onClick={() => void signOut()}
@@ -454,6 +581,38 @@ export function PosApplication({
           </button>
         </div>
       </header>
+
+      <div className="sync-strip">
+        <div>
+          <strong>Connected</strong>
+          <span>
+            {offlineReadiness.ready
+              ? ` · Offline ready · ${syncLabel(syncStatus)} · ${waitingSyncCount(syncStatus)} waiting`
+              : ` · Offline unavailable: ${offlineReadiness.message}`}
+          </span>
+        </div>
+        <button
+          className="button button--quiet"
+          disabled={offlineActionPending}
+          onClick={() => void enableOfflineSelling()}
+        >
+          {offlineActionPending
+            ? "Updating offline data…"
+            : offlineReadiness.ready
+              ? "Refresh offline data"
+              : "Enable offline selling"}
+        </button>
+      </div>
+      {offlineActionMessage ? (
+        <div className="operation-message" role="status">
+          {offlineActionMessage}
+        </div>
+      ) : null}
+      {syncStatus.needsReconciliation + syncStatus.blocked > 0 ? (
+        <div className="attention-strip" role="status">
+          {syncStatus.needsReconciliation + syncStatus.blocked} accepted sale(s) need attention.
+        </div>
+      ) : null}
 
       <div className="workspace">
         <section className="catalog-panel">
@@ -469,10 +628,17 @@ export function PosApplication({
             <InlineState>No active sellable products are available.</InlineState>
           ) : null}
           {catalogPhase === "error" && catalogError ? (
-            <InlineError
-              error={catalogError}
-              onRetry={() => setCatalogNonce((value) => value + 1)}
-            />
+            <>
+              <InlineError
+                error={catalogError}
+                onRetry={() => setCatalogNonce((value) => value + 1)}
+              />
+              {offlineReadiness.ready ? (
+                <button className="button" onClick={() => setSellingMode("offline")}>
+                  Use offline catalog
+                </button>
+              ) : null}
+            </>
           ) : null}
           <div className="product-grid">
             {products.map((product) => (
@@ -755,10 +921,12 @@ function ErrorState({
   error,
   onRetry,
   onSignOut,
+  onUseOffline,
 }: {
   error: CommerceErrorView;
   onRetry: () => void;
   onSignOut: () => Promise<void>;
+  onUseOffline?: () => void;
 }) {
   return (
     <main className="state-shell">
@@ -770,6 +938,11 @@ function ErrorState({
           <button className="button" onClick={onRetry}>
             Retry
           </button>
+          {onUseOffline ? (
+            <button className="button" onClick={onUseOffline}>
+              Use offline mode
+            </button>
+          ) : null}
           <button className="button button--quiet" onClick={() => void onSignOut()}>
             Sign out
           </button>

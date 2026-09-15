@@ -171,7 +171,7 @@ export class OfflineAuthorityStore {
     };
   }
 
-  installBootstrap(bootstrap: OfflineBootstrapResponse, observedAt: string): void {
+  installBootstrap(bootstrap: OfflineBootstrapResponse, observedAt: string): number {
     this.validateBootstrap(bootstrap);
     const current = this.getActiveDevice();
     if (
@@ -182,7 +182,7 @@ export class OfflineAuthorityStore {
       throw new Error("Offline bootstrap binding does not match the enrolled local device.");
     }
     const payload = JSON.stringify(bootstrap);
-    this.database.transaction(() => {
+    return this.database.transaction(() => {
       this.database.connection
         .prepare(
           `INSERT INTO offline_grant(
@@ -326,6 +326,14 @@ export class OfflineAuthorityStore {
            WHERE singleton_id = 1`,
         )
         .run(bootstrap.issuedAt, observedAt);
+      const released = this.database.connection
+        .prepare(
+          `UPDATE local_sale SET projection_released_at = ?
+           WHERE lifecycle = 'synced' AND projection_released_at IS NULL
+             AND server_received_at IS NOT NULL AND server_received_at <= ?`,
+        )
+        .run(observedAt, bootstrap.issuedAt);
+      return Number(released.changes);
     });
   }
 

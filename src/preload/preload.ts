@@ -1,11 +1,20 @@
 import { contextBridge, ipcRenderer } from "electron";
 
-import {
-  OFFLINE_IPC_CHANNELS,
-  type OfflineBridge,
-  type OfflineBootstrapInput,
-  type OfflineSaleInput,
-} from "../shared/offline";
+import type { OfflineBridge, OfflineBootstrapInput, OfflineSaleInput } from "../shared/offline";
+
+// Sandboxed Electron preloads cannot require arbitrary local modules. Keep this fixed allowlist
+// self-contained while importing only erased TypeScript types from the shared contract.
+const OFFLINE_IPC_CHANNELS = Object.freeze({
+  readiness: "offline:get-readiness",
+  catalog: "offline:get-cached-catalog",
+  inventory: "offline:get-projected-inventory",
+  acceptCash: "offline:accept-cash-sale",
+  receipt: "offline:get-local-receipt",
+  pendingSummary: "offline:get-pending-sync-summary",
+  syncStatus: "offline:get-sync-status",
+  requestSync: "offline:request-sync",
+  bootstrap: "offline:bootstrap",
+});
 
 export interface FoundationBridge {
   readonly platform: NodeJS.Platform;
@@ -31,6 +40,8 @@ const offlineBridge: OfflineBridge = Object.freeze({
   getLocalReceipt: (localSaleId: string) =>
     ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.receipt, localSaleId),
   getPendingSyncSummary: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.pendingSummary),
+  getSyncStatus: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.syncStatus),
+  requestSync: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.requestSync),
   bootstrap: (input: OfflineBootstrapInput) =>
     ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.bootstrap, input),
 });

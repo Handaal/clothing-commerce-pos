@@ -1,9 +1,9 @@
 # Clothing Commerce POS
 
-Secure Electron cashier application with Connected POS Sale V1 and the Phase 2I PR2 local durability
-foundation. An authenticated Clerk operator can
-select an authorized tenant and register, browse active products and variants, build an in-memory
-cart, complete one cash sale through the Commerce API, and view the authoritative receipt.
+Secure Electron cashier application with Connected POS Sale V1 and the complete Phase 2I offline
+cashier and synchronization slice. An authenticated Clerk operator can select an authorized tenant
+and register, sell through the connected Commerce API, enable offline selling from real server
+authority, accept durable local cash sales without the API, and synchronize those sales later.
 
 ## Boundaries and ownership
 
@@ -12,12 +12,12 @@ interaction state. The Commerce API remains authoritative for operator authoriza
 branch context, default inventory location, selling currency, prices, orders, payments,
 fulfillments, and inventory issues.
 
-The connected cashier remains the only renderer checkout workflow. Electron main now owns a local
-SQLite ledger, protected enrolled-device identity, server-issued offline cache, offline eligibility,
-projected advisory stock, immutable local cash-sale persistence, and an exact signed outbox. PR2 does
-not start a sync worker or expose a full offline cashier/reconciliation UI. Hardware integration,
-card or split tender, refunds/returns, discounts/promotions, loyalty, barcode scanning, receipt
-printing, cash-drawer control, and a tax engine remain absent.
+Electron main owns the local SQLite ledger, protected enrolled-device identity, server-issued offline
+cache, offline eligibility, projected advisory stock, immutable local cash-sale persistence, signing,
+and synchronization. The sandboxed renderer can invoke only fixed typed operations and never receives
+keys, tokens, database access, arbitrary IPC, or an unrestricted SDK. Hardware integration, card or
+split tender, refunds/returns, discounts/promotions, loyalty, barcode scanning, receipt printing,
+cash-drawer control, and a tax engine remain absent.
 
 ## Technology and contract
 
@@ -49,6 +49,32 @@ After authentication the application:
 
 Zero tenants and zero registers are explicit blocked states. `401`, `403`, validation, stock,
 conflict, network, contract, and server errors are surfaced without mock fallback.
+
+## Offline selling and synchronization
+
+From the connected cashier, **Enable offline selling** enrolls or reuses the device and installs one
+atomic server generation containing the register binding, bounded grant, catalog/prices, and advisory
+inventory. Connected selling remains available when this optional bootstrap is unavailable. Main
+derives readiness and the renderer presents Connected, Offline ready/unavailable, Pending sync,
+Synchronizing, and attention states with non-authoritative “projected available” stock wording.
+
+An offline cash checkout calls the main-process acceptance service. One durable transaction validates
+the installed authority and policy, allocates the local receipt, stores the immutable sale/tender and
+lines, and persists the signed SDK request. The customer sale is complete at that commit; its receipt
+is shown immediately and is not conditional on network delivery.
+
+The main-process worker claims one leased outbox command at a time and posts through the packed SDK to
+`POST /api/v1/pos/offline-sales`. It validates and sends the exact stored request JSON with the stored
+tenant, credential, `syncCommandId`, and matching `Idempotency-Key`; it never rebuilds or re-signs a
+sale. Network, timeout, `408`, `425`, `429`, and `5xx` failures use bounded exponential retry. Other
+HTTP, contract, and unknown failures remain blocked for attention. Expired leases are recovered both
+at startup and on worker passes, including a restart before the lease deadline.
+
+A successful response is atomically mapped to the local sale and outbox as `synced` or
+`needs_reconciliation`, including the server provenance IDs. A synced upload remains deducted from
+projected stock until a later server bootstrap has an `issuedAt` at or after its `receivedAt`; only
+then is its projection release marker written. Reconciliation outcomes stay deducted and visible for
+management attention.
 
 ## Catalog, cart, and cash checkout
 
@@ -142,6 +168,12 @@ in this repository or acceptance notes.
 
 The latest real connected-runtime result is recorded in
 [`docs/runtime-acceptance.md`](docs/runtime-acceptance.md).
+
+If synchronization does not advance, first confirm the Commerce API is reachable. **Sync now** asks
+main to run due work immediately; transient failures retain the sale and retry automatically. A
+blocked or reconciliation count means the sale remains accepted and requires management review—do
+not delete the local database or create a replacement sale. Refresh offline data after reconnect to
+install newer authority and reconcile projection release.
 
 ## Quality and build
 

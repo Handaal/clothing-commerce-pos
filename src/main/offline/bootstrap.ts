@@ -77,7 +77,10 @@ export class OfflineBootstrapService {
       registerId: device.registerId,
     });
     this.assertCompatible(bootstrap, SDK_VERSION);
-    this.authority.installBootstrap(bootstrap, this.now().toISOString());
+    const releasedProjectionCount = this.authority.installBootstrap(
+      bootstrap,
+      this.now().toISOString(),
+    );
     return {
       deviceId: bootstrap.deviceId,
       registerId: bootstrap.registerId,
@@ -89,6 +92,7 @@ export class OfflineBootstrapService {
         (total, product) => total + product.variants.length,
         0,
       ),
+      releasedProjectionCount,
     };
   }
 
