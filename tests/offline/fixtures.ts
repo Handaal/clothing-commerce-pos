@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { OfflineBootstrapResponse } from "@shifted/clothing-commerce-sdk" with {
+import type {
+  IngestOfflineSaleResponse,
+  OfflineBootstrapResponse,
+} from "@shifted/clothing-commerce-sdk" with {
   "resolution-mode": "import",
 };
 
@@ -27,6 +30,99 @@ export const ids = {
   variant: "10000000-0000-4000-8000-000000000012",
   price: "10000000-0000-4000-8000-000000000013",
 } as const;
+
+export function ingestionResponse(
+  localSaleId: string,
+  syncStatus: "synced" | "needs_reconciliation" = "synced",
+): IngestOfflineSaleResponse {
+  const receivedAt = "2026-09-08T12:00:10.000Z";
+  const orderId = "20000000-0000-4000-8000-000000000001";
+  const paymentId = "20000000-0000-4000-8000-000000000002";
+  return {
+    syncStatus,
+    ingestionId: "20000000-0000-4000-8000-000000000003",
+    localSaleId,
+    receivedAt,
+    order: {
+      id: orderId,
+      orderNumber: "POS-OFFLINE-1",
+      channel: "pos",
+      status: "placed",
+      brandId: ids.brand,
+      branchId: ids.branch,
+      registerId: ids.register,
+      currency: "USD",
+      totalMinor: 2_599,
+      actorMembershipId: ids.membership,
+      placedAt: receivedAt,
+      cancelledAt: null,
+      cancelledByMembershipId: null,
+      cancellationReason: null,
+      notes: null,
+      createdAt: receivedAt,
+      updatedAt: receivedAt,
+      lines: [
+        {
+          id: "20000000-0000-4000-8000-000000000004",
+          lineNumber: 1,
+          variantId: ids.variant,
+          quantity: 1,
+          unitPriceMinor: 2_599,
+          lineTotalMinor: 2_599,
+          productName: "Foundation Tee",
+          variantName: "Black / M",
+          sku: "TEE-BLK-M",
+          optionSummary: "Black / M",
+        },
+      ],
+    },
+    payment: {
+      id: paymentId,
+      orderId,
+      method: "cash",
+      status: "captured",
+      currency: "USD",
+      amountMinor: 2_599,
+      cashReceivedMinor: 3_000,
+      changeMinor: 401,
+      capturedByMembershipId: ids.membership,
+      capturedAt: receivedAt,
+      createdAt: receivedAt,
+      updatedAt: receivedAt,
+    },
+    fulfillment:
+      syncStatus === "synced"
+        ? {
+            id: "20000000-0000-4000-8000-000000000005",
+            orderId,
+            inventoryLocationId: ids.location,
+            inventoryOperationId: "20000000-0000-4000-8000-000000000006",
+            actorMembershipId: ids.membership,
+            fulfilledAt: receivedAt,
+            createdAt: receivedAt,
+            lines: [
+              {
+                id: "20000000-0000-4000-8000-000000000007",
+                lineNumber: 1,
+                orderLineId: "20000000-0000-4000-8000-000000000004",
+                variantId: ids.variant,
+                quantity: 1,
+              },
+            ],
+          }
+        : null,
+    reconciliation:
+      syncStatus === "needs_reconciliation"
+        ? {
+            id: "20000000-0000-4000-8000-000000000008",
+            reason: "insufficient_stock_at_ingestion",
+            status: "open",
+            createdAt: receivedAt,
+            updatedAt: receivedAt,
+          }
+        : null,
+  };
+}
 
 export class TestSecureStorage implements OsSecureStorage {
   constructor(readonly available = true) {}

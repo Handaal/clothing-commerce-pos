@@ -4,7 +4,13 @@ import { LocalDatabase } from "../../src/main/offline/database";
 import { DeviceKeyStore } from "../../src/main/offline/device-key";
 import { OfflineSaleService } from "../../src/main/offline/offline-service";
 import { OutboxStore } from "../../src/main/offline/outbox-store";
-import { ids, makeHarness, TestSecureStorage, type OfflineHarness } from "./fixtures";
+import {
+  ids,
+  ingestionResponse,
+  makeHarness,
+  TestSecureStorage,
+  type OfflineHarness,
+} from "./fixtures";
 
 const harnesses: OfflineHarness[] = [];
 afterEach(() => {
@@ -38,13 +44,20 @@ describe("durable outbox mechanics and restart recovery", () => {
     current = new Date("2026-09-08T12:01:00.000Z");
     const retry = harness.outbox.claimNext(30_000);
     expect(retry).toMatchObject({ attempts: 2, payloadHash: claim!.payloadHash });
-    harness.outbox.markDelivered(accepted.syncCommandId, retry!.leaseId, "server-ingestion-id");
+    harness.outbox.completeDelivery(
+      accepted.syncCommandId,
+      retry!.leaseId,
+      ingestionResponse(accepted.localSaleId),
+    );
     expect(harness.outbox.listDue()).toHaveLength(0);
     expect(
       harness.database.connection
         .prepare("SELECT state, server_ingestion_id FROM outbox WHERE sync_command_id = ?")
         .get(accepted.syncCommandId),
-    ).toEqual({ state: "delivered", server_ingestion_id: "server-ingestion-id" });
+    ).toEqual({
+      state: "delivered",
+      server_ingestion_id: "20000000-0000-4000-8000-000000000003",
+    });
   });
 
   it("marks leased work blocked with bounded diagnostics", () => {

@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 2;
+export const LOCAL_SCHEMA_VERSION = 3;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -248,6 +248,17 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
       BEGIN SELECT RAISE(ABORT, 'outbox command is immutable'); END;
       CREATE TRIGGER immutable_outbox_delete BEFORE DELETE ON outbox
       BEGIN SELECT RAISE(ABORT, 'outbox command is immutable'); END;
+    `,
+  },
+  {
+    version: 3,
+    name: "offline_sync_results",
+    sql: `
+      ALTER TABLE local_sale ADD COLUMN server_payment_id TEXT;
+      ALTER TABLE local_sale ADD COLUMN server_fulfillment_id TEXT;
+      ALTER TABLE local_sale ADD COLUMN server_reconciliation_id TEXT;
+      ALTER TABLE local_sale ADD COLUMN reconciliation_reason TEXT;
+      ALTER TABLE local_sale ADD COLUMN server_received_at TEXT;
     `,
   },
 ];

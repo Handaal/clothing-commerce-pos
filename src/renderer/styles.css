@@ -228,6 +228,51 @@ h3 {
 .context-summary span {
   color: #786e63;
 }
+.connection-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  color: #375749;
+  font-size: 0.78rem;
+}
+.connection-badge span {
+  color: #786e63;
+  font-size: 0.7rem;
+}
+.sync-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid #d8cfc2;
+  padding: 0.7rem 2rem;
+  color: #4f5d56;
+  background: #e9f0ec;
+  font-size: 0.8rem;
+}
+.sync-strip > div {
+  display: flex;
+  gap: 0.25rem;
+}
+.sync-strip .button {
+  flex: none;
+  padding-block: 0.45rem;
+  background: rgb(255 255 255 / 55%);
+}
+.attention-strip,
+.operation-message {
+  border-bottom: 1px solid #e7bd70;
+  padding: 0.65rem 2rem;
+  color: #5a3b0f;
+  background: #fff3d9;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+.operation-message {
+  border-color: #b8cfbf;
+  color: #31533f;
+  background: #edf5ef;
+}
 .workspace {
   display: grid;
   min-height: calc(100vh - 6.5rem);
@@ -455,6 +500,9 @@ h3 {
   margin-top: 0.5rem;
   color: #477360;
   font-weight: 750;
+}
+.receipt-status--attention {
+  color: #9f3e2d;
 }
 .receipt-lines {
   margin: 1.5rem 0;

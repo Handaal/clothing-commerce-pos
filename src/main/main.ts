@@ -1,4 +1,4 @@
-import { app, BrowserWindow, safeStorage, session, shell } from "electron";
+import { app, BrowserWindow, net, safeStorage, session, shell } from "electron";
 import path from "node:path";
 
 import { registerOfflineIpc } from "./offline/ipc";
@@ -61,8 +61,10 @@ if (!hasSingleInstanceLock) {
         app.getPath("userData"),
         osSecureStorage,
         process.env.COMMERCE_API_URL ?? "http://localhost:3000",
-        undefined,
-        async () => session.defaultSession.flushStorageData(),
+        {
+          networkOnline: () => net.isOnline(),
+          secureStorageDurabilityBarrier: async () => session.defaultSession.flushStorageData(),
+        },
       );
       registerOfflineIpc(offlineRuntime, rendererUrl);
       createWindow(rendererUrl);

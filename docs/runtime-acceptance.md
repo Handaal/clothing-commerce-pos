@@ -73,3 +73,42 @@ claiming the outbox item, bypassing normal database shutdown.
 On restart, the OS-protected Ed25519 key reloaded successfully. The same sale ID, receipt, command ID,
 payload hash, line/tender totals, and projected quantity 8 were read from SQLite. One expired lease was
 recovered and the exact command was claimed again with attempt 2. No synchronization request was sent.
+
+# Phase 2I PR3 real offline cashier and synchronization acceptance
+
+Acceptance was completed on 2026-09-15 with the actual Electron application, Windows-backed
+`safeStorage`, local SQLite, local Commerce API/Supabase, the packed SDK 0.5.0, and a real Clerk
+development session. No Clerk subject, session token, password, secret, private key, or device
+signature is recorded here.
+
+The connected cashier resolved `Dev Front Register`, `Dev Flagship`, and `Dev Flagship Stockroom`.
+The production bootstrap enrolled/reused the real device and installed a server-issued bounded grant,
+catalog, prices, and inventory snapshot. Large `Dev Linen Shirt` stock was 39. The API listener was
+then stopped, and the cached cashier accepted one Large shirt for USD 25.99 against USD 30.00 cash.
+Receipt `0B05-000001` showed USD 4.01 change immediately.
+
+- Local sale: `4b367b7e-ce07-4909-8cc3-303b71ac41b0`
+- Sync command / Idempotency-Key: `9bc56c8c-6cd5-4a40-aa1b-8d3c63b69b66`
+- Persisted canonical payload SHA-256: `4ba90c76f6d338d94c1b881400eef0ef45616f376d92e63071bfedab6777eb09`
+- Server ingestion: `f1d13423-7701-4f0b-8c6f-035ec669b7d2`
+- Canonical Order: number `2`, id `67b001a5-4ad9-4f24-90e7-4fa94144d260`
+- Captured Payment: `19d0d63f-6042-4bbd-8a18-c61624cafff3`
+- Completed Fulfillment: `173840b8-935c-4b33-a5c6-9113eab8a8e6`
+
+An abrupt Electron process termination left `last_clean_shutdown_at` empty. Restarting while the API
+was still absent preserved the same sale, receipt, command ID, and hash, reported one pending sale,
+and retained the one-unit projected deduction.
+
+For the mandatory server-commit/local-ack window, the test-only worker seam terminated the process
+after the real server response but before SQLite delivery acknowledgment. The server had already
+created the ingestion, Order, Payment, Fulfillment, and one inventory effect, while the local outbox
+remained leased and the sale remained `accepted_pending_sync`. After lease expiry and restart, the
+worker replayed the same 805-byte persisted request and the same idempotency key. The API returned the
+same ingestion and canonical entities; the ingestion count remained exactly one, and inventory was
+38/version 3 rather than being decremented twice.
+
+The local delivery transaction then recorded `synced` plus every server ID. The authenticated
+management `GET /api/v1/orders/{orderId}` returned HTTP 200 with the same POS Order, USD 25.99 line,
+and fully fulfilled progress. Finally, **Refresh offline data** installed a newer server snapshot at
+38/version 3, reported one released sale projection, and produced projected availability 38 with no
+remaining local deduction.

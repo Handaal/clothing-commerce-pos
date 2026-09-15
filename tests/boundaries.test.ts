@@ -46,5 +46,6 @@ describe("packaged SDK and renderer boundaries", () => {
     expect(preload).toContain('exposeInMainWorld("offline"');
     expect(preload).not.toMatch(/executeSql|databasePath|readFile|writeFile|privateKey|signature/i);
     expect(preload).not.toContain("ipcRenderer.send");
+    expect(preload).not.toMatch(/import\s*\{[^}]*OFFLINE_IPC_CHANNELS/);
   });
 });

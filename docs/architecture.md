@@ -4,6 +4,7 @@
 Sandboxed React renderer -> narrow typed preload -> Electron main -> local SQLite ledger
 Sandboxed React renderer -> versioned SDK over HTTPS -> Commerce API -> authoritative commerce core
 Electron main -> versioned SDK over HTTPS -> enrollment/offline-bootstrap endpoints
+Electron main -> packed versioned SDK -> offline-sale ingestion endpoint
 ```
 
 `contextIsolation`, renderer sandboxing, web security, and disabled Node integration remain mandatory.
@@ -65,9 +66,11 @@ Projected availability is explicitly advisory:
 last server on-hand snapshot - accepted quantities not yet proven included by a newer snapshot
 ```
 
-PR2 conservatively deducts every accepted sale whose projection has not been explicitly released.
-The schema includes a narrow future release marker so PR3 can stop a deduction only after newer
-authoritative evidence; there is no ATS, reservation, or multi-terminal coordination.
+Every accepted sale is deducted while its projection release marker is empty. Upload success alone
+does not release it: after a `synced` result, an atomically installed bootstrap whose `issuedAt` is at
+or after the server `receivedAt` proves that its inventory effect is represented. Only then is the
+marker written. `needs_reconciliation` sales remain deducted. There is no ATS, reservation, or
+multi-terminal coordination.
 
 ## Immutable sale and exact outbox
 
@@ -84,9 +87,22 @@ they cannot rebuild it from a cart, new time, new grant, or current prices. SQLi
 normal mutation/deletion of accepted sale, tender, line, and command facts. Only future lifecycle and
 server-mapping fields are mutable.
 
-The outbox repository can list due work, atomically claim with a bounded lease, increment attempts,
-release for retry, mark delivered/blocked, and recover expired leases after a crash. PR2 starts no
-timer and makes no `POST /api/v1/pos/offline-sales` request.
+The main-process sync worker checks connectivity, recovers expired leases, and claims one due command
+at a time. Before delivery it parses the stored compact JSON and verifies the original canonical
+command, hash, sale/command identities, idempotency identity, and credential identity. The packed SDK
+sends that same JSON to `POST /api/v1/pos/offline-sales`; no cart, current grant, current price,
+timestamp, credential, or renderer state participates in reconstruction.
+
+Network errors and HTTP `408`, `425`, `429`, and `5xx` responses return the lease to bounded
+exponential retry (five seconds through five minutes). Permanent HTTP, contract, corrupt-artifact,
+and unknown failures are blocked and retained. A successful SDK response updates the outbox and sale
+mapping in one SQLite transaction. Server-governed insufficient stock is represented as
+`needs_reconciliation` with Order, captured Payment, and reconciliation provenance, never a local
+fake fulfillment or negative inventory.
+
+The deliberate crash window is safe: after a server commit but before the local transaction, the
+lease remains. Startup and each later worker pass recover it after expiry, and replay uses the same
+stored request and `Idempotency-Key`; server idempotency returns the original canonical result.
 
 ## Security limitations and deferred scope
 
@@ -94,5 +110,4 @@ SQLCipher and application-level database encryption are deferred. The database m
 data and never stores Clerk tokens, server secrets, or plaintext private keys, but a local
 administrator or malware running as the same OS user can inspect or modify local business data. The
 server must therefore revalidate every future signed ingestion command and remains authoritative.
-Backups, destructive repair, synchronization/reconciliation UI, and fleet management are also
-deferred.
+Backups, destructive repair, detailed reconciliation management, and fleet management are deferred.

@@ -98,6 +98,15 @@ export interface PendingSyncSummary {
   readonly blocked: number;
 }
 
+export interface OfflineSyncStatus extends PendingSyncSummary {
+  readonly networkOnline: boolean;
+  readonly synchronizing: boolean;
+  readonly synced: number;
+  readonly needsReconciliation: number;
+  readonly lastAttemptAt: string | null;
+  readonly lastError: string | null;
+}
+
 export interface OfflineBootstrapInput {
   readonly tenantId: string;
   readonly registerId: string;
@@ -113,6 +122,7 @@ export interface OfflineBootstrapResult {
   readonly acceptedUntil: string;
   readonly catalogValidUntil: string;
   readonly catalogItemCount: number;
+  readonly releasedProjectionCount: number;
 }
 
 export interface OfflineBridge {
@@ -122,6 +132,8 @@ export interface OfflineBridge {
   acceptCashSale(input: OfflineSaleInput): Promise<AcceptedOfflineSale>;
   getLocalReceipt(localSaleId: string): Promise<LocalReceipt | null>;
   getPendingSyncSummary(): Promise<PendingSyncSummary>;
+  getSyncStatus(): Promise<OfflineSyncStatus>;
+  requestSync(): Promise<OfflineSyncStatus>;
   bootstrap(input: OfflineBootstrapInput): Promise<OfflineBootstrapResult>;
 }
 
@@ -132,5 +144,7 @@ export const OFFLINE_IPC_CHANNELS = Object.freeze({
   acceptCash: "offline:accept-cash-sale",
   receipt: "offline:get-local-receipt",
   pendingSummary: "offline:get-pending-sync-summary",
+  syncStatus: "offline:get-sync-status",
+  requestSync: "offline:request-sync",
   bootstrap: "offline:bootstrap",
 });
