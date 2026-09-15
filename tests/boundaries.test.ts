@@ -13,18 +13,18 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe("packaged SDK and renderer boundaries", () => {
-  it("locks the verified standalone SDK 0.4.0 artifact", () => {
+  it("locks the verified standalone SDK 0.5.0 artifact", () => {
     const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as {
       dependencies: Record<string, string>;
     };
     expect(packageJson.dependencies["@shifted/clothing-commerce-sdk"]).toBe(
-      "file:vendor/shifted-clothing-commerce-sdk-0.4.0.tgz",
+      "file:vendor/shifted-clothing-commerce-sdk-0.5.0.tgz",
     );
     const artifact = readFileSync(
-      path.join(root, "vendor", "shifted-clothing-commerce-sdk-0.4.0.tgz"),
+      path.join(root, "vendor", "shifted-clothing-commerce-sdk-0.5.0.tgz"),
     );
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "dc25109cd790d21e640a1501cf967e3926e79eb03e13345e29e08cf2a712410d",
+      "58fd0f89bed94080a624a1d0e7af8db906a3b282bb473199beef3f6a019ca931",
     );
   });
 
@@ -40,9 +40,11 @@ describe("packaged SDK and renderer boundaries", () => {
     expect(rendererSource).not.toContain("SUPABASE_SERVICE_ROLE_KEY");
   });
 
-  it("keeps the preload bridge limited to immutable runtime metadata", () => {
+  it("keeps the preload bridge limited to named typed capabilities", () => {
     const preload = readFileSync(path.join(root, "src", "preload", "preload.ts"), "utf8");
     expect(preload).toContain('exposeInMainWorld("foundation"');
-    expect(preload).not.toMatch(/ipcRenderer|fetch\(|Authorization|token|secret/i);
+    expect(preload).toContain('exposeInMainWorld("offline"');
+    expect(preload).not.toMatch(/executeSql|databasePath|readFile|writeFile|privateKey|signature/i);
+    expect(preload).not.toContain("ipcRenderer.send");
   });
 });

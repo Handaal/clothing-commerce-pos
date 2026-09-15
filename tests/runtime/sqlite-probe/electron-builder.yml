@@ -1,0 +1,12 @@
+appId: com.shifted.commerce.pos.sqliteprobe
+productName: Commerce POS SQLite Probe
+asar: true
+directories:
+  output: ../../../release/sqlite-probe
+files:
+  - package.json
+  - main.cjs
+electronVersion: 43.3.0
+win:
+  target:
+    - dir
