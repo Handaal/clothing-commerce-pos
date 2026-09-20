@@ -2,6 +2,7 @@ import { app, BrowserWindow, net, safeStorage, session, shell } from "electron";
 import path from "node:path";
 
 import { registerOfflineIpc } from "./offline/ipc";
+import { registerReturnIpc } from "./returns/ipc";
 import { OfflineRuntime } from "./offline/runtime";
 import { isAllowedRendererNavigation, PRODUCTION_RENDERER_ORIGIN } from "./renderer-origin";
 import { startRendererServer } from "./renderer-server";
@@ -67,6 +68,7 @@ if (!hasSingleInstanceLock) {
         },
       );
       registerOfflineIpc(offlineRuntime, rendererUrl);
+      registerReturnIpc(() => offlineRuntime!.getReturns(), rendererUrl);
       createWindow(rendererUrl);
     })();
     app.on("activate", () => {

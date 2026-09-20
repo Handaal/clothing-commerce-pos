@@ -22,7 +22,7 @@
     "origin:check": "pnpm build:main && pnpm build:renderer && node scripts/origin-check.mjs",
     "acceptance:persistence": "pnpm build:main && node scripts/run-persistence-acceptance.mjs",
     "acceptance:sqlite-packaged": "node scripts/run-sqlite-package-acceptance.mjs",
-    "acceptance:returns": "node scripts/run-returns-acceptance.mjs",
+    "acceptance:returns": "pnpm build:main && node scripts/run-returns-acceptance.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json"
   },

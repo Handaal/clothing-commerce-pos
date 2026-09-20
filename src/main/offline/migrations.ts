@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 3;
+export const LOCAL_SCHEMA_VERSION = 4;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -259,6 +259,56 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
       ALTER TABLE local_sale ADD COLUMN server_reconciliation_id TEXT;
       ALTER TABLE local_sale ADD COLUMN reconciliation_reason TEXT;
       ALTER TABLE local_sale ADD COLUMN server_received_at TEXT;
+    `,
+  },
+  {
+    version: 4,
+    name: "connected_return_recovery",
+    sql: `
+      CREATE TABLE connected_return_workflow (
+        id TEXT PRIMARY KEY,
+        api_base_url TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        membership_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        order_reference TEXT NOT NULL,
+        stage TEXT NOT NULL CHECK (stage IN ('prepared','return_acknowledged','settlement_prepared','completed')),
+        create_command TEXT,
+        create_hash TEXT,
+        create_key TEXT UNIQUE,
+        return_ack TEXT,
+        settlement_command TEXT,
+        settlement_hash TEXT,
+        settlement_key TEXT UNIQUE,
+        refund_ack TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        completed_at TEXT,
+        outcome TEXT CHECK (outcome IN ('acknowledged','rejected')),
+        rejection_code TEXT,
+        CHECK ((create_command IS NULL) = (create_key IS NULL)),
+        CHECK ((settlement_command IS NULL) = (settlement_key IS NULL)),
+        CHECK (stage != 'prepared' OR create_command IS NOT NULL),
+        CHECK (stage NOT IN ('return_acknowledged','settlement_prepared') OR return_ack IS NOT NULL),
+        CHECK (stage != 'settlement_prepared' OR settlement_command IS NOT NULL),
+        CHECK ((stage = 'completed') = (completed_at IS NOT NULL)),
+        CHECK (stage != 'completed' OR outcome IS NOT NULL)
+      ) STRICT;
+      CREATE UNIQUE INDEX one_unresolved_connected_return ON connected_return_workflow((1))
+        WHERE stage != 'completed';
+      CREATE TRIGGER immutable_return_creation BEFORE UPDATE OF
+        id, api_base_url, tenant_id, membership_id, order_id, order_reference,
+        create_command, create_hash, create_key, created_at ON connected_return_workflow
+      BEGIN SELECT RAISE(ABORT, 'connected return intent is immutable'); END;
+      CREATE TRIGGER immutable_return_settlement BEFORE UPDATE OF
+        settlement_command, settlement_hash, settlement_key ON connected_return_workflow
+        WHEN OLD.settlement_command IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'connected settlement intent is immutable'); END;
+      CREATE TRIGGER immutable_completed_return BEFORE UPDATE ON connected_return_workflow
+        WHEN OLD.stage = 'completed'
+      BEGIN SELECT RAISE(ABORT, 'completed return workflow is archived'); END;
+      CREATE TRIGGER retain_return_workflow BEFORE DELETE ON connected_return_workflow
+      BEGIN SELECT RAISE(ABORT, 'return workflows must be retained'); END;
     `,
   },
 ];

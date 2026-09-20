@@ -1,4 +1,5 @@
 import type { OfflineBridge } from "../shared/offline";
+import type { ReturnsBridge } from "../shared/returns";
 
 declare global {
   interface ImportMetaEnv {
@@ -11,6 +12,7 @@ declare global {
       readonly versions: Readonly<{ electron: string; chrome: string }>;
     };
     readonly offline: OfflineBridge;
+    readonly returns: ReturnsBridge;
   }
 }
 

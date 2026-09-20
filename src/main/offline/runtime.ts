@@ -16,6 +16,8 @@ import { LocalDatabase, localDatabasePath } from "./database";
 import { DeviceKeyStore, type OsSecureStorage } from "./device-key";
 import { OfflineSaleService } from "./offline-service";
 import { OutboxStore } from "./outbox-store";
+import { ReturnService } from "../returns/service";
+import { ReturnStore } from "../returns/store";
 import {
   OfflineSyncWorker,
   SdkOfflineDeliveryClient,
@@ -41,6 +43,7 @@ export class OfflineRuntime {
     readonly outbox: OutboxStore | undefined,
     private readonly syncWorker: OfflineSyncWorker | undefined,
     private readonly initializationError: string | undefined,
+    private readonly returnService?: ReturnService,
   ) {}
 
   static async initialize(
@@ -88,6 +91,9 @@ export class OfflineRuntime {
         outbox,
         syncWorker,
         undefined,
+        new ReturnService(new ReturnStore(database, now), apiBaseUrl.replace(/\/+$/, ""), {
+          networkOnline: options.networkOnline,
+        }),
       );
       if (options.startSyncWorker !== false) syncWorker.start();
       return runtime;
@@ -107,6 +113,14 @@ export class OfflineRuntime {
       };
     }
     return this.sales.getReadiness();
+  }
+
+  getReturns(): ReturnService {
+    if (!this.returnService)
+      throw new Error(
+        "Connected return persistence is unavailable. Return submission is disabled.",
+      );
+    return this.returnService;
   }
 
   getCachedCatalog(): ReadonlyArray<CachedCatalogItem> {

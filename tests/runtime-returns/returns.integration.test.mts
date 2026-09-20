@@ -2,7 +2,9 @@ import { createCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ReturnCommands, type ReturnIntent } from "../../src/renderer/returns/commands.mjs";
+import type { ReturnIntent } from "../../src/shared/returns.js";
+import { ReturnService } from "../../src/main/returns/service.js";
+import { ReturnStore } from "../../src/main/returns/store.js";
 import { makeHarness } from "../offline/fixtures.js";
 
 const url = process.env.POS_RETURNS_TEST_URL;
@@ -52,100 +54,105 @@ describe.skipIf(!url || !token)("packed SDK POS returns against real local API/d
       returnedQuantity: 0,
       eligibleQuantity: 2,
     });
-    const commands = new ReturnCommands();
-    const intent: ReturnIntent = {
-      orderId: sale.order.id,
-      lines: [
-        {
-          orderLineId: eligible.lines[0].orderLineId,
-          quantity: 1,
-          reason: "Size did not fit",
-          disposition: "restock",
-        },
-      ],
-      inventoryLocationId: L,
-      refundMode: "pending",
-      settlementReference: null,
-    };
-    const accepted = await commands.create(client, intent, true);
-    expect(accepted.refund).toMatchObject({ status: "pending", amountMinor: 2500 });
-    const paid = await commands.settle(
-      client,
-      accepted.id,
-      "Disposable acceptance cash hand-back attestation",
-      true,
-    );
-    expect(paid.refund.status).toBe("succeeded");
-    const afterRestock = await stock();
-    expect(afterRestock.onHand).toBe(afterSale.onHand + 1);
-    const historyBefore = await client.listReturns(sale.order.id);
-    await expect(
-      client.createReturn({
-        ...intent,
-        idempotencyKey: crypto.randomUUID(),
-        lines: [{ ...intent.lines[0], quantity: 2 }],
-      }),
-    ).rejects.toMatchObject({ code: "RETURN_QUANTITY_EXCEEDED" });
-    expect(await client.listReturns(sale.order.id)).toEqual(historyBefore);
-    expect(await stock()).toEqual(afterRestock);
-    expect((await client.getReturnEligibility(sale.order.id)).lines[0].eligibleQuantity).toBe(1);
-    const nonRestockIntent: ReturnIntent = {
-      ...intent,
-      inventoryLocationId: null,
-      lines: [{ ...intent.lines[0], reason: "Damaged", disposition: "non_restock" }],
-    };
-    const secondCommands = new ReturnCommands();
-    const nonRestock = await secondCommands.create(client, nonRestockIntent, true);
-    const secondPaid = await secondCommands.settle(
-      client,
-      nonRestock.id,
-      "Disposable acceptance second cash hand-back",
-      true,
-    );
-    expect(secondPaid.refund.status).toBe("succeeded");
-    expect(nonRestock.inventoryOperationId).toBeNull();
-    expect(await stock()).toEqual(afterRestock);
-    const replay = await commands.create(client, intent, true);
-    expect(replay.id).toBe(accepted.id);
-    expect(replay.refund.id).toBe(accepted.refund.id);
-    expect(replay.inventoryOperationId).toBe(accepted.inventoryOperationId);
-    expect(
-      (
-        await commands.settle(
-          client,
-          accepted.id,
-          "Disposable acceptance cash hand-back attestation",
-          true,
-        )
-      ).refund.id,
-    ).toBe(paid.refund.id);
-    expect((await client.listReturns(sale.order.id)).items).toHaveLength(2);
-    expect(await stock()).toEqual(afterRestock);
     const local = makeHarness();
     try {
-      const before = local.database.connection.prepare("SELECT * FROM outbox").all();
-      const inventory = local.sales.getProjectedInventory();
-      await expect(new ReturnCommands().create(client, intent, false)).rejects.toThrow(
-        "Connection is required",
-      );
-      expect(local.database.connection.prepare("SELECT * FROM outbox").all()).toEqual(before);
-      expect(local.sales.getProjectedInventory()).toEqual(inventory);
+      const store = new ReturnStore(local.database);
+      const service = new ReturnService(store, url);
+      const session = { tenantId: T, accessToken: token! };
+      const create = async (intent: ReturnIntent) => {
+        const reply = await service.start(session, intent);
+        expect(reply.error).toBeUndefined();
+        return reply.workflow!;
+      };
+      const settle = async (id: string, reference: string) => {
+        const reply = await service.settle(session, id, reference);
+        expect(reply.error).toBeUndefined();
+        return reply.workflow!.result!;
+      };
+      const intent: ReturnIntent = {
+        orderId: sale.order.id,
+        lines: [
+          {
+            orderLineId: eligible.lines[0].orderLineId,
+            quantity: 1,
+            reason: "Size did not fit",
+            disposition: "restock",
+          },
+        ],
+        inventoryLocationId: L,
+        refundMode: "pending",
+        settlementReference: null,
+      };
+      const firstWorkflow = await create(intent);
+      const accepted = firstWorkflow.result!;
+      expect(accepted.refund).toMatchObject({ status: "pending", amountMinor: 2500 });
+      const paid = await settle(accepted.id, "Disposable acceptance cash hand-back attestation");
+      expect(paid.refund.status).toBe("succeeded");
+      const afterRestock = await stock();
+      expect(afterRestock.onHand).toBe(afterSale.onHand + 1);
+      const historyBefore = await client.listReturns(sale.order.id);
+      await expect(
+        client.createReturn({
+          ...intent,
+          idempotencyKey: crypto.randomUUID(),
+          lines: [{ ...intent.lines[0], quantity: 2 }],
+        }),
+      ).rejects.toMatchObject({ code: "RETURN_QUANTITY_EXCEEDED" });
+      expect(await client.listReturns(sale.order.id)).toEqual(historyBefore);
       expect(await stock()).toEqual(afterRestock);
+      expect((await client.getReturnEligibility(sale.order.id)).lines[0].eligibleQuantity).toBe(1);
+      const nonRestockIntent: ReturnIntent = {
+        ...intent,
+        inventoryLocationId: null,
+        lines: [{ ...intent.lines[0], reason: "Damaged", disposition: "non_restock" }],
+      };
+      const nonRestock = (await create(nonRestockIntent)).result!;
+      const secondPaid = await settle(nonRestock.id, "Disposable acceptance second cash hand-back");
+      expect(secondPaid.refund.status).toBe("succeeded");
+      expect(nonRestock.inventoryOperationId).toBeNull();
+      expect(await stock()).toEqual(afterRestock);
+      const replay = await client.createReturn(
+        JSON.parse(store.get(firstWorkflow.id).create_command!),
+      );
+      expect(replay.id).toBe(accepted.id);
+      expect(replay.refund.id).toBe(accepted.refund.id);
+      expect(replay.inventoryOperationId).toBe(accepted.inventoryOperationId);
+      expect(
+        (await client.settleRefund(JSON.parse(store.get(firstWorkflow.id).settlement_command!)))
+          .refund.id,
+      ).toBe(paid.refund.id);
+      expect((await client.listReturns(sale.order.id)).items).toHaveLength(2);
+      expect(await stock()).toEqual(afterRestock);
+      {
+        const before = local.database.connection.prepare("SELECT * FROM outbox").all();
+        const inventory = local.sales.getProjectedInventory();
+        expect(
+          (
+            await new ReturnService(store, url, { networkOnline: () => false }).start(
+              session,
+              intent,
+            )
+          ).error,
+        ).toBeTruthy();
+        expect(local.database.connection.prepare("SELECT * FROM outbox").all()).toEqual(before);
+        expect(local.sales.getProjectedInventory()).toEqual(inventory);
+        expect(await stock()).toEqual(afterRestock);
+      }
+      console.log(
+        JSON.stringify({
+          scenarios: "A B C D E passed",
+          orderNumber: sale.order.orderNumber,
+          purchased: 2,
+          stockBeforeSale: beforeSale.onHand,
+          stockAfterSale: afterSale.onHand,
+          stockAfterRestock: afterRestock.onHand,
+          stockAfterNonRestockAndReplay: (await stock()).onHand,
+          refundAmountsMinor: [paid.refund.amountMinor, secondPaid.refund.amountMinor],
+          refundStates: [paid.refund.status, secondPaid.refund.status],
+        }),
+      );
     } finally {
       local.dispose();
     }
-    console.log(
-      JSON.stringify({
-        scenarios: "A B C D E passed",
-        orderNumber: sale.order.orderNumber,
-        purchased: 2,
-        stockBeforeSale: beforeSale.onHand,
-        stockAfterSale: afterSale.onHand,
-        stockAfterRestock: afterRestock.onHand,
-        stockAfterNonRestockAndReplay: (await stock()).onHand,
-        refundAmountsMinor: [paid.refund.amountMinor, secondPaid.refund.amountMinor],
-        refundStates: [paid.refund.status, secondPaid.refund.status],
-      }),
-    );
   });
 });
