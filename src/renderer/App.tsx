@@ -30,6 +30,7 @@ import { formatMoney } from "./money";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { resolveRegisters, type PosRegister } from "./pos/context";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
+import { ReturnDesk } from "./returns/ReturnDesk";
 
 export interface PosAuth {
   isLoaded: boolean;
@@ -112,6 +113,8 @@ export function PosApplication({
   const [priceChangedTotal, setPriceChangedTotal] = useState<number | null>(null);
   const [priceRefreshPending, setPriceRefreshPending] = useState(false);
   const [sellingMode, setSellingMode] = useState<"connected" | "offline">("connected");
+  const [showReturns, setShowReturns] = useState(false);
+  const [returnLocked, setReturnLocked] = useState(false);
   const [offlineReadiness, setOfflineReadiness] = useState<OfflineReadiness>({
     ready: false,
     reason: "NOT_INITIALIZED",
@@ -361,6 +364,7 @@ export function PosApplication({
   }
 
   function completeSale() {
+    if (showReturns) return;
     if (!tenantClient || !register || saleState.phase === "submitting" || priceConfirmationRequired)
       return;
     const cashReceivedMinor = Number(cashReceived);
@@ -386,6 +390,7 @@ export function PosApplication({
   }
 
   async function signOut() {
+    if (returnLocked) return;
     resetTransaction();
     setSellingMode("connected");
     setTenantId(null);
@@ -554,7 +559,7 @@ export function PosApplication({
               aria-label="Register"
               value={register.registerId}
               onChange={(event) => chooseRegister(event.target.value)}
-              disabled={submitting}
+              disabled={submitting || returnLocked}
             >
               {registers.map((item) => (
                 <option key={item.registerId} value={item.registerId}>
@@ -567,7 +572,7 @@ export function PosApplication({
             <button
               className="button button--quiet"
               onClick={() => setSellingMode("offline")}
-              disabled={submitting}
+              disabled={submitting || returnLocked}
             >
               Work offline
             </button>
@@ -575,7 +580,7 @@ export function PosApplication({
           <button
             className="button button--quiet"
             onClick={() => void signOut()}
-            disabled={submitting}
+            disabled={submitting || returnLocked}
           >
             Sign out
           </button>
@@ -612,6 +617,25 @@ export function PosApplication({
         <div className="attention-strip" role="status">
           {syncStatus.needsReconciliation + syncStatus.blocked} accepted sale(s) need attention.
         </div>
+      ) : null}
+
+      <div className="operation-message">
+        <button
+          className="button"
+          disabled={returnLocked || submitting}
+          onClick={() => setShowReturns((value) => !value)}
+        >
+          {showReturns ? "Close returns" : "Returns and refunds"}
+        </button>
+      </div>
+      {showReturns && tenantClient && client ? (
+        <ReturnDesk
+          key={`${auth.sessionId}:${tenantId}:${registerId}`}
+          client={tenantClient}
+          health={client.getHealth}
+          register={register}
+          onLocked={setReturnLocked}
+        />
       ) : null}
 
       <div className="workspace">
@@ -804,7 +828,13 @@ export function PosApplication({
           ) : null}
           <button
             className="button button--complete"
-            disabled={cart.length === 0 || submitting || ambiguous || priceConfirmationRequired}
+            disabled={
+              cart.length === 0 ||
+              submitting ||
+              ambiguous ||
+              priceConfirmationRequired ||
+              showReturns
+            }
             onClick={completeSale}
           >
             {submitting ? "Completing sale…" : "Complete sale"}

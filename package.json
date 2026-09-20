@@ -22,12 +22,13 @@
     "origin:check": "pnpm build:main && pnpm build:renderer && node scripts/origin-check.mjs",
     "acceptance:persistence": "pnpm build:main && node scripts/run-persistence-acceptance.mjs",
     "acceptance:sqlite-packaged": "node scripts/run-sqlite-package-acceptance.mjs",
+    "acceptance:returns": "node scripts/run-returns-acceptance.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@clerk/react": "6.15.1",
-    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.5.0.tgz",
+    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.8.0.tgz",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

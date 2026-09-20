@@ -556,3 +556,47 @@ h3 {
     display: none;
   }
 }
+/* Connected return forms keep server quantities and consequences beside each selection. */
+.returns-panel {
+  margin: 1rem 2rem;
+  padding: 1.5rem;
+  background: #fff;
+  border: 1px solid #d6ded9;
+  border-radius: 1rem;
+}
+.returns-panel fieldset {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #d6ded9;
+}
+.returns-panel label {
+  display: block;
+  margin: 0.6rem 0;
+}
+.returns-panel input:not([type="checkbox"]),
+.returns-panel select {
+  display: block;
+  width: 100%;
+  max-width: 34rem;
+  padding: 0.6rem;
+}
+.returns-panel input[type="checkbox"] {
+  margin-right: 0.5rem;
+}
+.returns-panel button {
+  margin: 0.3rem;
+}
+.return-line,
+.return-result,
+.return-review,
+.return-settlement {
+  padding: 1rem;
+  margin: 1rem 0;
+  background: #f4f7f5;
+  border-radius: 0.5rem;
+}
+.return-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
