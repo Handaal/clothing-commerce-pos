@@ -5,8 +5,16 @@ import { createCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { cleanup, configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReturnDesk } from "./ReturnDesk";
+import { ReturnService } from "../../main/returns/service";
+import { ReturnStore } from "../../main/returns/store";
+import { makeHarness, type OfflineHarness } from "../../../tests/offline/fixtures";
 
-afterEach(cleanup);
+let local: OfflineHarness | undefined;
+afterEach(() => {
+  cleanup();
+  local?.dispose();
+  local = undefined;
+});
 configure({ asyncUtilTimeout: 15000 });
 const url = process.env.POS_RETURNS_TEST_URL;
 describe.skipIf(!url)("return screen with real API", () => {
@@ -28,9 +36,22 @@ describe.skipIf(!url)("return screen with real API", () => {
       idempotencyKey: crypto.randomUUID(),
     });
     render(
-      <ReturnDesk client={client} health={sdk.getHealth} register={register} onLocked={vi.fn()} />,
+      <ReturnDesk
+        client={client}
+        health={sdk.getHealth}
+        register={register}
+        onLocked={vi.fn()}
+        getToken={async () => process.env.POS_RETURNS_TEST_TOKEN ?? null}
+        bridge={new ReturnService(new ReturnStore((local = makeHarness()).database), url!)}
+      />,
     );
     await screen.findByText("Connected · Returns available");
+    await waitFor(() =>
+      expect(
+        (screen.getByText("Load connected orders").closest("fieldset") as HTMLFieldSetElement)
+          .disabled,
+      ).toBe(false),
+    );
     fireEvent.click(screen.getByText("Load connected orders"));
     const orderButton = await screen.findByText(new RegExp(`^Order ${sale.order.orderNumber} ·`));
     await waitFor(() =>
@@ -60,11 +81,17 @@ describe.skipIf(!url)("return screen with real API", () => {
     );
     fireEvent.click(screen.getByText("Confirm return"));
     await screen.findByText(/Refund:.*25\.00.*pending/);
-    fireEvent.change(screen.getByLabelText("Settlement reference"), {
-      target: { value: "Disposable UI cash attestation" },
-    });
+    // The create operation stays pending until its post-acknowledgement order/eligibility refresh
+    // settles, which disables the settlement controls. Wait for that to clear before recording cash.
+    const referenceInput = screen.getByLabelText("Settlement reference") as HTMLInputElement;
+    await waitFor(() => expect(referenceInput.disabled).toBe(false));
+    fireEvent.change(referenceInput, { target: { value: "Disposable UI cash attestation" } });
     fireEvent.click(screen.getByLabelText("I have handed back the displayed cash amount."));
-    fireEvent.click(screen.getByText("Record cash refund", { selector: "button" }));
+    const settleButton = screen.getByText("Record cash refund", {
+      selector: "button",
+    }) as HTMLButtonElement;
+    await waitFor(() => expect(settleButton.disabled).toBe(false));
+    fireEvent.click(settleButton);
     await screen.findByText(/Refund:.*25\.00.*succeeded/);
     const returns = await client.listReturns(sale.order.id);
     expect(returns.items).toHaveLength(1);

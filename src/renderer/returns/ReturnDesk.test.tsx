@@ -1,6 +1,5 @@
 // @vitest-environment jsdom
 import {
-  ApiHttpError,
   type CommerceClient,
   type OrderDetailResponse,
   type ReturnDetailResponse,
@@ -9,8 +8,9 @@ import {
 } from "@shifted/clothing-commerce-sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ReturnsBridge, ReturnWorkflow } from "../../shared/returns";
 import { ReturnDesk } from "./ReturnDesk";
-import { CONNECTION_REQUIRED, ReturnCommands, type ReturnIntent } from "./commands.mjs";
+import { CONNECTION_REQUIRED } from "./commands.mjs";
 
 const order: OrderDetailResponse = {
   header: {
@@ -98,19 +98,6 @@ const result: ReturnDetailResponse = {
     settledAt: null,
   },
 };
-const intent: ReturnIntent = {
-  orderId: order.header.id,
-  lines: [
-    {
-      orderLineId: "line-secret",
-      quantity: 1,
-      reason: "Size did not fit",
-      disposition: "non_restock",
-    },
-  ],
-  inventoryLocationId: null,
-  refundMode: "pending",
-};
 const register = {
   registerId: "register-secret",
   registerName: "Front",
@@ -144,12 +131,70 @@ function fixture(eligible = eligibility, returned = result) {
     getReturn: vi.fn(async () => returned),
   } as unknown as TenantCommerceClient;
   const health = vi.fn(async () => ({})) as unknown as CommerceClient["getHealth"];
-  render(<ReturnDesk client={client} health={health} register={register} onLocked={vi.fn()} />);
+  let workflow: ReturnWorkflow | null = null;
+  let saved: Parameters<TenantCommerceClient["createReturn"]>[0];
+  const bridge: ReturnsBridge = {
+    hasPending: async () => workflow !== null,
+    inspect: async () => ({ workflow }),
+    start: async (_session, intent) => {
+      saved = { ...intent, idempotencyKey: "main-owned-key" };
+      workflow = {
+        id: "workflow",
+        orderId: order.header.id,
+        orderReference: "POS-42",
+        stage: "prepared",
+        createdAt: result.createdAt,
+        result: null,
+        outcome: null,
+      };
+      try {
+        const value = await client.createReturn(saved);
+        workflow = { ...workflow, stage: "return_acknowledged", result: value };
+        return { workflow };
+      } catch {
+        return {
+          workflow,
+          error: { code: "UNKNOWN", message: "Recover saved return", uncertain: true },
+        };
+      }
+    },
+    recover: async () => {
+      const value = await client.createReturn(saved);
+      workflow = { ...workflow!, stage: "return_acknowledged", result: value };
+      return { workflow };
+    },
+    settle: async (_session, id, reference) => {
+      const value = await client.settleRefund({
+        returnId: id,
+        settlementReference: reference,
+        idempotencyKey: "settlement-key",
+      });
+      workflow = { ...workflow!, stage: "completed", result: value, outcome: "acknowledged" };
+      return { workflow };
+    },
+    finish: async () => {
+      workflow = { ...workflow!, stage: "completed" };
+      return { workflow };
+    },
+  };
+  render(
+    <ReturnDesk
+      client={client}
+      health={health}
+      register={register}
+      onLocked={vi.fn()}
+      bridge={bridge}
+      getToken={async () => "test-session"}
+    />,
+  );
   return { client, createReturn, settleRefund };
 }
 async function selectLine() {
   await waitFor(() =>
-    expect((screen.getByText("Load connected orders") as HTMLButtonElement).disabled).toBe(false),
+    expect(
+      (screen.getByText("Load connected orders").closest("fieldset") as HTMLFieldSetElement)
+        .disabled,
+    ).toBe(false),
   );
   fireEvent.click(screen.getByText("Load connected orders"));
   fireEvent.click(await screen.findByText(/Order POS-42 ·/));
@@ -245,68 +290,16 @@ describe("connected return cashier", () => {
     await selectLine();
     await review();
     fireEvent.click(screen.getByText("Confirm return"));
-    await screen.findByText("Retry exact return");
+    await screen.findByText("Recover saved return/refund");
     expect((screen.getByText("Edit return") as HTMLButtonElement).disabled).toBe(true);
     fireEvent(window, new Event("online"));
     await waitFor(() =>
-      expect((screen.getByText("Retry exact return") as HTMLButtonElement).disabled).toBe(false),
+      expect((screen.getByText("Recover saved return/refund") as HTMLButtonElement).disabled).toBe(
+        false,
+      ),
     );
-    fireEvent.click(screen.getByText("Retry exact return"));
+    fireEvent.click(screen.getByText("Recover saved return/refund"));
     await screen.findByText(/Refund:.*pending/);
     expect(create.mock.calls[0][0]).toEqual(create.mock.calls[1][0]);
-  });
-});
-describe("return command idempotency", () => {
-  it("gives a separately started identical partial return its own key", async () => {
-    const createReturn = vi.fn().mockResolvedValue(result);
-    const client = { createReturn } as unknown as TenantCommerceClient;
-    const commands = new ReturnCommands();
-    await commands.create(client, intent, true);
-    commands.newReturnIntent();
-    await commands.create(client, intent, true);
-    expect(createReturn.mock.calls[0][0].idempotencyKey).not.toBe(
-      createReturn.mock.calls[1][0].idempotencyKey,
-    );
-  });
-  it("retains exact requests across lost/500 responses, deduplicates double clicks, and changes keys with intent", async () => {
-    const createReturn = vi.fn().mockRejectedValueOnce(new Error("lost")).mockResolvedValue(result);
-    const client = { createReturn } as unknown as TenantCommerceClient;
-    const keys = vi.fn().mockReturnValueOnce("first").mockReturnValueOnce("second");
-    const commands = new ReturnCommands(keys);
-    const first = commands.create(client, intent, true);
-    expect(commands.create(client, intent, true)).toBe(first);
-    await expect(first).rejects.toThrow("lost");
-    await commands.create(client, intent, true);
-    expect(createReturn.mock.calls[0][0]).toEqual(createReturn.mock.calls[1][0]);
-    await commands.create(
-      client,
-      { ...intent, lines: [{ ...intent.lines[0], reason: "Damaged" }] },
-      true,
-    );
-    expect(createReturn.mock.calls[2][0].idempotencyKey).toBe("second");
-  });
-  it("never invokes canonical commands while offline", async () => {
-    const client = {
-      createReturn: vi.fn(),
-      settleRefund: vi.fn(),
-    } as unknown as TenantCommerceClient;
-    const commands = new ReturnCommands();
-    await expect(commands.create(client, intent, false)).rejects.toThrow(CONNECTION_REQUIRED);
-    await expect(commands.settle(client, "return", "cash", false)).rejects.toThrow(
-      CONNECTION_REQUIRED,
-    );
-    expect(client.createReturn).not.toHaveBeenCalled();
-    expect(client.settleRefund).not.toHaveBeenCalled();
-  });
-  it("retains settlement key/evidence on exact retry", async () => {
-    const settleRefund = vi
-      .fn()
-      .mockRejectedValueOnce(new ApiHttpError("Unavailable", 503, "UNAVAILABLE", "test"))
-      .mockResolvedValue(result);
-    const client = { settleRefund } as unknown as TenantCommerceClient;
-    const commands = new ReturnCommands();
-    await expect(commands.settle(client, result.id, "Cash given", true)).rejects.toBeTruthy();
-    await commands.settle(client, result.id, "Cash given", true);
-    expect(settleRefund.mock.calls[0][0]).toEqual(settleRefund.mock.calls[1][0]);
   });
 });

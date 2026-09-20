@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 import type { OfflineBridge, OfflineBootstrapInput, OfflineSaleInput } from "../shared/offline";
+import type { ReturnsBridge, ReturnSession, ReturnIntent } from "../shared/returns";
 
 // Sandboxed Electron preloads cannot require arbitrary local modules. Keep this fixed allowlist
 // self-contained while importing only erased TypeScript types from the shared contract.
@@ -47,3 +48,16 @@ const offlineBridge: OfflineBridge = Object.freeze({
 });
 
 contextBridge.exposeInMainWorld("offline", offlineBridge);
+
+const returnsBridge: ReturnsBridge = Object.freeze({
+  hasPending: () => ipcRenderer.invoke("returns:has-pending"),
+  inspect: (session: ReturnSession) => ipcRenderer.invoke("returns:inspect", session),
+  start: (session: ReturnSession, intent: ReturnIntent) =>
+    ipcRenderer.invoke("returns:start", session, intent),
+  recover: (session: ReturnSession) => ipcRenderer.invoke("returns:recover", session),
+  settle: (session: ReturnSession, returnId: string, reference: string) =>
+    ipcRenderer.invoke("returns:settle", session, returnId, reference),
+  finish: (session: ReturnSession, workflowId: string) =>
+    ipcRenderer.invoke("returns:finish", session, workflowId),
+});
+contextBridge.exposeInMainWorld("returns", returnsBridge);

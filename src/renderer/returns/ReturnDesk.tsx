@@ -6,25 +6,35 @@ import type {
   ReturnEligibilityResponse,
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  ReturnReply,
+  ReturnSession,
+  ReturnWorkflow,
+  ReturnsBridge,
+} from "../../shared/returns";
 import { formatMoney } from "../money";
 import type { PosRegister } from "../pos/context";
-import {
-  CONNECTION_REQUIRED,
-  ReturnCommands,
-  returnFailure,
-  type ReturnIntent,
-} from "./commands.mjs";
+import { CONNECTION_REQUIRED, returnFailure, type ReturnIntent } from "./commands.mjs";
 
 interface Props {
   client: TenantCommerceClient;
   health: CommerceClient["getHealth"];
   register: PosRegister;
   onLocked: (locked: boolean) => void;
+  getToken: () => Promise<string | null>;
+  bridge?: ReturnsBridge;
 }
 type Selection = { quantity: string; reason: string; disposition: "restock" | "non_restock" };
 
-export function ReturnDesk({ client, health, register, onLocked }: Props) {
+export function ReturnDesk({
+  client,
+  health,
+  register,
+  onLocked,
+  getToken,
+  bridge = window.returns,
+}: Props) {
   const [connected, setConnected] = useState(false);
   const connectedRef = useRef(false);
   const [orders, setOrders] = useState<OrderListResponse | null>(null);
@@ -34,7 +44,12 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
   const [history, setHistory] = useState<ReturnDetailResponse[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
   const [selection, setSelection] = useState<Record<string, Selection>>({});
-  const [commands] = useState(() => new ReturnCommands());
+  const [workflow, setWorkflow] = useState<ReturnWorkflow | null>(null);
+  const [recoveryChecked, setRecoveryChecked] = useState(false);
+  const tokenRef = useRef(getToken);
+  useEffect(() => {
+    tokenRef.current = getToken;
+  });
   const [review, setReview] = useState(false);
   const [pending, setPending] = useState(false);
   const pendingRef = useRef(false);
@@ -43,7 +58,73 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
   const [result, setResult] = useState<ReturnDetailResponse | null>(null);
   const [reference, setReference] = useState("");
   const [cashConfirmed, setCashConfirmed] = useState(false);
-  const locked = pending || uncertain !== null;
+  const locked = pending || uncertain !== null || !recoveryChecked;
+  const activeWorkflow = workflow !== null && workflow.stage !== "completed";
+
+  const session = useCallback(async (): Promise<ReturnSession> => {
+    const accessToken = await tokenRef.current();
+    if (!accessToken) throw new Error("Restore your operator session to confirm the saved return.");
+    return { tenantId: client.tenantId, accessToken };
+  }, [client.tenantId]);
+  const displayReply = useCallback(
+    async (reply: ReturnReply) => {
+      setWorkflow(reply.workflow);
+      setError(reply.error?.message ?? null);
+      setUncertain(
+        reply.workflow?.stage === "prepared"
+          ? "create"
+          : reply.workflow?.stage === "settlement_prepared"
+            ? "settle"
+            : null,
+      );
+      if (
+        !reply.error &&
+        reply.workflow?.stage !== "prepared" &&
+        reply.workflow?.stage !== "settlement_prepared"
+      )
+        setRecoveryChecked(true);
+      if (reply.workflow?.result) {
+        setResult(reply.workflow.result);
+        setReview(false);
+        try {
+          const [detail, eligible] = await Promise.all([
+            client.getOrder(reply.workflow.orderId),
+            client.getReturnEligibility(reply.workflow.orderId),
+          ]);
+          setOrder(detail);
+          setEligibility(eligible);
+        } catch {
+          /* Canonical acknowledgement remains visible if detail reads fail. */
+        }
+      }
+    },
+    [client],
+  );
+
+  useEffect(() => {
+    if (!bridge || !connected || recoveryChecked) return;
+    let active = true;
+    void session()
+      .then((auth) => bridge.inspect(auth))
+      .then(async (reply) => {
+        if (!active) return;
+        if (
+          !reply.error &&
+          (reply.workflow?.stage === "prepared" || reply.workflow?.stage === "settlement_prepared")
+        ) {
+          await displayReply(reply);
+          const recovered = await bridge.recover(await session());
+          if (active) await displayReply(recovered);
+        } else await displayReply(reply);
+      })
+      .catch(() => {
+        if (active)
+          setError("Connection and local persistence are required to check previous returns.");
+      });
+    return () => {
+      active = false;
+    };
+  }, [bridge, connected, recoveryChecked, session, displayReply]);
 
   useEffect(() => {
     let active = true;
@@ -88,17 +169,36 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
   }, [health]);
 
   useEffect(() => {
-    onLocked(locked);
-    const warn = (event: BeforeUnloadEvent) => {
-      event.preventDefault();
-      event.returnValue = "";
-    };
-    if (locked) window.addEventListener("beforeunload", warn);
-    return () => {
-      window.removeEventListener("beforeunload", warn);
-      onLocked(false);
-    };
-  }, [locked, onLocked]);
+    onLocked(locked || activeWorkflow);
+    return () => onLocked(false);
+  }, [locked, activeWorkflow, onLocked]);
+
+  async function recoverSaved() {
+    if (!bridge || !connectedRef.current || pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    try {
+      await displayReply(await bridge.recover(await session()));
+    } catch {
+      setError("Connection and local persistence are required to complete confirmation.");
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  }
+  async function finishWorkflow() {
+    if (!bridge || !workflow || !connectedRef.current || pendingRef.current) return;
+    pendingRef.current = true;
+    setPending(true);
+    try {
+      await displayReply(await bridge.finish(await session(), workflow.id));
+    } catch {
+      setError("The acknowledged return could not be archived. Retry confirmation.");
+    } finally {
+      pendingRef.current = false;
+      setPending(false);
+    }
+  }
 
   async function read(action: () => Promise<void>) {
     if (pendingRef.current || !connectedRef.current) return;
@@ -125,7 +225,6 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
       client.getReturnEligibility(id),
       client.listReturns(id),
     ]);
-    commands.newReturnIntent();
     setOrder(detail);
     setEligibility(eligible);
     setHistory(returns.items);
@@ -168,12 +267,19 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
     });
   const restock = lines.some((line) => line.disposition === "restock");
   function update(id: string, change: Partial<Selection>) {
-    commands.newReturnIntent();
     setSelection((current) => ({ ...current, [id]: { ...current[id], ...change } as Selection }));
     setReview(false);
   }
   async function submit(kind: "create" | "settle") {
-    if (pendingRef.current || !connectedRef.current || !navigator.onLine || !order || !eligibility)
+    if (
+      !bridge ||
+      !recoveryChecked ||
+      pendingRef.current ||
+      !connectedRef.current ||
+      !navigator.onLine ||
+      !order ||
+      !eligibility
+    )
       return;
     if (kind === "create" && (!valid || !review)) return;
     if (kind === "settle" && (!result || !cashConfirmed || !reference.trim())) return;
@@ -183,25 +289,19 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
     try {
       const response =
         kind === "create"
-          ? await commands.create(
-              client,
-              {
-                orderId: order.header.id,
-                lines,
-                inventoryLocationId: restock ? register.defaultInventoryLocationId : null,
-                refundMode: "pending",
-                settlementReference: null,
-              },
-              true,
-            )
-          : await commands.settle(client, result!.id, reference.trim(), true);
-      setResult(response);
-      setUncertain(null);
-      setReview(false);
+          ? await bridge.start(await session(), {
+              orderId: order.header.id,
+              lines,
+              inventoryLocationId: restock ? register.defaultInventoryLocationId : null,
+              refundMode: "pending",
+              settlementReference: null,
+            })
+          : await bridge.settle(await session(), result!.id, reference.trim());
+      await displayReply(response);
     } catch (failure) {
       const view = returnFailure(failure);
       setError(view.message);
-      setUncertain(view.uncertain ? kind : null);
+      setRecoveryChecked(false);
       if (view.uncertain) {
         connectedRef.current = false;
         setConnected(false);
@@ -218,7 +318,7 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
   function receipt(value: ReturnDetailResponse) {
     return (
       <article className="return-result" key={value.id}>
-        <h3>Return accepted · Order {order?.header.orderNumber}</h3>
+        <h3>Return accepted · Order {order?.header.orderNumber ?? workflow?.orderReference}</h3>
         <p>
           Return reference: unavailable from the API. Identify this return by its original order and
           timestamp.
@@ -268,13 +368,41 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
       <h2>Returns and refunds</h2>
       <p role="status">{connected ? "Connected · Returns available" : CONNECTION_REQUIRED}</p>
       {error ? <p role="alert">{error}</p> : null}
-      {uncertain ? (
-        <p>
-          Keep this return open until its result is resolved. Exact retry preserves the original
-          command and key.
+      {!bridge ? (
+        <p role="alert">
+          Durable return storage is unavailable. Use the Electron application to submit returns.
         </p>
       ) : null}
-      <fieldset disabled={!connected || locked}>
+      {!recoveryChecked || uncertain ? (
+        <div className="return-review">
+          <p>
+            Confirming a previously submitted return… Connection is required to complete
+            confirmation. The saved command and key survive application restart.
+          </p>
+          <button
+            className="button"
+            disabled={!bridge || !connected || pending}
+            onClick={() => void recoverSaved()}
+          >
+            Recover saved return/refund
+          </button>
+        </div>
+      ) : null}
+      {workflow?.stage === "return_acknowledged" ? (
+        <div className="return-review">
+          <p>
+            Previous return acknowledged · Order {workflow.orderReference}. Record cash settlement
+            below, or finish with the canonical refund state shown.
+          </p>
+          <button disabled={!connected || pending} onClick={() => void finishWorkflow()}>
+            {workflow.result?.refund.status === "pending"
+              ? "Finish and leave refund pending"
+              : "Finish acknowledged return"}
+          </button>
+        </div>
+      ) : null}
+      {result && (!order || !eligibility) ? receipt(result) : null}
+      <fieldset disabled={!connected || locked || activeWorkflow}>
         <legend>Find original order</legend>
         <button
           className="button"
@@ -350,14 +478,16 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
             {formatMoney(eligibility.maxRefundableMinor, eligibility.currency)}
           </p>
           <button
-            disabled={!connected || locked}
+            disabled={!connected || locked || activeWorkflow}
             onClick={() => void read(() => loadOrder(order.header.id))}
           >
             Refresh eligibility and return history
           </button>
           {!result ? (
             <>
-              <fieldset disabled={!connected || locked || review || !eligibility.eligible}>
+              <fieldset
+                disabled={!connected || locked || activeWorkflow || review || !eligibility.eligible}
+              >
                 <legend>Select received items</legend>
                 {eligibility.lines.map((line) => {
                   const selected = selection[line.orderLineId];
@@ -495,10 +625,10 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
                   </button>
                   <button
                     className="button"
-                    disabled={!connected || pending || !valid || uncertain === "settle"}
+                    disabled={!connected || locked || activeWorkflow || !valid}
                     onClick={() => void submit("create")}
                   >
-                    {uncertain === "create" ? "Retry exact return" : "Confirm return"}
+                    Confirm return
                   </button>
                 </div>
               )}
@@ -538,7 +668,7 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
                   </label>
                   <button
                     className="button"
-                    disabled={!connected || pending || !cashConfirmed || !reference.trim()}
+                    disabled={!connected || locked || !cashConfirmed || !reference.trim()}
                     onClick={() => void submit("settle")}
                   >
                     {uncertain === "settle"
@@ -577,7 +707,7 @@ export function ReturnDesk({ client, health, register, onLocked }: Props) {
             {history.length === 0 ? <p>No previous returns in the loaded history.</p> : null}
           </details>
           {history.length > 0 && !result ? (
-            <fieldset disabled={!connected || locked}>
+            <fieldset disabled={!connected || locked || activeWorkflow}>
               <legend>Open previous return result</legend>
               {history.map((item) => (
                 <button

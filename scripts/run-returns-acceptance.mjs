@@ -29,7 +29,7 @@ const insertion = `
     // Disposable fixture only: allow the test operator to verify stock via the public SDK.
     resources.assertOwner();
     sql("insert into public.role_permissions(tenant_id,role_id,permission_id) select '2a000001-0000-4000-8000-000000000001'::uuid,'2a000013-0000-4000-8000-000000000001'::uuid,id from public.permissions where key='inventory.read' on conflict do nothing;");
-    const posCheck = spawnSync(process.execPath, [${JSON.stringify(join(posRoot, "node_modules/vitest/vitest.mjs"))}, "run", "tests/runtime-returns", "--testTimeout=60000", "--hookTimeout=60000"], {
+    const posCheck = spawnSync(process.execPath, [${JSON.stringify(join(posRoot, "node_modules/vitest/vitest.mjs"))}, "run", "tests/runtime-returns", "--no-file-parallelism", "--testTimeout=60000", "--hookTimeout=60000"], {
       cwd: ${JSON.stringify(posRoot)}, windowsHide: true, stdio: "inherit",
       env: { ...process.env, POS_RETURNS_TEST_URL: baseUrl, POS_RETURNS_TEST_TOKEN: token }
     });

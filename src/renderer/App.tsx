@@ -31,6 +31,7 @@ import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { resolveRegisters, type PosRegister } from "./pos/context";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
 import { ReturnDesk } from "./returns/ReturnDesk";
+import type { ReturnsBridge } from "../shared/returns";
 
 export interface PosAuth {
   isLoaded: boolean;
@@ -47,6 +48,7 @@ interface PosApplicationProps {
   clientFactory?: CommerceClientFactory;
   createKey?: () => string;
   offlineBridge?: OfflineBridge;
+  returnsBridge?: ReturnsBridge;
 }
 
 type LoadPhase = "idle" | "loading" | "ready" | "choosing" | "empty" | "error";
@@ -75,6 +77,7 @@ export function PosApplication({
   clientFactory = createConfiguredCommerceClient,
   createKey,
   offlineBridge = typeof window === "undefined" ? undefined : window.offline,
+  returnsBridge = typeof window === "undefined" ? undefined : window.returns,
 }: PosApplicationProps) {
   const tokenRef = useRef(auth.getToken);
   useEffect(() => {
@@ -115,6 +118,21 @@ export function PosApplication({
   const [sellingMode, setSellingMode] = useState<"connected" | "offline">("connected");
   const [showReturns, setShowReturns] = useState(false);
   const [returnLocked, setReturnLocked] = useState(false);
+  useEffect(() => {
+    if (!auth.isLoaded || !auth.isSignedIn || !returnsBridge) return;
+    let active = true;
+    void returnsBridge
+      .hasPending()
+      .then((exists) => {
+        if (active && exists) setShowReturns(true);
+      })
+      .catch(() => {
+        if (active) setShowReturns(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [auth.isLoaded, auth.isSignedIn, auth.sessionId, returnsBridge]);
   const [offlineReadiness, setOfflineReadiness] = useState<OfflineReadiness>({
     ready: false,
     reason: "NOT_INITIALIZED",
@@ -635,6 +653,8 @@ export function PosApplication({
           health={client.getHealth}
           register={register}
           onLocked={setReturnLocked}
+          getToken={auth.getToken}
+          bridge={returnsBridge}
         />
       ) : null}
 
