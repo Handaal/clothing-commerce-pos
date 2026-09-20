@@ -213,6 +213,14 @@ export function OfflineCashier({
         </div>
       </header>
       <div className="sync-strip">
+        <div>
+          <button className="button button--quiet" disabled>
+            Returns and refunds unavailable offline
+          </button>
+          <p>
+            Connection is required to process a return/refund. Returns cannot be submitted offline.
+          </p>
+        </div>
         <span>
           Prices are from the installed offline grant. Stock is projected local availability, not
           live server stock.

@@ -16,23 +16,30 @@ Electron main owns the local SQLite ledger, protected enrolled-device identity, 
 cache, offline eligibility, projected advisory stock, immutable local cash-sale persistence, signing,
 and synchronization. The sandboxed renderer can invoke only fixed typed operations and never receives
 keys, tokens, database access, arbitrary IPC, or an unrestricted SDK. Hardware integration, card or
-split tender, refunds/returns, discounts/promotions, loyalty, barcode scanning, receipt printing,
+split tender, discounts/promotions, loyalty, barcode scanning, receipt printing,
 cash-drawer control, and a tax engine remain absent.
 
 ## Technology and contract
 
 Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.5.0**:
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.8.0**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.5.0.tgz`
-- SHA-256: `58fd0f89bed94080a624a1d0e7af8db906a3b282bb473199beef3f6a019ca931`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.5.0.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.8.0.tgz`
+- SHA-256: `3bc355f638426993a7d7bd69c818855b1776540630d9701f03c770aa3fae3056`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.8.0.tgz`
 
 There is no API workspace link or API source import. The renderer supplies only the current Clerk
 session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and
 `Idempotency-Key` transport behavior.
 
 ## Authentication and selling bootstrap
+
+Phase 2M adds **Returns and refunds** to the connected cashier. Browse the current branch's
+connected POS orders, filter loaded pages by order number, inspect server eligibility, select received
+quantities/reasons/dispositions, and confirm. The API creates the return and a pending refund; its
+exact amount is then displayed. Authorized cash settlement requires explicit hand-back attestation
+and a settlement reference. Electronic refunds remain pending. The offline cashier disables returns;
+no return is queued or applied to local inventory. See [Phase 2M details](docs/phase-2m-returns.md).
 
 `@clerk/react` restores the real operator session and presents Clerk sign-in when unauthenticated.
 Only `VITE_CLERK_PUBLISHABLE_KEY` is embedded in the renderer; no Clerk secret or API/server secret
