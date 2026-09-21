@@ -1,5 +1,20 @@
 # POS Desktop Engineering Rules
 
+**Before changing code, read (in order):**
+
+1. This file and this repo's `README.md`.
+2. The API canonical platform state: `clothing-commerce-api/docs/platform/current-v1-state.md`
+   (verified merged state, invariants, current SDK, deferred decisions, roadmap).
+3. The current SDK README (this repo vendors `@shifted/clothing-commerce-sdk`; see `package.json` for
+   the pinned version) and the POS phase docs in the API repo (`docs/pos/*`).
+
+Repo-specific invariants: **do not import API source.** Preserve the secure Electron boundary
+(main/preload/renderer separation, context isolation, disabled Node integration, sandboxing). Preserve
+offline durability and **exact-replay** ingestion — local SQLite/outbox is operational state only,
+never global truth. The Commerce API is authoritative for rules, authorization, orders, and inventory.
+
+---
+
 1. TypeScript strict mode and zero TypeScript errors are mandatory.
 2. This repository is an Electron desktop sales channel only.
 3. Preserve main/preload/renderer separation, context isolation, disabled Node integration,
