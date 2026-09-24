@@ -6,6 +6,7 @@ export type CommerceErrorKind =
   | "validation"
   | "inventory"
   | "price-changed"
+  | "promotion"
   | "conflict"
   | "network"
   | "contract"
@@ -52,11 +53,19 @@ export function classifyCommerceError(error: unknown): CommerceErrorView {
         retryable: false,
       };
     }
-    if (error.code === "PRICE_CHANGED") {
+    if (error.code === "PRICE_CHANGED" || error.code === "CURRENCY_CHANGED") {
       return {
         kind: "price-changed",
         code: error.code,
         message: "The price changed. Review and confirm the refreshed total.",
+        retryable: false,
+      };
+    }
+    if (error.code === "PROMOTION_UNAVAILABLE") {
+      return {
+        kind: "promotion",
+        code: error.code,
+        message: "The promotion is no longer available. Review and confirm the refreshed total.",
         retryable: false,
       };
     }

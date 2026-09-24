@@ -110,6 +110,34 @@ describe("sale idempotency lifecycle", () => {
     ]);
   });
 
+  it("threads the optional promotion code intent into the sale request", async () => {
+    const createPosSale = vi.fn<TenantCommerceClient["createPosSale"]>().mockResolvedValue(receipt);
+    const executor = new SaleExecutor(() => "key-1");
+    executor.submit(tenantClient(createPosSale), { ...intent, promotionCode: "SAVE10" });
+    await settle();
+    expect(createPosSale).toHaveBeenCalledWith({
+      ...intent,
+      promotionCode: "SAVE10",
+      idempotencyKey: "key-1",
+    });
+  });
+
+  it("stops the sale for reconfirmation when the promotion is no longer available", async () => {
+    const createPosSale = vi
+      .fn<TenantCommerceClient["createPosSale"]>()
+      .mockRejectedValue(
+        new ApiHttpError("Promotion gone", 409, "PROMOTION_UNAVAILABLE", "request-1"),
+      );
+    const executor = new SaleExecutor(() => "key");
+    executor.submit(tenantClient(createPosSale), { ...intent, promotionCode: "EXPIRED" });
+    await settle();
+    expect(executor.snapshot()).toMatchObject({
+      phase: "promotion-changed",
+      error: { kind: "promotion", code: "PROMOTION_UNAVAILABLE" },
+    });
+    expect(executor.retry(tenantClient(createPosSale))).toBe(false);
+  });
+
   it.each([
     [401, "UNAUTHENTICATED", "auth"],
     [403, "PERMISSION_DENIED", "forbidden"],

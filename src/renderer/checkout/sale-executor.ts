@@ -10,18 +10,28 @@ import {
   type CommerceErrorView,
 } from "../commerce/errors";
 
-export type SaleIntent = Omit<CreatePosSaleInput, "idempotencyKey">;
+/**
+ * The connected sale intent. `promotionCode` threads the optional entered-code intent supported by SDK
+ * 0.12.0; automatic promotions carry no code and are re-evaluated by the server. The SDK 0.12.0 runtime
+ * accepts `promotionCode` on the POS sale request, so it is added here without hand-copying the DTO.
+ */
+export type SaleIntent = Omit<CreatePosSaleInput, "idempotencyKey"> & {
+  readonly promotionCode?: string | null;
+};
+
+type SalePayload = CreatePosSaleInput & { readonly promotionCode?: string | null };
 
 export type SaleExecutionState =
   | { phase: "idle" }
   | { phase: "submitting" }
   | { phase: "ambiguous"; error: CommerceErrorView }
   | { phase: "price-changed"; error: CommerceErrorView; authoritativeTotalMinor: number | null }
+  | { phase: "promotion-changed"; error: CommerceErrorView }
   | { phase: "error"; error: CommerceErrorView }
   | { phase: "success"; receipt: CreatePosSaleResponse };
 
 interface SaleOperation {
-  readonly input: CreatePosSaleInput;
+  readonly input: SalePayload;
 }
 
 export class SaleExecutor {
@@ -94,6 +104,8 @@ export class SaleExecutor {
           error: view,
           authoritativeTotalMinor: authoritativePrice(error),
         });
+      } else if (view.kind === "promotion") {
+        this.emit({ phase: "promotion-changed", error: view });
       } else {
         this.emit({ phase: "error", error: view });
       }

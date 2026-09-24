@@ -426,6 +426,64 @@ h3 {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 1.7rem;
 }
+.total-row--discount,
+.total-row--due {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: none;
+  font-size: 1rem;
+}
+.total-row--discount {
+  color: #2f7d5b;
+}
+.total-row--discount strong,
+.total-row--due strong {
+  font-size: 1.2rem;
+}
+.total-row--due {
+  font-weight: 750;
+}
+.total-row--due strong {
+  font-size: 1.7rem;
+}
+.promotion-panel {
+  margin-top: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.promotion-code-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+.promotion-code-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  flex: 1;
+  font-weight: 750;
+  font-size: 0.85rem;
+}
+.promotion-code-field input {
+  border: 1px solid #cfc4b6;
+  border-radius: 0.7rem;
+  padding: 0.7rem;
+  background: #fff;
+  text-transform: uppercase;
+}
+.promotion-code-field input:disabled {
+  background: #f1ece4;
+  color: #6f655b;
+}
+.promotion-note {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #3f4c45;
+}
+.promotion-note--error {
+  color: #a3341f;
+}
 .cash-field {
   display: flex;
   flex-wrap: wrap;
@@ -531,6 +589,9 @@ h3 {
 .receipt-totals > div {
   display: flex;
   justify-content: space-between;
+}
+.receipt-discount {
+  color: #2f7d5b;
 }
 .receipt-change {
   border-top: 1px solid #ded5c8;
