@@ -2,7 +2,6 @@ import { SignIn, useAuth, useClerk } from "@clerk/react";
 import type {
   CommerceClient,
   CreatePosSaleResponse,
-  PosQuoteResponse,
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -34,8 +33,6 @@ import { resolveRegisters, type PosRegister } from "./pos/context";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
-
-type AppliedPromotion = NonNullable<PosQuoteResponse["promotion"]>;
 
 export interface PosAuth {
   isLoaded: boolean;
@@ -121,7 +118,6 @@ export function PosApplication({
   const [codeDraft, setCodeDraft] = useState("");
   const [appliedCode, setAppliedCode] = useState<string | null>(null);
   const [quoteNonce, setQuoteNonce] = useState(0);
-  const [submittedPromotion, setSubmittedPromotion] = useState<AppliedPromotion | null>(null);
   const [priceConfirmationRequired, setPriceConfirmationRequired] = useState(false);
   const [priceChangedTotal, setPriceChangedTotal] = useState<number | null>(null);
   const [priceRefreshPending, setPriceRefreshPending] = useState(false);
@@ -243,7 +239,6 @@ export function PosApplication({
     setLocalError(null);
     setCodeDraft("");
     setAppliedCode(null);
-    setSubmittedPromotion(null);
     setPriceConfirmationRequired(false);
     setPriceChangedTotal(null);
     setPriceRefreshPending(false);
@@ -256,7 +251,6 @@ export function PosApplication({
     quoteController.reset();
     setCodeDraft("");
     setAppliedCode(null);
-    setSubmittedPromotion(null);
     setSellingMode("offline");
   }, [quoteController]);
 
@@ -478,7 +472,6 @@ export function PosApplication({
     setLocalError(null);
     // Tender against the current authoritative NET total; the server re-derives and rejects a stale
     // value. Only the entered-code intent is threaded — automatic promotions are re-evaluated server side.
-    setSubmittedPromotion(quote.promotion);
     executor.submit(tenantClient, {
       registerId: register.registerId,
       expectedTotalMinor: netMinor,
@@ -630,13 +623,7 @@ export function PosApplication({
     return <CenteredState title="Loading register…" body="Preparing the cashier." />;
 
   if (saleState.phase === "success")
-    return (
-      <Receipt
-        receipt={saleState.receipt}
-        promotion={submittedPromotion}
-        onNewSale={resetTransaction}
-      />
-    );
+    return <Receipt receipt={saleState.receipt} onNewSale={resetTransaction} />;
 
   const selectedProduct =
     products.find((product) => product.productId === selectedProductId) ?? null;
@@ -1047,16 +1034,15 @@ export function PosApplication({
 
 function Receipt({
   receipt,
-  promotion,
   onNewSale,
 }: {
   receipt: CreatePosSaleResponse;
-  promotion: AppliedPromotion | null;
   onNewSale: () => void;
 }) {
   // Derive every figure from the immutable returned sale. `order.totalMinor` is the payable net; the
-  // gross subtotal is the sum of the returned line totals and the discount is the difference. The
-  // promotion label comes from the quote the sale was confirmed against, not current configuration.
+  // gross subtotal is the sum of the returned line totals and the discount is the difference. The sale
+  // response carries no applied-promotion identity, so no promotion name/code is shown — only the
+  // canonical amounts from the accepted sale are rendered.
   const grossSubtotalMinor = receipt.order.lines.reduce(
     (sum, line) => sum + line.lineTotalMinor,
     0,
@@ -1094,12 +1080,7 @@ function Receipt({
           </div>
           {discountMinor > 0 ? (
             <div className="receipt-discount">
-              <span>
-                Promotion discount
-                {promotion
-                  ? ` · ${promotion.name}${promotion.code ? ` (${promotion.code})` : ""}`
-                  : ""}
-              </span>
+              <span>Promotion discount</span>
               <strong>−{formatMoney(discountMinor, receipt.order.currency)}</strong>
             </div>
           ) : null}

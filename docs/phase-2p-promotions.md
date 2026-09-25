@@ -14,13 +14,13 @@ authority path is unchanged.
 
 ## SDK
 
-Vendored `@shifted/clothing-commerce-sdk@0.12.0`
-(`vendor/shifted-clothing-commerce-sdk-0.12.0.tgz`, SHA-256
-`e2296c0300778ba3847065605d1863e86caea6042bd6063676bd60c40ef9b076`, enforced by
+Vendored `@shifted/clothing-commerce-sdk@0.12.2`
+(`vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`, SHA-256
+`8115f7a2dddc1d063edd3e1cb2f6b50fac071ddcd599244d239f945dcb442397`, enforced by
 `tests/boundaries.test.ts`). The client uses the POS quote (`posQuote → PricingBreakdown`) and threads
-the optional `promotionCode` intent into `createPosSale`. The SDK 0.12.0 runtime accepts
-`promotionCode` on the POS sale request; the intent is added via a narrow extension of the SDK input
-type rather than by hand-copying the DTO. No API source is imported.
+the optional `promotionCode` intent into `createPosSale`. As of SDK 0.12.2, `promotionCode` is a
+canonical field of `CreatePosSaleInput`, so the client uses the SDK input type directly with no local
+DTO extension. No API source is imported.
 
 ## Connected flow
 
@@ -59,13 +59,15 @@ offline sale.
 ## Receipt
 
 Uses the immutable returned sale: gross subtotal = Σ line totals, discount = gross − net
-`order.totalMinor`, final total = net. The promotion name/code is taken from the quote the sale was
-confirmed against, never reconstructed from current configuration.
+`order.totalMinor`, final total = net, cash received and change from `payment`. The sale response
+(`CreatePosSaleResponse`) carries no applied-promotion identity, so the receipt shows no promotion
+name/code — quote metadata is never used as historical sale truth, and current promotion configuration
+is never fetched. Prefer less information over incorrect provenance.
 
 ## Returns
 
 No change. The API already owns discounted refund calculations (net per-unit basis); the Return Desk
-is compatible with SDK 0.12.0 and required no UI change.
+is compatible with SDK 0.12.2 and required no UI change.
 
 ## Tests
 

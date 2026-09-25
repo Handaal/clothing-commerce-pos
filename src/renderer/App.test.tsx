@@ -515,7 +515,10 @@ describe("connected POS promotions", () => {
     expect(submitted).not.toHaveProperty("promotionCode");
     // Receipt derives discount from the immutable sale: gross 2599 − net 2099 = 500.
     expect(screen.getByText("Gross subtotal")).toBeTruthy();
-    expect(screen.getByText(/Promotion discount · Summer Sale/)).toBeTruthy();
+    expect(screen.getByText("Promotion discount")).toBeTruthy();
+    // The sale response carries no applied-promotion identity, so the quote-derived name/code is
+    // never rendered on the receipt — only the canonical discount amount is shown.
+    expect(screen.queryByText(/Summer Sale/)).toBeNull();
   });
 
   it("applies a valid entered code and threads it into the sale request", async () => {

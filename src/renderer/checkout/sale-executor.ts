@@ -11,15 +11,11 @@ import {
 } from "../commerce/errors";
 
 /**
- * The connected sale intent. `promotionCode` threads the optional entered-code intent supported by SDK
- * 0.12.0; automatic promotions carry no code and are re-evaluated by the server. The SDK 0.12.0 runtime
- * accepts `promotionCode` on the POS sale request, so it is added here without hand-copying the DTO.
+ * The connected sale intent. `promotionCode` threads the optional entered-code intent, which is a
+ * canonical field of `CreatePosSaleInput` as of SDK 0.12.2; automatic promotions carry no code and are
+ * re-evaluated by the server. The SDK type is used directly, so no DTO is duplicated here.
  */
-export type SaleIntent = Omit<CreatePosSaleInput, "idempotencyKey"> & {
-  readonly promotionCode?: string | null;
-};
-
-type SalePayload = CreatePosSaleInput & { readonly promotionCode?: string | null };
+export type SaleIntent = Omit<CreatePosSaleInput, "idempotencyKey">;
 
 export type SaleExecutionState =
   | { phase: "idle" }
@@ -31,7 +27,7 @@ export type SaleExecutionState =
   | { phase: "success"; receipt: CreatePosSaleResponse };
 
 interface SaleOperation {
-  readonly input: SalePayload;
+  readonly input: CreatePosSaleInput;
 }
 
 export class SaleExecutor {

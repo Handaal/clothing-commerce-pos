@@ -24,14 +24,14 @@ a tax engine, and any offline promotions remain absent.
 ## Technology and contract
 
 Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.12.0**:
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.12.2**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.12.0.tgz`
-- SHA-256: `e2296c0300778ba3847065605d1863e86caea6042bd6063676bd60c40ef9b076`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.12.0.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`
+- SHA-256: `8115f7a2dddc1d063edd3e1cb2f6b50fac071ddcd599244d239f945dcb442397`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`
 
-The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.12.0 adds the connected
-POS quote (`posQuote`) and the optional `promotionCode` sale intent used by Phase 2P.
+The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.12.2 exposes the connected
+POS quote (`posQuote`) and the canonical `promotionCode` field on `CreatePosSaleInput` used by Phase 2P.
 
 There is no API workspace link or API source import. The renderer supplies only the current Clerk
 session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and
