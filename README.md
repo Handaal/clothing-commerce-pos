@@ -15,18 +15,23 @@ fulfillments, and inventory issues.
 Electron main owns the local SQLite ledger, protected enrolled-device identity, server-issued offline
 cache, offline eligibility, projected advisory stock, immutable local cash-sale persistence, signing,
 and synchronization. The sandboxed renderer can invoke only fixed typed operations and never receives
-keys, tokens, database access, arbitrary IPC, or an unrestricted SDK. Hardware integration, card or
-split tender, discounts/promotions, loyalty, barcode scanning, receipt printing,
-cash-drawer control, and a tax engine remain absent.
+keys, tokens, database access, arbitrary IPC, or an unrestricted SDK. **Connected** sales support
+server-authoritative promotions (Phase 2P); the server evaluates automatic promotions plus one
+optional entered code and applies the greatest eligible saving. Hardware integration, card or split
+tender, manual cashier discounts, loyalty, barcode scanning, receipt printing, cash-drawer control,
+a tax engine, and any offline promotions remain absent.
 
 ## Technology and contract
 
 Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.8.0**:
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.12.2**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.8.0.tgz`
-- SHA-256: `3bc355f638426993a7d7bd69c818855b1776540630d9701f03c770aa3fae3056`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.8.0.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`
+- SHA-256: `8115f7a2dddc1d063edd3e1cb2f6b50fac071ddcd599244d239f945dcb442397`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`
+
+The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.12.2 exposes the connected
+POS quote (`posQuote`) and the canonical `promotionCode` field on `CreatePosSaleInput` used by Phase 2P.
 
 There is no API workspace link or API source import. The renderer supplies only the current Clerk
 session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and
@@ -34,7 +39,9 @@ session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `
 
 ## Authentication and selling bootstrap
 
-Phase 2M adds **Returns and refunds** to the connected cashier. Browse the current branch's
+Phase 2P adds **connected promotions** to the cashier (see [Connected promotions](#connected-promotions)
+and [Phase 2P details](docs/phase-2p-promotions.md)). Phase 2M adds **Returns and refunds** to the
+connected cashier. Browse the current branch's
 connected POS orders, filter loaded pages by order number, inspect server eligibility, select received
 quantities/reasons/dispositions, and confirm. The API creates the return and a pending refund; its
 exact amount is then displayed. Authorized cash settlement requires explicit hand-back attestation
@@ -94,13 +101,41 @@ At checkout, `createPosSale()` receives only:
 
 - the server-returned `registerId`;
 - cart `variantId` and whole-piece `quantity` lines;
-- displayed cart total as `expectedTotalMinor`;
-- cashier-entered whole integer `cashReceivedMinor`; and
+- the authoritative **net** quote total as `expectedTotalMinor`;
+- cashier-entered whole integer `cashReceivedMinor`;
+- the optional entered `promotionCode` intent (omitted when none is applied); and
 - one secure UUID idempotency key.
 
-The client never submits a unit price, branch, inventory location, currency, separate payment
-amount, or tax data. The on-screen change before submission is a preview; final change is always the
-server response.
+The client never submits a unit price, branch, inventory location, currency, discount amount, separate
+payment amount, or tax data. The on-screen change before submission is a preview; final change is
+always the server response.
+
+## Connected promotions
+
+Connected selling quotes the server for authoritative pricing: **cart → POS quote → optional code →
+gross / discount / net → tender → final server sale revalidation → receipt**. The renderer never
+calculates a discount.
+
+The cashier sees a minimal promotion panel: a promotion-code input with **Apply**/**Remove**, a
+loading state, the applied and automatic promotion summaries, and a concise error state. Typing a
+code never quotes; only **Apply** does. The typed draft and the server-applied code are separate
+state. Automatic promotions appear with no cashier action, and the app requotes on relevant connected
+cart changes (add, remove, quantity, clear) and register changes. Each quote carries a basket
+signature and sequence, so a slow response for an older basket can never overwrite a newer one.
+
+The server applies the **greatest eligible saving** — an entered code does not automatically beat a
+better automatic promotion; the app displays exactly what the server selected. Tender always uses the
+current authoritative net amount, and checkout is blocked while a fresh quote is loading or
+unavailable. The final `createPosSale()` re-evaluates: if the promotion expires, a code exhausts,
+eligibility or the winner changes, or the total changes, the sale stops, refreshes pricing, and
+requires cashier reconfirmation. A changed amount is never silently finalized. Existing POS
+idempotency and `409 PRICE_CHANGED` handling are preserved.
+
+When the quote cannot be reached the panel states **“Promotions require a connection.”** The cashier
+may reconnect or explicitly continue at normal authorized offline prices. Offline selling remains
+promotion-free: switching to offline invalidates any connected promotion pricing so a connected
+discounted total is never carried into an offline sale. Offline grants, SQLite state, the signed
+offline request format, outbox schemas, replay, and bootstrap authority are unchanged.
 
 ## Idempotency and price reconfirmation
 
@@ -117,9 +152,12 @@ blindly retried.
 
 ## Receipt and fiscal boundary
 
-The completion view uses the `createPosSale()` response for order number, product/variant/SKU lines,
-quantities, authoritative unit and line totals, total/currency, captured cash, cash received,
-server-computed change, and completed fulfillment confirmation. There is no printer integration.
+The completion view uses the immutable `createPosSale()` response for order number,
+product/variant/SKU lines, quantities, authoritative unit and line totals, captured cash, cash
+received, server-computed change, and completed fulfillment confirmation. The gross subtotal is the
+sum of the returned line totals and the promotion discount is the difference between that gross and
+the net `order.totalMinor`; the promotion name/code is taken from the quote the sale was confirmed
+against, never reconstructed from current configuration. There is no printer integration.
 
 Connected POS Sale V1 shows gross merchandise total only. It does not calculate or describe VAT,
 tax-inclusive/exclusive treatment, or fiscal invoices. Tax and jurisdiction-specific fiscal

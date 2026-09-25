@@ -27,6 +27,7 @@ import { SaleExecutor, type SaleExecutionState } from "./checkout/sale-executor"
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
 import { formatMoney } from "./money";
+import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { resolveRegisters, type PosRegister } from "./pos/context";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
@@ -112,6 +113,11 @@ export function PosApplication({
   const [cart, setCart] = useState<readonly CartLine[]>([]);
   const [cashReceived, setCashReceived] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
+  const [quoteController] = useState(() => new QuoteController());
+  const [quoteState, setQuoteState] = useState<QuoteState>(quoteController.snapshot());
+  const [codeDraft, setCodeDraft] = useState("");
+  const [appliedCode, setAppliedCode] = useState<string | null>(null);
+  const [quoteNonce, setQuoteNonce] = useState(0);
   const [priceConfirmationRequired, setPriceConfirmationRequired] = useState(false);
   const [priceChangedTotal, setPriceChangedTotal] = useState<number | null>(null);
   const [priceRefreshPending, setPriceRefreshPending] = useState(false);
@@ -162,9 +168,32 @@ export function PosApplication({
     [client, tenantId],
   );
   const register = registers.find((item) => item.registerId === registerId) ?? null;
-  const total = cartTotal(cart);
+  const clientGross = cartTotal(cart);
+
+  // The server quote is authoritative. Until a fresh quote is ready the client sum is shown only as a
+  // non-tenderable preview; tender and checkout are gated on `quoteReady` below.
+  const quote = quoteState.status === "ready" ? quoteState.quote : null;
+  const quoteReady = quote !== null;
+  const grossMinor = quote ? quote.grossSubtotalMinor : clientGross;
+  const discountMinor = quote ? quote.discountTotalMinor : 0;
+  const netMinor = quote ? quote.totalMinor : clientGross;
 
   useEffect(() => executor.subscribe(setSaleState), [executor]);
+  useEffect(() => quoteController.subscribe(setQuoteState), [quoteController]);
+
+  // Requote on relevant connected basket/code/register changes. `sync` de-duplicates by basket
+  // signature, so calling it on every change is cheap and stale responses are discarded internally.
+  useEffect(() => {
+    if (sellingMode !== "connected") return;
+    const basket =
+      registerId === null
+        ? null
+        : {
+            registerId,
+            lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+          };
+    quoteController.sync(tenantClient, basket, appliedCode, quoteNonce);
+  }, [quoteController, tenantClient, registerId, cart, appliedCode, quoteNonce, sellingMode]);
 
   const refreshOfflineState = useCallback(async () => {
     if (!offlineBridge) return;
@@ -204,13 +233,26 @@ export function PosApplication({
 
   const resetTransaction = useCallback(() => {
     executor.reset();
+    quoteController.reset();
     setCart([]);
     setCashReceived("");
     setLocalError(null);
+    setCodeDraft("");
+    setAppliedCode(null);
     setPriceConfirmationRequired(false);
     setPriceChangedTotal(null);
     setPriceRefreshPending(false);
-  }, [executor]);
+  }, [executor, quoteController]);
+
+  // Leaving connected selling must never carry a connected discounted total into an offline sale. The
+  // offline cashier already builds its own cart at authorized offline prices; this clears any connected
+  // promotion pricing first so the boundary is explicit.
+  const switchToOffline = useCallback(() => {
+    quoteController.reset();
+    setCodeDraft("");
+    setAppliedCode(null);
+    setSellingMode("offline");
+  }, [quoteController]);
 
   /* eslint-disable react-hooks/set-state-in-effect -- These effects deliberately expose loading and
      reset transitions for external Clerk/API state machines before their asynchronous results settle. */
@@ -335,17 +377,28 @@ export function PosApplication({
     if (saleState.phase === "success") {
       setCart([]);
       setCashReceived("");
-    } else if (saleState.phase === "price-changed") {
+    } else if (saleState.phase === "price-changed" || saleState.phase === "promotion-changed") {
+      // The final server sale re-evaluated and the pricing changed (price, promotion winner, code
+      // exhaustion, eligibility). Stop, reload prices, force a fresh quote, and require reconfirmation
+      // so a changed amount is never silently finalized.
       setPriceConfirmationRequired(true);
-      setPriceChangedTotal(saleState.authoritativeTotalMinor);
+      setPriceChangedTotal(
+        saleState.phase === "price-changed" ? saleState.authoritativeTotalMinor : null,
+      );
       setPriceRefreshPending(true);
       setCatalogNonce((value) => value + 1);
+      setQuoteNonce((value) => value + 1);
     }
   }, [saleState]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const invalidateIntent = useCallback(() => {
-    if (saleState.phase !== "idle" && saleState.phase !== "price-changed") executor.invalidate();
+    if (
+      saleState.phase !== "idle" &&
+      saleState.phase !== "price-changed" &&
+      saleState.phase !== "promotion-changed"
+    )
+      executor.invalidate();
     setLocalError(null);
   }, [executor, saleState.phase]);
 
@@ -381,6 +434,20 @@ export function PosApplication({
     setCashReceived(value);
   }
 
+  function applyPromotionCode() {
+    const trimmed = codeDraft.trim();
+    if (trimmed === "" || appliedCode !== null) return;
+    invalidateIntent();
+    setCodeDraft(trimmed);
+    setAppliedCode(trimmed);
+  }
+
+  function removePromotionCode() {
+    invalidateIntent();
+    setAppliedCode(null);
+    setCodeDraft("");
+  }
+
   function completeSale() {
     if (showReturns) return;
     if (!tenantClient || !register || saleState.phase === "submitting" || priceConfirmationRequired)
@@ -390,20 +457,27 @@ export function PosApplication({
       setLocalError("Add at least one item before checkout.");
       return;
     }
+    if (!quoteReady || quote === null) {
+      setLocalError("Waiting for the authoritative total. Try again once pricing is ready.");
+      return;
+    }
     if (!Number.isSafeInteger(cashReceivedMinor) || cashReceivedMinor < 0) {
       setLocalError("Cash received must be a whole number of minor currency units.");
       return;
     }
-    if (cashReceivedMinor < total) {
-      setLocalError("Cash received is below the displayed total.");
+    if (cashReceivedMinor < netMinor) {
+      setLocalError("Cash received is below the amount due.");
       return;
     }
     setLocalError(null);
+    // Tender against the current authoritative NET total; the server re-derives and rejects a stale
+    // value. Only the entered-code intent is threaded — automatic promotions are re-evaluated server side.
     executor.submit(tenantClient, {
       registerId: register.registerId,
-      expectedTotalMinor: total,
+      expectedTotalMinor: netMinor,
       cashReceivedMinor,
       lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+      ...(appliedCode ? { promotionCode: appliedCode } : {}),
     });
   }
 
@@ -493,7 +567,7 @@ export function PosApplication({
         error={tenantError}
         onRetry={() => setBootstrapNonce((value) => value + 1)}
         onSignOut={signOut}
-        onUseOffline={offlineReadiness.ready ? () => setSellingMode("offline") : undefined}
+        onUseOffline={offlineReadiness.ready ? switchToOffline : undefined}
       />
     );
   if (tenantPhase === "choosing") {
@@ -528,7 +602,7 @@ export function PosApplication({
         error={contextError}
         onRetry={() => setContextNonce((value) => value + 1)}
         onSignOut={signOut}
-        onUseOffline={offlineReadiness.ready ? () => setSellingMode("offline") : undefined}
+        onUseOffline={offlineReadiness.ready ? switchToOffline : undefined}
       />
     );
   if (contextPhase === "choosing") {
@@ -557,7 +631,9 @@ export function PosApplication({
   const ambiguous = saleState.phase === "ambiguous";
   const cashMinor = Number(cashReceived);
   const previewChange =
-    Number.isSafeInteger(cashMinor) && cashMinor >= total ? cashMinor - total : null;
+    Number.isSafeInteger(cashMinor) && cashMinor >= netMinor ? cashMinor - netMinor : null;
+  const promotion = quote?.promotion ?? null;
+  const codeStatus = quote?.codeStatus ?? "none";
 
   return (
     <main className="pos-shell">
@@ -589,7 +665,7 @@ export function PosApplication({
           {offlineReadiness.ready ? (
             <button
               className="button button--quiet"
-              onClick={() => setSellingMode("offline")}
+              onClick={switchToOffline}
               disabled={submitting || returnLocked}
             >
               Work offline
@@ -678,7 +754,7 @@ export function PosApplication({
                 onRetry={() => setCatalogNonce((value) => value + 1)}
               />
               {offlineReadiness.ready ? (
-                <button className="button" onClick={() => setSellingMode("offline")}>
+                <button className="button" onClick={switchToOffline}>
                   Use offline catalog
                 </button>
               ) : null}
@@ -777,9 +853,96 @@ export function PosApplication({
               ))}
             </div>
           )}
+          <div className="promotion-panel">
+            <div className="promotion-code-row">
+              <label className="promotion-code-field">
+                Promotion code
+                <input
+                  aria-label="Promotion code"
+                  type="text"
+                  autoComplete="off"
+                  value={codeDraft}
+                  disabled={submitting || appliedCode !== null}
+                  onChange={(event) => setCodeDraft(event.target.value)}
+                />
+              </label>
+              {appliedCode === null ? (
+                <button
+                  className="button"
+                  onClick={applyPromotionCode}
+                  disabled={submitting || codeDraft.trim() === ""}
+                >
+                  Apply
+                </button>
+              ) : (
+                <button
+                  className="button button--quiet"
+                  onClick={removePromotionCode}
+                  disabled={submitting}
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+            {quoteState.status === "loading" ? (
+              <p className="inline-state" role="status">
+                Updating total…
+              </p>
+            ) : null}
+            {quoteState.status === "error" ? (
+              <div className="notice notice--warning" role="status">
+                <span>
+                  {quoteState.error.kind === "network"
+                    ? "Promotions require a connection."
+                    : "Pricing is unavailable right now."}
+                </span>
+                <div className="button-row">
+                  <button
+                    className="button button--quiet"
+                    onClick={() => setQuoteNonce((value) => value + 1)}
+                  >
+                    Reconnect
+                  </button>
+                  {offlineReadiness.ready ? (
+                    <button className="button button--quiet" onClick={switchToOffline}>
+                      Continue at offline prices
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            {appliedCode !== null && quoteReady && codeStatus === "invalid" ? (
+              <p className="promotion-note promotion-note--error" role="status">
+                Code “{appliedCode}” isn’t available.
+              </p>
+            ) : null}
+            {promotion ? (
+              <p className="promotion-note" role="status">
+                {promotion.activation === "automatic" ? "Automatic promotion" : "Code applied"}:{" "}
+                <strong>{promotion.name}</strong>
+                {promotion.code ? ` (${promotion.code})` : ""} · −
+                {formatMoney(promotion.discountTotalMinor, register.sellingCurrency)}
+                {appliedCode !== null &&
+                codeStatus === "valid" &&
+                promotion.activation === "automatic"
+                  ? " — a better automatic promotion applied instead of the code."
+                  : ""}
+              </p>
+            ) : null}
+          </div>
           <div className="total-row">
-            <span>Total</span>
-            <strong>{formatMoney(total, register.sellingCurrency)}</strong>
+            <span>Gross subtotal</span>
+            <strong>{formatMoney(grossMinor, register.sellingCurrency)}</strong>
+          </div>
+          {discountMinor > 0 ? (
+            <div className="total-row total-row--discount">
+              <span>Promotion discount</span>
+              <strong>−{formatMoney(discountMinor, register.sellingCurrency)}</strong>
+            </div>
+          ) : null}
+          <div className="total-row total-row--due">
+            <span>Amount due</span>
+            <strong>{formatMoney(netMinor, register.sellingCurrency)}</strong>
           </div>
           <label className="cash-field">
             Cash received <span>minor units</span>
@@ -803,10 +966,10 @@ export function PosApplication({
 
           {priceConfirmationRequired ? (
             <div className="notice notice--warning" role="alert">
-              <strong>Price changed</strong>
+              <strong>Pricing changed</strong>
               <span>
                 {priceChangedTotal === null
-                  ? "Review the refreshed cart total."
+                  ? "The promotion or price changed. Review the refreshed amount due before confirming."
                   : `The server reports ${formatMoney(priceChangedTotal, register.sellingCurrency)}.`}
               </span>
               <button
@@ -853,14 +1016,15 @@ export function PosApplication({
               submitting ||
               ambiguous ||
               priceConfirmationRequired ||
-              showReturns
+              showReturns ||
+              !quoteReady
             }
             onClick={completeSale}
           >
             {submitting ? "Completing sale…" : "Complete sale"}
           </button>
           <p className="authority-note">
-            Prices and final change are confirmed by the Commerce API.
+            Prices, promotions, and final change are confirmed by the Commerce API.
           </p>
         </aside>
       </div>
@@ -875,6 +1039,15 @@ function Receipt({
   receipt: CreatePosSaleResponse;
   onNewSale: () => void;
 }) {
+  // Derive every figure from the immutable returned sale. `order.totalMinor` is the payable net; the
+  // gross subtotal is the sum of the returned line totals and the discount is the difference. The sale
+  // response carries no applied-promotion identity, so no promotion name/code is shown — only the
+  // canonical amounts from the accepted sale are rendered.
+  const grossSubtotalMinor = receipt.order.lines.reduce(
+    (sum, line) => sum + line.lineTotalMinor,
+    0,
+  );
+  const discountMinor = grossSubtotalMinor - receipt.order.totalMinor;
   return (
     <main className="receipt-shell">
       <section className="receipt-card">
@@ -901,6 +1074,16 @@ function Receipt({
           ))}
         </div>
         <div className="receipt-totals">
+          <div>
+            <span>Gross subtotal</span>
+            <strong>{formatMoney(grossSubtotalMinor, receipt.order.currency)}</strong>
+          </div>
+          {discountMinor > 0 ? (
+            <div className="receipt-discount">
+              <span>Promotion discount</span>
+              <strong>−{formatMoney(discountMinor, receipt.order.currency)}</strong>
+            </div>
+          ) : null}
           <div>
             <span>Total</span>
             <strong>{formatMoney(receipt.order.totalMinor, receipt.order.currency)}</strong>

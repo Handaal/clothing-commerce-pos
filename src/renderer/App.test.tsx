@@ -3,9 +3,10 @@
 import type {
   CommerceClient,
   CreatePosSaleResponse,
+  PosQuoteResponse,
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
-import { ApiHttpError } from "@shifted/clothing-commerce-sdk";
+import { ApiHttpError, ApiNetworkError } from "@shifted/clothing-commerce-sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -94,13 +95,33 @@ const receipt: CreatePosSaleResponse = {
 };
 
 function connectedFixture(
-  options: { prices?: number[]; createPosSale?: TenantCommerceClient["createPosSale"] } = {},
+  options: {
+    prices?: number[];
+    createPosSale?: TenantCommerceClient["createPosSale"];
+    posQuote?: TenantCommerceClient["posQuote"];
+  } = {},
 ) {
   const prices = options.prices ?? [2599];
   let priceIndex = 0;
+  // Track the price of the most recent catalog load so the default quote mirrors the displayed gross.
+  let lastLoadedPrice = prices[0];
   const createPosSale = options.createPosSale
     ? vi.fn<TenantCommerceClient["createPosSale"]>(options.createPosSale)
     : vi.fn<TenantCommerceClient["createPosSale"]>(async () => receipt);
+  const posQuote =
+    options.posQuote ??
+    (async (body) => {
+      const gross = body.lines.reduce((sum, line) => sum + line.quantity * lastLoadedPrice, 0);
+      return {
+        currency: "USD",
+        grossSubtotalMinor: gross,
+        discountTotalMinor: 0,
+        totalMinor: gross,
+        codeStatus: "none" as const,
+        promotion: null,
+      };
+    });
+  const posQuoteFn = vi.fn<TenantCommerceClient["posQuote"]>(posQuote);
   const tenantClient = {
     tenantId: "tenant-1",
     getPosContext: vi.fn(async () => ({
@@ -150,10 +171,11 @@ function connectedFixture(
         {
           variantId: "variant-1",
           currency: "USD",
-          amountMinor: prices[Math.min(priceIndex++, prices.length - 1)],
+          amountMinor: (lastLoadedPrice = prices[Math.min(priceIndex++, prices.length - 1)]),
         },
       ],
     })),
+    posQuote: posQuoteFn,
     createPosSale,
   } as unknown as TenantCommerceClient;
   const rootClient = {
@@ -171,7 +193,7 @@ function connectedFixture(
     getToken: vi.fn(async () => "token"),
     signOut: vi.fn(async () => undefined),
   };
-  return { auth, clientFactory, rootClient, tenantClient, createPosSale };
+  return { auth, clientFactory, rootClient, tenantClient, createPosSale, posQuote: posQuoteFn };
 }
 
 function offlineEnablementFixture(): OfflineBridge {
@@ -298,6 +320,11 @@ describe("connected cashier application", () => {
     fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
       target: { value: "6000" },
     });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: "Complete sale" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Complete sale" }));
 
     expect(await screen.findByRole("heading", { name: "Order POS-0001" })).toBeTruthy();
@@ -347,17 +374,388 @@ describe("connected cashier application", () => {
     fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
       target: { value: "3000" },
     });
-    fireEvent.click(screen.getByRole("button", { name: "Complete sale" }));
+    const complete = () => screen.getByRole("button", { name: "Complete sale" });
+    await waitFor(() => expect((complete() as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(complete());
 
     const confirm = await screen.findByRole("button", { name: "Confirm updated total" });
     expect(screen.getByText(/server reports/)).toBeTruthy();
     fireEvent.click(confirm);
-    fireEvent.click(screen.getByRole("button", { name: "Complete sale" }));
+    await waitFor(() => expect((complete() as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(complete());
     await screen.findByRole("heading", { name: "Order POS-0001" });
 
     expect(createPosSale.mock.calls.map(([input]) => input)).toEqual([
       expect.objectContaining({ idempotencyKey: "stale-key", expectedTotalMinor: 2599 }),
       expect.objectContaining({ idempotencyKey: "confirmed-key", expectedTotalMinor: 2799 }),
     ]);
+  });
+});
+
+const UNIT = 2599;
+
+function breakdown(
+  overrides: Partial<PosQuoteResponse> & { lines?: { quantity: number }[] } = {},
+): PosQuoteResponse {
+  const { lines, ...rest } = overrides;
+  const quantity = lines?.reduce((sum, line) => sum + line.quantity, 0) ?? 1;
+  const gross = quantity * UNIT;
+  const base: PosQuoteResponse = {
+    currency: "USD",
+    grossSubtotalMinor: gross,
+    discountTotalMinor: 0,
+    totalMinor: gross,
+    codeStatus: "none",
+    promotion: null,
+  };
+  return { ...base, ...rest };
+}
+
+function discountedReceipt(grossLineTotal: number, netTotal: number): CreatePosSaleResponse {
+  return {
+    ...receipt,
+    order: {
+      ...receipt.order,
+      totalMinor: netTotal,
+      lines: [{ ...receipt.order.lines[0], quantity: 1, lineTotalMinor: grossLineTotal }],
+    },
+    payment: {
+      ...receipt.payment,
+      amountMinor: netTotal,
+      cashReceivedMinor: netTotal,
+      changeMinor: 0,
+    },
+  };
+}
+
+function readyOfflineBridge(): OfflineBridge {
+  return {
+    getReadiness: vi.fn(async () => ({
+      ready: true as const,
+      deviceId: "device-1",
+      registerId: "register-1",
+      inventoryLocationId: "location-1",
+      currency: "USD",
+      acceptedUntil: "2026-09-08T20:00:00.000Z",
+      catalogValidUntil: "2026-09-08T20:00:00.000Z",
+    })),
+    getCachedCatalog: vi.fn(async () => []),
+    getProjectedInventory: vi.fn(async () => []),
+    acceptCashSale: vi.fn(),
+    getLocalReceipt: vi.fn(),
+    getPendingSyncSummary: vi.fn(async () => ({ pending: 0, leased: 0, retryWait: 0, blocked: 0 })),
+    getSyncStatus: vi.fn(async () => ({
+      pending: 0,
+      leased: 0,
+      retryWait: 0,
+      blocked: 0,
+      synced: 0,
+      needsReconciliation: 0,
+      networkOnline: true,
+      synchronizing: false,
+      lastAttemptAt: null,
+      lastError: null,
+    })),
+    requestSync: vi.fn(),
+    bootstrap: vi.fn(),
+  };
+}
+
+async function addOneAndReady() {
+  fireEvent.click(await screen.findByRole("button", { name: /Linen Shirt/ }));
+  fireEvent.click(await screen.findByRole("button", { name: "Add" }));
+}
+
+function completeButton() {
+  return screen.getByRole("button", { name: "Complete sale" }) as HTMLButtonElement;
+}
+
+describe("connected POS promotions", () => {
+  it("applies an automatic promotion, tenders net, and shows the discount on the receipt", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      breakdown({
+        lines: body.lines,
+        discountTotalMinor: 500,
+        totalMinor: body.lines.reduce((s, l) => s + l.quantity * UNIT, 0) - 500,
+        promotion: {
+          promotionId: "promo-1",
+          name: "Summer Sale",
+          benefitType: "percentage",
+          activation: "automatic",
+          code: null,
+          discountTotalMinor: 500,
+        },
+      }),
+    );
+    const createPosSale = vi
+      .fn<TenantCommerceClient["createPosSale"]>()
+      .mockResolvedValue(discountedReceipt(2599, 2099));
+    const fixture = connectedFixture({ posQuote, createPosSale });
+    render(
+      <PosApplication
+        auth={fixture.auth}
+        clientFactory={fixture.clientFactory}
+        createKey={() => "sale-key"}
+      />,
+    );
+    await addOneAndReady();
+    expect(await screen.findByText("Summer Sale")).toBeTruthy();
+    expect(screen.getByText(/Automatic promotion/)).toBeTruthy();
+    expect(screen.getByText("Promotion discount")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
+      target: { value: "2099" },
+    });
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+    fireEvent.click(completeButton());
+
+    await screen.findByRole("heading", { name: "Order POS-0001" });
+    const submitted = createPosSale.mock.calls[0][0];
+    expect(submitted).toMatchObject({ expectedTotalMinor: 2099 });
+    expect(submitted).not.toHaveProperty("promotionCode");
+    // Receipt derives discount from the immutable sale: gross 2599 − net 2099 = 500.
+    expect(screen.getByText("Gross subtotal")).toBeTruthy();
+    expect(screen.getByText("Promotion discount")).toBeTruthy();
+    // The sale response carries no applied-promotion identity, so the quote-derived name/code is
+    // never rendered on the receipt — only the canonical discount amount is shown.
+    expect(screen.queryByText(/Summer Sale/)).toBeNull();
+  });
+
+  it("applies a valid entered code and threads it into the sale request", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      body.promotionCode === "SAVE10"
+        ? breakdown({
+            lines: body.lines,
+            discountTotalMinor: 1000,
+            totalMinor: body.lines.reduce((s, l) => s + l.quantity * UNIT, 0) - 1000,
+            codeStatus: "valid",
+            promotion: {
+              promotionId: "promo-2",
+              name: "Ten Off",
+              benefitType: "fixed_amount",
+              activation: "code",
+              code: "SAVE10",
+              discountTotalMinor: 1000,
+            },
+          })
+        : breakdown({ lines: body.lines }),
+    );
+    const createPosSale = vi
+      .fn<TenantCommerceClient["createPosSale"]>()
+      .mockResolvedValue(discountedReceipt(2599, 1599));
+    const fixture = connectedFixture({ posQuote, createPosSale });
+    render(
+      <PosApplication
+        auth={fixture.auth}
+        clientFactory={fixture.clientFactory}
+        createKey={() => "sale-key"}
+      />,
+    );
+    await addOneAndReady();
+    fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Ten Off")).toBeTruthy();
+    await waitFor(() =>
+      expect(posQuote.mock.calls.some(([body]) => body.promotionCode === "SAVE10")).toBe(true),
+    );
+
+    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
+      target: { value: "1599" },
+    });
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+    fireEvent.click(completeButton());
+    await screen.findByRole("heading", { name: "Order POS-0001" });
+    expect(createPosSale.mock.calls[0][0]).toMatchObject({
+      expectedTotalMinor: 1599,
+      promotionCode: "SAVE10",
+    });
+  });
+
+  it("shows a concise error for an invalid code without blocking the undiscounted sale", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      body.promotionCode
+        ? breakdown({ lines: body.lines, codeStatus: "invalid" })
+        : breakdown({ lines: body.lines }),
+    );
+    const fixture = connectedFixture({ posQuote });
+    render(<PosApplication auth={fixture.auth} clientFactory={fixture.clientFactory} />);
+    await addOneAndReady();
+    fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "NOPE" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText(/isn.t available/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
+      target: { value: "3000" },
+    });
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+  });
+
+  it("removes an applied code and requotes to the undiscounted total", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      body.promotionCode === "SAVE10"
+        ? breakdown({
+            lines: body.lines,
+            discountTotalMinor: 1000,
+            totalMinor: body.lines.reduce((s, l) => s + l.quantity * UNIT, 0) - 1000,
+            codeStatus: "valid",
+            promotion: {
+              promotionId: "promo-2",
+              name: "Ten Off",
+              benefitType: "fixed_amount",
+              activation: "code",
+              code: "SAVE10",
+              discountTotalMinor: 1000,
+            },
+          })
+        : breakdown({ lines: body.lines }),
+    );
+    const fixture = connectedFixture({ posQuote });
+    render(<PosApplication auth={fixture.auth} clientFactory={fixture.clientFactory} />);
+    await addOneAndReady();
+    fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Ten Off")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(screen.queryByText("Ten Off")).toBeNull());
+    expect(screen.queryByText("Promotion discount")).toBeNull();
+    await waitFor(() =>
+      expect(posQuote.mock.calls.at(-1)?.[0]).not.toHaveProperty("promotionCode"),
+    );
+  });
+
+  it("keeps a better automatic promotion applied over a valid entered code", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      breakdown({
+        lines: body.lines,
+        codeStatus: body.promotionCode ? "valid" : "none",
+        discountTotalMinor: 800,
+        totalMinor: body.lines.reduce((s, l) => s + l.quantity * UNIT, 0) - 800,
+        promotion: {
+          promotionId: "promo-auto",
+          name: "Members Twenty",
+          benefitType: "percentage",
+          activation: "automatic",
+          code: null,
+          discountTotalMinor: 800,
+        },
+      }),
+    );
+    const fixture = connectedFixture({ posQuote });
+    render(<PosApplication auth={fixture.auth} clientFactory={fixture.clientFactory} />);
+    await addOneAndReady();
+    fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Members Twenty")).toBeTruthy();
+    expect(screen.getByText(/better automatic promotion applied/)).toBeTruthy();
+  });
+
+  it("blocks a silent finalize when the promotion changes at the final sale", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      body.promotionCode === "LAST1"
+        ? breakdown({
+            lines: body.lines,
+            discountTotalMinor: 1000,
+            totalMinor: body.lines.reduce((s, l) => s + l.quantity * UNIT, 0) - 1000,
+            codeStatus: "valid",
+            promotion: {
+              promotionId: "promo-voucher",
+              name: "Last Voucher",
+              benefitType: "fixed_amount",
+              activation: "code",
+              code: "LAST1",
+              discountTotalMinor: 1000,
+            },
+          })
+        : breakdown({ lines: body.lines }),
+    );
+    const createPosSale = vi
+      .fn<TenantCommerceClient["createPosSale"]>()
+      .mockRejectedValueOnce(
+        new ApiHttpError("Voucher exhausted", 409, "PROMOTION_UNAVAILABLE", "request-1"),
+      )
+      .mockResolvedValueOnce(receipt);
+    const keys = ["stale", "confirmed"];
+    const fixture = connectedFixture({ posQuote, createPosSale });
+    render(
+      <PosApplication
+        auth={fixture.auth}
+        clientFactory={fixture.clientFactory}
+        createKey={() => keys.shift() ?? "x"}
+      />,
+    );
+    await addOneAndReady();
+    fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "LAST1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Last Voucher")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
+      target: { value: "3000" },
+    });
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+    fireEvent.click(completeButton());
+
+    expect(await screen.findByRole("button", { name: "Confirm updated total" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Order POS-0001" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Confirm updated total" }));
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+    fireEvent.click(completeButton());
+    await screen.findByRole("heading", { name: "Order POS-0001" });
+    expect(createPosSale.mock.calls.map(([input]) => input.idempotencyKey)).toEqual([
+      "stale",
+      "confirmed",
+    ]);
+  });
+
+  it("reports that promotions require a connection when the quote cannot be reached", async () => {
+    const posQuote = vi
+      .fn<TenantCommerceClient["posQuote"]>()
+      .mockRejectedValue(new ApiNetworkError("offline"));
+    const fixture = connectedFixture({ posQuote });
+    render(<PosApplication auth={fixture.auth} clientFactory={fixture.clientFactory} />);
+    await addOneAndReady();
+    expect(await screen.findByText("Promotions require a connection.")).toBeTruthy();
+    expect(completeButton().disabled).toBe(true);
+  });
+
+  it("invalidates connected promotion pricing when switching to offline selling", async () => {
+    const posQuote = vi.fn<TenantCommerceClient["posQuote"]>(async (body) =>
+      body.promotionCode === "SAVE10"
+        ? breakdown({
+            lines: body.lines,
+            discountTotalMinor: 1000,
+            totalMinor: body.lines.reduce((s, l) => s + l.quantity * UNIT, 0) - 1000,
+            codeStatus: "valid",
+            promotion: {
+              promotionId: "promo-2",
+              name: "Ten Off",
+              benefitType: "fixed_amount",
+              activation: "code",
+              code: "SAVE10",
+              discountTotalMinor: 1000,
+            },
+          })
+        : breakdown({ lines: body.lines }),
+    );
+    const fixture = connectedFixture({ posQuote });
+    render(
+      <PosApplication
+        auth={fixture.auth}
+        clientFactory={fixture.clientFactory}
+        offlineBridge={readyOfflineBridge()}
+      />,
+    );
+    await addOneAndReady();
+    fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "SAVE10" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(await screen.findByText("Ten Off")).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Work offline" }));
+    expect(await screen.findByText("Offline cashier")).toBeTruthy();
+    expect(screen.queryByText("Ten Off")).toBeNull();
+    expect(screen.queryByText("Promotion discount")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Use connected" }));
+    const codeInput = (await screen.findByLabelText("Promotion code")) as HTMLInputElement;
+    expect(codeInput.value).toBe("");
+    expect(screen.queryByRole("button", { name: "Remove" })).toBeNull();
   });
 });
