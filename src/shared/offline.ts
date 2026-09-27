@@ -74,6 +74,8 @@ export interface LocalReceipt {
   readonly localReceiptId: string;
   readonly lifecycle: "accepted_pending_sync" | "synced" | "needs_reconciliation";
   readonly acceptedAt: string;
+  /** When the cashier explicitly acknowledged this receipt. Null means it still needs resolution. */
+  readonly acknowledgedAt: string | null;
   readonly currency: string;
   readonly totalMinor: number;
   readonly cashReceivedMinor: number;
@@ -131,6 +133,14 @@ export interface OfflineBridge {
   getProjectedInventory(): Promise<ReadonlyArray<ProjectedInventoryItem>>;
   acceptCashSale(input: OfflineSaleInput): Promise<AcceptedOfflineSale>;
   getLocalReceipt(localSaleId: string): Promise<LocalReceipt | null>;
+  /**
+   * Locally accepted sales the cashier has not yet acknowledged, oldest first. On restart this is
+   * the durable recovery surface: each entry is a specific committed sale awaiting acknowledgement,
+   * never a mere aggregate "pending sync" count.
+   */
+  getUnacknowledgedSales(): Promise<ReadonlyArray<LocalReceipt>>;
+  /** Record that the cashier has seen and acknowledged a specific accepted sale receipt. */
+  acknowledgeSale(localSaleId: string): Promise<LocalReceipt>;
   getPendingSyncSummary(): Promise<PendingSyncSummary>;
   getSyncStatus(): Promise<OfflineSyncStatus>;
   requestSync(): Promise<OfflineSyncStatus>;
@@ -143,6 +153,8 @@ export const OFFLINE_IPC_CHANNELS = Object.freeze({
   inventory: "offline:get-projected-inventory",
   acceptCash: "offline:accept-cash-sale",
   receipt: "offline:get-local-receipt",
+  unacknowledged: "offline:get-unacknowledged-sales",
+  acknowledge: "offline:acknowledge-sale",
   pendingSummary: "offline:get-pending-sync-summary",
   syncStatus: "offline:get-sync-status",
   requestSync: "offline:request-sync",

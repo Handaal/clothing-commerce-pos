@@ -1,12 +1,8 @@
-import {
-  ApiHttpError,
-  ApiNetworkError,
-  type CreatePosSaleResponse,
-  type TenantCommerceClient,
-} from "@shifted/clothing-commerce-sdk";
+import type { CreatePosSaleResponse } from "@shifted/clothing-commerce-sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { SaleExecutor, type SaleIntent } from "./sale-executor";
+import type { ConnectedSaleError, ConnectedSaleOutcome } from "../../shared/sales";
+import { SaleExecutor, type SalesGateway, type SaleIntent } from "./sale-executor";
 
 const receipt = { saleStatus: "completed" } as CreatePosSaleResponse;
 const intent: SaleIntent = {
@@ -16,143 +12,161 @@ const intent: SaleIntent = {
   lines: [{ variantId: "variant-1", quantity: 1 }],
 };
 
-function tenantClient(createPosSale: TenantCommerceClient["createPosSale"]): TenantCommerceClient {
-  return { createPosSale } as TenantCommerceClient;
+function error(
+  kind: string,
+  code: string,
+  authoritativeTotalMinor: number | null = null,
+): ConnectedSaleError {
+  return {
+    kind,
+    code,
+    message: `${kind} ${code}`,
+    authoritativeTotalMinor,
+    uncertain: kind === "network",
+  };
+}
+
+function gateway(overrides: Partial<SalesGateway> = {}): SalesGateway {
+  return {
+    hasPending: vi.fn(async () => false),
+    submit: vi.fn(
+      async () => ({ status: "accepted", workflowId: "wf-1", receipt }) as ConnectedSaleOutcome,
+    ),
+    recover: vi.fn(async () => null),
+    acknowledge: vi.fn(async () => undefined),
+    ...overrides,
+  };
 }
 
 async function settle() {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-describe("sale idempotency lifecycle", () => {
-  it("submits the narrow sale intent once and blocks duplicate taps", async () => {
-    let resolveSale: (value: CreatePosSaleResponse) => void = () => undefined;
-    const createPosSale = vi.fn<TenantCommerceClient["createPosSale"]>(
-      () => new Promise<CreatePosSaleResponse>((resolve) => (resolveSale = resolve)),
+describe("connected sale executor", () => {
+  it("submits once, blocks duplicate taps, and surfaces the accepted receipt with its workflow id", async () => {
+    let resolveSale: (value: ConnectedSaleOutcome) => void = () => undefined;
+    const submit = vi.fn<SalesGateway["submit"]>(
+      async () => new Promise<ConnectedSaleOutcome>((r) => (resolveSale = r)),
     );
-    const executor = new SaleExecutor(() => "key-1");
-    expect(executor.submit(tenantClient(createPosSale), intent)).toBe(true);
-    expect(executor.submit(tenantClient(createPosSale), intent)).toBe(false);
-    expect(createPosSale).toHaveBeenCalledTimes(1);
-    expect(createPosSale).toHaveBeenCalledWith({ ...intent, idempotencyKey: "key-1" });
-    expect(createPosSale.mock.calls[0][0]).not.toHaveProperty("unitPriceMinor");
-    expect(createPosSale.mock.calls[0][0]).not.toHaveProperty("branchId");
-    expect(createPosSale.mock.calls[0][0]).not.toHaveProperty("inventoryLocationId");
-    expect(createPosSale.mock.calls[0][0]).not.toHaveProperty("currency");
-    resolveSale(receipt);
+    const executor = new SaleExecutor(gateway({ submit }));
+    expect(executor.submit(intent)).toBe(true);
+    expect(executor.submit(intent)).toBe(false); // in-flight: no second dispatch
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledWith(intent);
+    // The intent carries no idempotency key — the durable journal owns it.
+    expect(submit.mock.calls[0][0]).not.toHaveProperty("idempotencyKey");
+    resolveSale({ status: "accepted", workflowId: "wf-1", receipt });
     await settle();
-    expect(executor.snapshot()).toEqual({ phase: "success", receipt });
+    expect(executor.snapshot()).toEqual({ phase: "success", receipt, workflowId: "wf-1" });
   });
 
-  it("retries an ambiguous failure with the same arguments and key", async () => {
-    const createPosSale = vi
-      .fn<TenantCommerceClient["createPosSale"]>()
-      .mockRejectedValueOnce(new ApiNetworkError("connection lost"))
-      .mockResolvedValueOnce(receipt);
-    const executor = new SaleExecutor(() => "stable-key");
-    executor.submit(tenantClient(createPosSale), intent);
+  it("acknowledges the accepted workflow when the cashier finishes the receipt", async () => {
+    const g = gateway();
+    const executor = new SaleExecutor(g);
+    executor.submit(intent);
+    await settle();
+    await executor.acknowledge();
+    expect(g.acknowledge).toHaveBeenCalledWith("wf-1");
+    expect(executor.snapshot()).toEqual({ phase: "idle" });
+  });
+
+  it("keeps an ambiguous result unresolved and retries via recover (same durable command)", async () => {
+    const submit = vi.fn(
+      async () =>
+        ({
+          status: "ambiguous",
+          workflowId: "wf-1",
+          error: error("network", "NETWORK_ERROR"),
+        }) as ConnectedSaleOutcome,
+    );
+    const recover = vi.fn(
+      async () => ({ status: "accepted", workflowId: "wf-1", receipt }) as ConnectedSaleOutcome,
+    );
+    const executor = new SaleExecutor(gateway({ submit, recover }));
+    executor.submit(intent);
     await settle();
     expect(executor.snapshot().phase).toBe("ambiguous");
-    expect(executor.retry(tenantClient(createPosSale))).toBe(true);
+    expect(executor.retry()).toBe(true);
     await settle();
-    expect(createPosSale).toHaveBeenCalledTimes(2);
-    expect(createPosSale.mock.calls[1][0]).toEqual(createPosSale.mock.calls[0][0]);
+    expect(recover).toHaveBeenCalledTimes(1); // replay, not a fresh submit
+    expect(submit).toHaveBeenCalledTimes(1);
+    expect(executor.snapshot()).toMatchObject({ phase: "success", workflowId: "wf-1" });
   });
 
-  it("mints a new key after cart or cash intent changes", async () => {
-    const keys = ["key-1", "key-2", "key-3"];
-    const createPosSale = vi.fn<TenantCommerceClient["createPosSale"]>().mockResolvedValue(receipt);
-    const executor = new SaleExecutor(() => keys.shift() ?? "unexpected");
-
-    executor.submit(tenantClient(createPosSale), intent);
-    await settle();
-    executor.invalidate();
-    executor.submit(tenantClient(createPosSale), {
-      ...intent,
-      lines: [{ variantId: "variant-1", quantity: 2 }],
+  it("treats a thrown transport error as uncertain (ambiguous), never a fresh sale", async () => {
+    const submit = vi.fn(async () => {
+      throw new Error("ipc exploded");
     });
+    const executor = new SaleExecutor(gateway({ submit }));
+    executor.submit(intent);
     await settle();
-    executor.invalidate();
-    executor.submit(tenantClient(createPosSale), { ...intent, cashReceivedMinor: 4000 });
-    await settle();
-
-    expect(createPosSale.mock.calls.map(([input]) => input.idempotencyKey)).toEqual([
-      "key-1",
-      "key-2",
-      "key-3",
-    ]);
+    expect(executor.snapshot()).toMatchObject({ phase: "ambiguous", error: { uncertain: true } });
   });
 
-  it("requires a new operation after PRICE_CHANGED and exposes the authoritative total", async () => {
-    const createPosSale = vi
-      .fn<TenantCommerceClient["createPosSale"]>()
-      .mockRejectedValueOnce(
-        new ApiHttpError("Price changed", 409, "PRICE_CHANGED", "request-1", [
-          { path: ["expectedTotalMinor"], message: "Refresh", value: 2799 },
-        ]),
-      )
-      .mockResolvedValueOnce(receipt);
-    const keys = ["stale-key", "confirmed-key"];
-    const executor = new SaleExecutor(() => keys.shift() ?? "unexpected");
-    executor.submit(tenantClient(createPosSale), intent);
+  it("maps a PRICE_CHANGED rejection to reconfirmation and exposes the authoritative total", async () => {
+    const submit = vi.fn(
+      async () =>
+        ({
+          status: "rejected",
+          workflowId: "wf-1",
+          error: error("price-changed", "PRICE_CHANGED", 2799),
+        }) as ConnectedSaleOutcome,
+    );
+    const executor = new SaleExecutor(gateway({ submit }));
+    executor.submit(intent);
     await settle();
     expect(executor.snapshot()).toMatchObject({
       phase: "price-changed",
       authoritativeTotalMinor: 2799,
     });
-    expect(executor.retry(tenantClient(createPosSale))).toBe(false);
-    executor.invalidate();
-    executor.submit(tenantClient(createPosSale), { ...intent, expectedTotalMinor: 2799 });
-    await settle();
-    expect(createPosSale.mock.calls.map(([input]) => input.idempotencyKey)).toEqual([
-      "stale-key",
-      "confirmed-key",
-    ]);
+    expect(executor.retry()).toBe(false); // rejected is terminal; no replay
   });
 
-  it("threads the optional promotion code intent into the sale request", async () => {
-    const createPosSale = vi.fn<TenantCommerceClient["createPosSale"]>().mockResolvedValue(receipt);
-    const executor = new SaleExecutor(() => "key-1");
-    executor.submit(tenantClient(createPosSale), { ...intent, promotionCode: "SAVE10" });
-    await settle();
-    expect(createPosSale).toHaveBeenCalledWith({
-      ...intent,
-      promotionCode: "SAVE10",
-      idempotencyKey: "key-1",
-    });
-  });
-
-  it("stops the sale for reconfirmation when the promotion is no longer available", async () => {
-    const createPosSale = vi
-      .fn<TenantCommerceClient["createPosSale"]>()
-      .mockRejectedValue(
-        new ApiHttpError("Promotion gone", 409, "PROMOTION_UNAVAILABLE", "request-1"),
-      );
-    const executor = new SaleExecutor(() => "key");
-    executor.submit(tenantClient(createPosSale), { ...intent, promotionCode: "EXPIRED" });
+  it("maps a PROMOTION_UNAVAILABLE rejection to reconfirmation", async () => {
+    const submit = vi.fn(
+      async () =>
+        ({
+          status: "rejected",
+          workflowId: "wf-1",
+          error: error("promotion", "PROMOTION_UNAVAILABLE"),
+        }) as ConnectedSaleOutcome,
+    );
+    const executor = new SaleExecutor(gateway({ submit }));
+    executor.submit({ ...intent, promotionCode: "EXPIRED" });
     await settle();
     expect(executor.snapshot()).toMatchObject({
       phase: "promotion-changed",
-      error: { kind: "promotion", code: "PROMOTION_UNAVAILABLE" },
+      error: { code: "PROMOTION_UNAVAILABLE" },
     });
-    expect(executor.retry(tenantClient(createPosSale))).toBe(false);
   });
 
-  it.each([
-    [401, "UNAUTHENTICATED", "auth"],
-    [403, "PERMISSION_DENIED", "forbidden"],
-    [400, "INSUFFICIENT_CASH", "validation"],
-    [409, "INSUFFICIENT_STOCK", "inventory"],
-    [409, "IDEMPOTENCY_CONFLICT", "conflict"],
-    [500, "INTERNAL_ERROR", "server"],
-  ] as const)("classifies %s %s without ambiguous retry", async (status, code, kind) => {
-    const createPosSale = vi
-      .fn<TenantCommerceClient["createPosSale"]>()
-      .mockRejectedValue(new ApiHttpError(code, status, code, "request-1"));
-    const executor = new SaleExecutor(() => "key");
-    executor.submit(tenantClient(createPosSale), intent);
+  it("maps other definite rejections to a terminal error state", async () => {
+    const submit = vi.fn(
+      async () =>
+        ({
+          status: "rejected",
+          workflowId: null,
+          error: error("validation", "INSUFFICIENT_CASH"),
+        }) as ConnectedSaleOutcome,
+    );
+    const executor = new SaleExecutor(gateway({ submit }));
+    executor.submit(intent);
     await settle();
-    expect(executor.snapshot()).toMatchObject({ phase: "error", error: { kind, code } });
-    expect(executor.retry(tenantClient(createPosSale))).toBe(false);
+    expect(executor.snapshot()).toMatchObject({
+      phase: "error",
+      error: { kind: "validation", code: "INSUFFICIENT_CASH" },
+    });
+    expect(executor.retry()).toBe(false);
+  });
+
+  it("recovers an unresolved sale on startup, replaying the retained command", async () => {
+    const recover = vi.fn(
+      async () => ({ status: "accepted", workflowId: "wf-9", receipt }) as ConnectedSaleOutcome,
+    );
+    const executor = new SaleExecutor(gateway({ recover }));
+    expect(executor.recover()).toBe(true);
+    await settle();
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(executor.snapshot()).toMatchObject({ phase: "success", workflowId: "wf-9" });
   });
 });

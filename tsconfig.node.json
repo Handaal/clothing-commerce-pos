@@ -14,5 +14,6 @@
     "target": "ES2022",
     "types": ["node"]
   },
-  "include": ["src/main/**/*.ts", "src/preload/**/*.ts"]
+  "include": ["src/main/**/*.ts", "src/preload/**/*.ts"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
 }

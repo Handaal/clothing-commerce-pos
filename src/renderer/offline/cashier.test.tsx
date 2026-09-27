@@ -26,6 +26,7 @@ const receipt: LocalReceipt = {
   localReceiptId: "A123-000001",
   lifecycle: "accepted_pending_sync",
   acceptedAt: "2026-09-08T12:00:00.000Z",
+  acknowledgedAt: null,
   currency: "USD",
   totalMinor: 2_599,
   cashReceivedMinor: 3_000,
@@ -62,6 +63,11 @@ function bridge(): OfflineBridge {
       changeMinor: receipt.changeMinor,
     })),
     getLocalReceipt: vi.fn(async () => receipt),
+    getUnacknowledgedSales: vi.fn(async () => []),
+    acknowledgeSale: vi.fn(async () => ({
+      ...receipt,
+      acknowledgedAt: "2026-09-08T12:05:00.000Z",
+    })),
     getPendingSyncSummary: vi.fn(),
     getSyncStatus: vi.fn(),
     requestSync: vi.fn(async () => status),
@@ -122,6 +128,34 @@ describe("offline cashier", () => {
         cashReceivedMinor: 3_000,
       }),
     );
+  });
+
+  it("recovers an unacknowledged sale on restart and requires acknowledgement before new selling", async () => {
+    const offline = bridge();
+    offline.getUnacknowledgedSales = vi.fn(async () => [receipt]);
+    render(
+      <OfflineCashier
+        bridge={offline}
+        currency="USD"
+        catalog={[]}
+        inventory={[]}
+        syncStatus={status}
+        onRefresh={vi.fn(async () => undefined)}
+        onUseConnected={vi.fn()}
+        onSignOut={vi.fn(async () => undefined)}
+      />,
+    );
+    // The specific committed receipt is surfaced, not an aggregate "N waiting" count, and the normal
+    // selling surface (with its "Accept offline cash sale" button) is not reachable until resolved.
+    expect(await screen.findByRole("heading", { name: "Receipt A123-000001" })).toBeTruthy();
+    expect(screen.getByText(/interrupted before it was acknowledged/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Accept offline cash sale" })).toBeNull();
+
+    (offline.getUnacknowledgedSales as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    fireEvent.click(screen.getByRole("button", { name: "Acknowledge recovered sale" }));
+    await waitFor(() => expect(offline.acknowledgeSale).toHaveBeenCalledWith("local-sale-1"));
+    // Once acknowledged, ordinary selling resumes.
+    expect(await screen.findByRole("button", { name: "Accept offline cash sale" })).toBeTruthy();
   });
 
   it("prioritizes reconciliation and blocked statuses for cashier attention", () => {

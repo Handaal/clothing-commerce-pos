@@ -16,6 +16,7 @@ describe("offline IPC and process boundary", () => {
   it("exposes only the fixed allowlisted offline channels", () => {
     expect(Object.values(OFFLINE_IPC_CHANNELS).sort()).toEqual([
       "offline:accept-cash-sale",
+      "offline:acknowledge-sale",
       "offline:bootstrap",
       "offline:get-cached-catalog",
       "offline:get-local-receipt",
@@ -23,6 +24,7 @@ describe("offline IPC and process boundary", () => {
       "offline:get-projected-inventory",
       "offline:get-readiness",
       "offline:get-sync-status",
+      "offline:get-unacknowledged-sales",
       "offline:request-sync",
     ]);
     const preload = readFileSync(path.join(process.cwd(), "src", "preload", "preload.ts"), "utf8");

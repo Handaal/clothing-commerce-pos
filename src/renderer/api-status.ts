@@ -1,5 +1,7 @@
 import { createCommerceClient } from "@shifted/clothing-commerce-sdk";
 
+import { commerceApiBaseUrl } from "./config";
+
 export type ConnectionStatus = "connected" | "unavailable";
 
 export interface CheckApiStatusOptions {
@@ -8,7 +10,7 @@ export interface CheckApiStatusOptions {
 }
 
 export async function checkApiStatus({
-  baseUrl = import.meta.env.COMMERCE_API_URL ?? "http://localhost:3000",
+  baseUrl = commerceApiBaseUrl(),
   fetch,
 }: CheckApiStatusOptions = {}): Promise<ConnectionStatus> {
   const client = createCommerceClient({

@@ -77,6 +77,14 @@ the installed authority and policy, allocates the local receipt, stores the immu
 lines, and persists the signed SDK request. The customer sale is complete at that commit; its receipt
 is shown immediately and is not conditional on network delivery.
 
+Cashier acknowledgement is durable and separate from synchronization. Each accepted sale carries a
+write-once `acknowledged_at`; it is set only when the cashier finishes the receipt, never because the
+sale synced. If the app is interrupted after the local commit but before acknowledgement, startup
+recovery surfaces the exact committed sale (by receipt, not an aggregate "N waiting" count) and blocks
+new selling until the operator acknowledges it — so the same cash sale cannot be rung twice. If
+several unacknowledged sales somehow exist, they are recovered deterministically, oldest first, and
+none is discarded.
+
 The main-process worker claims one leased outbox command at a time and posts through the packed SDK to
 `POST /api/v1/pos/offline-sales`. It validates and sends the exact stored request JSON with the stored
 tenant, credential, `syncCommandId`, and matching `Idempotency-Key`; it never rebuilds or re-signs a
@@ -137,18 +145,31 @@ promotion-free: switching to offline invalidates any connected promotion pricing
 discounted total is never carried into an offline sale. Offline grants, SQLite state, the signed
 offline request format, outbox schemas, replay, and bootstrap authority are unchanged.
 
-## Idempotency and price reconfirmation
+## Idempotency and connected-sale crash recovery
 
-A new logical checkout creates one browser `crypto.randomUUID()` key. Duplicate submit taps are
-blocked. If the response is lost in an ambiguous network failure, the explicit **Retry same sale**
-action reuses exactly the same arguments and key. Editing the cart, cash, or register invalidates
-that operation; the next checkout receives a new key. Success clears the cart, and **New sale**
-starts a fresh lifecycle.
+A connected sale is a durable command, not renderer memory. Before any network call, the main
+process persists the normalized command, its idempotency key, the register/tenant scope, and a
+prepared timestamp to SQLite (`connected_sale_workflow`), mirroring the connected-return journal.
+The lifecycle is `prepared → accepted → acknowledged`, with `rejected` as the terminal state for a
+definite server refusal that did not commit. At most one connected sale may be unresolved at a time,
+so a new sale cannot begin until the previous one is acknowledged.
 
-`409 PRICE_CHANGED` is never retried automatically. The application shows the authoritative total
-from the SDK error when present, reloads current product prices, requires cashier confirmation, and
-then creates a new operation with a new key. `IDEMPOTENCY_CONFLICT` and business conflicts are not
-blindly retried.
+Duplicate submit taps are blocked. If the response is lost in an ambiguous failure (network, 5xx,
+timeout, or idempotency conflict) the command stays unresolved and the explicit **Retry same sale**
+action replays it — with the **same** idempotency key. Crucially, this survives process death: if
+the app is killed after the server commits but before the receipt is seen, startup recovery replays
+the retained command with its original key, so server idempotency returns the same Order rather than
+creating a second one. The renderer never mints a key, so a restart can never produce a duplicate.
+
+Server acceptance and cashier acknowledgement are distinct. The accepted receipt stays durable until
+the cashier explicitly finishes it (**New sale**), which records the acknowledgement and clears the
+workflow. Only then does ordinary selling resume.
+
+`409 PRICE_CHANGED` is never retried automatically. Because the server did not commit, the workflow
+closes; the application shows the authoritative total from the SDK error when present, reloads
+current prices, requires cashier confirmation, and starts a new command with a new key.
+`IDEMPOTENCY_CONFLICT` and 5xx are treated as uncertain (retained for same-key replay), never
+blindly retried as fresh sales.
 
 ## Receipt and fiscal boundary
 
@@ -177,6 +198,24 @@ pnpm.cmd dev
 | `COMMERCE_API_URL`           | Reachable Commerce API base URL            |
 | `VITE_CLERK_PUBLISHABLE_KEY` | Public key for the operator Clerk instance |
 
+### One canonical packaged API origin
+
+The renderer and the Electron main process must never resolve different Commerce API origins. A
+release build resolves the origin exactly once and both processes consume that single artifact:
+
+1. `pnpm gen:runtime-config` reads `COMMERCE_API_URL` (from the environment or `.env`), validates it
+   as an absolute http(s) URL, and writes `dist-electron/runtime-config.json`.
+2. `pnpm build:renderer` bakes the value from that same artifact into the renderer bundle.
+3. `electron-builder` packages `dist-electron/**`, so the artifact ships with the app. At runtime the
+   main process reads it (`resolveMainApiOrigin`) instead of `process.env`.
+
+`pnpm build` runs these in order. In development (`pnpm dev`, identified by `VITE_DEV_SERVER_URL`) the
+main process may fall back to `COMMERCE_API_URL` or `http://localhost:3000`. In a packaged build the
+origin is **required and validated**: a missing or invalid configuration fails the build (and a
+missing packaged artifact fails main startup) rather than silently pointing main at localhost. The
+operator does not need to launch Electron from a shell with a matching environment variable, and the
+two processes cannot drift.
+
 Electron web security remains enabled with context isolation, renderer sandboxing, and Node
 integration disabled. The preload exposes immutable runtime metadata and only fixed, typed offline
 capabilities; it exposes no generic invoke, SQL, filesystem, SDK, or key access.
@@ -195,8 +234,12 @@ CLERK_AUTHORIZED_PARTIES=http://127.0.0.1:5173,http://127.0.0.1:4173
 ```
 
 Merge these values with any other deliberately authorized application origins. Never use `*`,
-disable `webSecurity`, use `no-cors`, or allow the opaque `null` origin. `pnpm origin:check` launches
-real development and production-style Electron renderers and prints both observed origins.
+disable `webSecurity`, use `no-cors`, or allow the opaque `null` origin.
+
+`pnpm origin:check` is the Commerce API-origin consistency gate: it generates the runtime-config with
+a distinguishing non-default origin, builds the renderer, and asserts the origin baked into the
+renderer bundle equals the origin the main process resolves from the packaged artifact — plus that
+invalid origins are rejected and a missing production origin fails closed.
 
 ## Local connected runtime
 
@@ -230,10 +273,32 @@ pnpm.cmd format:check
 pnpm.cmd lint
 pnpm.cmd typecheck
 pnpm.cmd test
+pnpm.cmd acceptance:origin
 pnpm.cmd acceptance:persistence
-pnpm.cmd origin:check
-pnpm.cmd build
+pnpm.cmd acceptance:sqlite-packaged
+pnpm.cmd acceptance:sale-recovery
+pnpm.cmd acceptance:offline-ack
+$env:COMMERCE_API_URL = "https://api.example.com"; pnpm.cmd build
 ```
 
-`build` compiles main/preload, bundles the renderer, and creates an unpacked Electron application.
-No installer publication or automatic update is part of this phase.
+`build` resolves the canonical API origin, compiles main/preload, bundles the renderer, and creates
+an unpacked Electron application. No installer publication or automatic update is part of this phase.
+
+### Release gates (CI)
+
+The GitHub workflow runs two required jobs. `verify` (Linux) runs format, lint, typecheck, unit
+tests, and a packaged smoke `build`. `windows-acceptance` (Windows, because the packaged gates use
+`electron.exe`, `%APPDATA%`, and the packaged `node:sqlite` runtime) runs the release-blocking
+acceptances automatically:
+
+| Gate                         | Proves                                                                 |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `acceptance:origin`          | renderer and main resolve one canonical API origin; fail-closed        |
+| `acceptance:persistence`     | durable local persistence across an Electron restart                   |
+| `acceptance:sqlite-packaged` | the packaged SQLite runtime (WAL, FULL sync, FK) is healthy            |
+| `acceptance:sale-recovery`   | a connected sale replays the SAME key after a crash — one Order (P1-2) |
+| `acceptance:offline-ack`     | an offline sale is recovered and must be acknowledged (P1-3)           |
+
+`acceptance:returns` drives the disposable API stack, so it runs in a separate job only when a
+sibling `clothing-commerce-api` checkout is provided via the `COMMERCE_API_CHECKOUT` repository
+variable; run it in the release environment where the API is available.

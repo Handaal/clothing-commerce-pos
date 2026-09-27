@@ -18,6 +18,8 @@ import { OfflineSaleService } from "./offline-service";
 import { OutboxStore } from "./outbox-store";
 import { ReturnService } from "../returns/service";
 import { ReturnStore } from "../returns/store";
+import { ConnectedSaleService } from "../sales/service";
+import { ConnectedSaleStore } from "../sales/store";
 import {
   OfflineSyncWorker,
   SdkOfflineDeliveryClient,
@@ -44,6 +46,7 @@ export class OfflineRuntime {
     private readonly syncWorker: OfflineSyncWorker | undefined,
     private readonly initializationError: string | undefined,
     private readonly returnService?: ReturnService,
+    private readonly saleService?: ConnectedSaleService,
   ) {}
 
   static async initialize(
@@ -94,6 +97,11 @@ export class OfflineRuntime {
         new ReturnService(new ReturnStore(database, now), apiBaseUrl.replace(/\/+$/, ""), {
           networkOnline: options.networkOnline,
         }),
+        new ConnectedSaleService(
+          new ConnectedSaleStore(database, now),
+          apiBaseUrl.replace(/\/+$/, ""),
+          { networkOnline: options.networkOnline },
+        ),
       );
       if (options.startSyncWorker !== false) syncWorker.start();
       return runtime;
@@ -123,6 +131,12 @@ export class OfflineRuntime {
     return this.returnService;
   }
 
+  getSales(): ConnectedSaleService {
+    if (!this.saleService)
+      throw new Error("Connected sale persistence is unavailable. Connected sales are disabled.");
+    return this.saleService;
+  }
+
   getCachedCatalog(): ReadonlyArray<CachedCatalogItem> {
     return this.requireSales().getCachedCatalog();
   }
@@ -137,6 +151,14 @@ export class OfflineRuntime {
 
   getLocalReceipt(localSaleId: string): LocalReceipt | null {
     return this.requireSales().getLocalReceipt(localSaleId);
+  }
+
+  getUnacknowledgedSales(): ReadonlyArray<LocalReceipt> {
+    return this.requireSales().getUnacknowledgedSales();
+  }
+
+  acknowledgeSale(localSaleId: string): LocalReceipt {
+    return this.requireSales().acknowledgeSale(localSaleId);
   }
 
   getPendingSyncSummary(): PendingSyncSummary {

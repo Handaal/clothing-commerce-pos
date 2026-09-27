@@ -3,9 +3,11 @@ import path from "node:path";
 
 import { registerOfflineIpc } from "./offline/ipc";
 import { registerReturnIpc } from "./returns/ipc";
+import { registerSalesIpc } from "./sales/ipc";
 import { OfflineRuntime } from "./offline/runtime";
 import { isAllowedRendererNavigation, PRODUCTION_RENDERER_ORIGIN } from "./renderer-origin";
 import { startRendererServer } from "./renderer-server";
+import { resolveMainApiOrigin } from "./runtime-config";
 import { secureWebPreferences } from "./security";
 
 function createWindow(rendererUrl: string): void {
@@ -43,6 +45,10 @@ if (!hasSingleInstanceLock) {
     void (async () => {
       const developmentServerUrl = process.env.VITE_DEV_SERVER_URL;
       const rendererUrl = developmentServerUrl ?? `${PRODUCTION_RENDERER_ORIGIN}/index.html`;
+      // Single canonical Commerce API origin. In a packaged app this is read from the generated
+      // dist-electron/runtime-config.json — the same value baked into the renderer — and fails
+      // closed if absent/invalid, so main and renderer can never target different origins.
+      const commerceApiUrl = resolveMainApiOrigin();
       if (!developmentServerUrl) {
         await startRendererServer(path.join(__dirname, "../../dist"));
       }
@@ -61,7 +67,7 @@ if (!hasSingleInstanceLock) {
       offlineRuntime = await OfflineRuntime.initialize(
         app.getPath("userData"),
         osSecureStorage,
-        process.env.COMMERCE_API_URL ?? "http://localhost:3000",
+        commerceApiUrl,
         {
           networkOnline: () => net.isOnline(),
           secureStorageDurabilityBarrier: async () => session.defaultSession.flushStorageData(),
@@ -69,6 +75,7 @@ if (!hasSingleInstanceLock) {
       );
       registerOfflineIpc(offlineRuntime, rendererUrl);
       registerReturnIpc(() => offlineRuntime!.getReturns(), rendererUrl);
+      registerSalesIpc(() => offlineRuntime!.getSales(), rendererUrl);
       createWindow(rendererUrl);
     })();
     app.on("activate", () => {
