@@ -24,7 +24,7 @@ describe("packaged SDK and renderer boundaries", () => {
       path.join(root, "vendor", "shifted-clothing-commerce-sdk-0.14.0.tgz"),
     );
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "09c138afc5c144ba9a19e57a2aa3e31bd4f211e9e6dfb1ecdc4b64e7f5c74ac4",
+      "f6a666241c135c302829d78f22e601deaffc963e102570db0ee667703b4bf69a",
     );
   });
 

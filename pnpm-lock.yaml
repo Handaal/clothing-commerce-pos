@@ -506,7 +506,7 @@ packages:
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
   '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.14.0.tgz':
-    resolution: {integrity: sha512-rTlfxA5bkDSxrdPleD7TDsLfCOpNLOMg5lFP0oiyZyFpgUJuz/l3mKTJMvPzf29TusWdxpxVTyXWp42J9OLvpA==, tarball: file:vendor/shifted-clothing-commerce-sdk-0.14.0.tgz}
+    resolution: {integrity: sha512-wIggUhB7XGQXCKwm/+3arU5jpSklrLVqXLBfYJSPxKJBJR7uPb+B1At3IzwdqkzAS7ysncTQVnDbgYzX6g/LTw==, tarball: file:vendor/shifted-clothing-commerce-sdk-0.14.0.tgz}
     version: 0.14.0
 
   '@sindresorhus/is@4.6.0':
