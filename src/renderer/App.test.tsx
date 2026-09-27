@@ -125,6 +125,13 @@ function connectedFixture(
   const tenantClient = {
     tenantId: "tenant-1",
     getPosContext: vi.fn(async () => ({
+      business: {
+        tenant: {
+          displayName: "Dev Store",
+          legalName: "Dev Store LLC",
+          taxIdentifier: "EG-123456789",
+        },
+      },
       registers: [
         {
           registerId: "register-1",
@@ -135,6 +142,18 @@ function connectedFixture(
           defaultInventoryLocationName: "Stockroom",
           sellingCurrency: "USD",
           canSell: true as const,
+          branch: {
+            displayName: "Flagship Store",
+            addressLine1: "12 Nile Corniche",
+            addressLine2: null,
+            city: "Cairo",
+            region: null,
+            postalCode: null,
+            countryCode: "EG",
+            contactEmail: null,
+            contactPhone: "+20 2 1234 5678",
+            receiptFooter: "Thank you for shopping with us!",
+          },
         },
       ],
     })),
@@ -330,6 +349,14 @@ describe("connected cashier application", () => {
     expect(await screen.findByRole("heading", { name: "Order POS-0001" })).toBeTruthy();
     expect(screen.getByText("Cash captured · Fulfilled")).toBeTruthy();
     expect(screen.getByText("Completed")).toBeTruthy();
+    // Configured business/branch identity is rendered on the receipt from POS context.
+    expect(screen.getByText("Dev Store")).toBeTruthy();
+    expect(screen.getByText("Dev Store LLC")).toBeTruthy();
+    expect(screen.getByText("Tax ID: EG-123456789")).toBeTruthy();
+    expect(screen.getByText("Flagship Store")).toBeTruthy();
+    expect(screen.getByText("12 Nile Corniche")).toBeTruthy();
+    expect(screen.getByText("+20 2 1234 5678")).toBeTruthy();
+    expect(screen.getByText("Thank you for shopping with us!")).toBeTruthy();
     expect(fixture.createPosSale).toHaveBeenCalledWith({
       idempotencyKey: "sale-key-1",
       registerId: "register-1",

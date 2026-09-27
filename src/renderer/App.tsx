@@ -30,6 +30,11 @@ import { formatMoney } from "./money";
 import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { resolveRegisters, type PosRegister } from "./pos/context";
+import {
+  receiptIdentity,
+  type BusinessIdentity,
+  type ReceiptIdentity,
+} from "./pos/receipt-identity";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
@@ -99,6 +104,7 @@ export function PosApplication({
   const [bootstrapNonce, setBootstrapNonce] = useState(0);
 
   const [contextPhase, setContextPhase] = useState<LoadPhase>("idle");
+  const [business, setBusiness] = useState<BusinessIdentity | null>(null);
   const [registers, setRegisters] = useState<readonly PosRegister[]>([]);
   const [registerId, setRegisterId] = useState<string | null>(null);
   const [contextError, setContextError] = useState<CommerceErrorView | null>(null);
@@ -313,6 +319,7 @@ export function PosApplication({
     let active = true;
     setContextPhase("loading");
     setContextError(null);
+    setBusiness(null);
     setRegisters([]);
     setRegisterId(null);
     setProducts([]);
@@ -321,6 +328,9 @@ export function PosApplication({
       .getPosContext()
       .then((context) => {
         if (!active) return;
+        // Server-owned business identity for receipt rendering (SDK 0.14.0). Configuration, not a
+        // historical sale snapshot; captured alongside the selling registers.
+        setBusiness(context.business.tenant);
         const resolution = resolveRegisters(context);
         if (resolution.kind === "none") {
           setContextPhase("empty");
@@ -623,7 +633,13 @@ export function PosApplication({
     return <CenteredState title="Loading register…" body="Preparing the cashier." />;
 
   if (saleState.phase === "success")
-    return <Receipt receipt={saleState.receipt} onNewSale={resetTransaction} />;
+    return (
+      <Receipt
+        receipt={saleState.receipt}
+        identity={business ? receiptIdentity(business, register.branch) : null}
+        onNewSale={resetTransaction}
+      />
+    );
 
   const selectedProduct =
     products.find((product) => product.productId === selectedProductId) ?? null;
@@ -1034,9 +1050,11 @@ export function PosApplication({
 
 function Receipt({
   receipt,
+  identity,
   onNewSale,
 }: {
   receipt: CreatePosSaleResponse;
+  identity: ReceiptIdentity | null;
   onNewSale: () => void;
 }) {
   // Derive every figure from the immutable returned sale. `order.totalMinor` is the payable net; the
@@ -1054,6 +1072,22 @@ function Receipt({
         <div className="success-mark" aria-hidden="true">
           ✓
         </div>
+        {/* Configured business/branch identity rendered at receipt time from trusted POS context.
+            Optional fields are omitted when absent; this is not a sale snapshot. */}
+        {identity ? (
+          <div className="receipt-identity">
+            <strong className="receipt-business-name">{identity.businessName}</strong>
+            {identity.legalName ? <span>{identity.legalName}</span> : null}
+            {identity.taxIdentifier ? <span>Tax ID: {identity.taxIdentifier}</span> : null}
+            <span className="receipt-branch-name">{identity.branchName}</span>
+            {identity.branchAddressLines.map((line, index) => (
+              <span key={`address-${index}`}>{line}</span>
+            ))}
+            {identity.branchContactLines.map((line, index) => (
+              <span key={`contact-${index}`}>{line}</span>
+            ))}
+          </div>
+        ) : null}
         <p className="eyebrow">Sale completed</p>
         <h1>Order {receipt.order.orderNumber}</h1>
         <p className="receipt-status">Cash captured · Fulfilled</p>
@@ -1107,6 +1141,9 @@ function Receipt({
             <strong>Completed</strong>
           </div>
         </div>
+        {identity?.receiptFooter ? (
+          <p className="receipt-footer">{identity.receiptFooter}</p>
+        ) : null}
         <button className="button button--complete" onClick={onNewSale}>
           New sale
         </button>

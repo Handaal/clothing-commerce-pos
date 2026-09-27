@@ -107,6 +107,18 @@ const register = {
   defaultInventoryLocationName: "Sellable floor",
   sellingCurrency: "USD",
   canSell: true as const,
+  branch: {
+    displayName: "Main",
+    addressLine1: null,
+    addressLine2: null,
+    city: null,
+    region: null,
+    postalCode: null,
+    countryCode: null,
+    contactEmail: null,
+    contactPhone: null,
+    receiptFooter: null,
+  },
 };
 afterEach(() => {
   cleanup();
