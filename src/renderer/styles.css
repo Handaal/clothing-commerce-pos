@@ -554,6 +554,33 @@ h3 {
   background: #375749;
   font-size: 1.5rem;
 }
+.receipt-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #ded5c8;
+  color: #5a4c39;
+  font-size: 0.92rem;
+}
+.receipt-business-name {
+  font-size: 1.15rem;
+  color: #392d1f;
+}
+.receipt-branch-name {
+  margin-top: 0.4rem;
+  font-weight: 650;
+  color: #392d1f;
+}
+.receipt-footer {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid #ded5c8;
+  color: #5a4c39;
+  font-size: 0.9rem;
+  white-space: pre-line;
+}
 .receipt-status {
   margin-top: 0.5rem;
   color: #477360;

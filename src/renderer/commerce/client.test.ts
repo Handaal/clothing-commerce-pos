@@ -19,7 +19,15 @@ describe("Commerce SDK boundary", () => {
           { status: 200 },
         );
       }
-      return new Response(JSON.stringify({ registers: [] }), { status: 200 });
+      return new Response(
+        JSON.stringify({
+          business: {
+            tenant: { displayName: "Store", legalName: null, taxIdentifier: null },
+          },
+          registers: [],
+        }),
+        { status: 200 },
+      );
     });
     const client = createConfiguredCommerceClient({
       baseUrl: "https://api.example.test",
