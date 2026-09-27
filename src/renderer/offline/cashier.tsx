@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type {
   CachedCatalogItem,
@@ -80,25 +80,57 @@ export function OfflineCashier({
   const [cart, setCart] = useState<readonly CartLine[]>([]);
   const [cashReceived, setCashReceived] = useState("");
   const [receipt, setReceipt] = useState<LocalReceipt | null>(null);
+  const [recovered, setRecovered] = useState<readonly LocalReceipt[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [acknowledging, setAcknowledging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Durable crash recovery: any locally accepted sale the cashier never acknowledged (e.g. the app
+  // died after the SQLite commit but before the receipt was seen) is surfaced here as a specific
+  // receipt awaiting acknowledgement — never as an aggregate "pending" count. It must be resolved
+  // before ordinary selling resumes so the same economic sale is not rung twice.
+  const refreshUnacknowledged = useCallback(async () => {
+    const pending = await bridge.getUnacknowledgedSales();
+    setRecovered(pending);
+  }, [bridge]);
+
+  useEffect(() => {
+    // Deferred so the recovery load (which sets state) does not run synchronously in the effect body.
+    const initial = window.setTimeout(() => void refreshUnacknowledged(), 0);
+    return () => window.clearTimeout(initial);
+  }, [refreshUnacknowledged]);
   const selectedProduct = products.find((item) => item.productId === selectedProductId) ?? null;
   const total = cartTotal(cart);
   const cashMinor = Number(cashReceived);
   const previewChange =
     Number.isSafeInteger(cashMinor) && cashMinor >= total ? cashMinor - total : null;
 
+  // The receipt on screen is either the just-completed sale or, on restart, the oldest sale awaiting
+  // acknowledgement. A fresh sale takes precedence; otherwise a recovered sale blocks new selling.
+  const isRecovery = receipt === null && recovered.length > 0;
+  const displayReceipt = receipt ?? recovered[0] ?? null;
+
   useEffect(() => {
-    if (!receipt || receipt.lifecycle !== "accepted_pending_sync") return;
+    if (!displayReceipt || displayReceipt.lifecycle !== "accepted_pending_sync") return;
     const timer = window.setInterval(() => {
-      void bridge.getLocalReceipt(receipt.localSaleId).then((updated) => {
-        if (updated) setReceipt(updated);
+      void bridge.getLocalReceipt(displayReceipt.localSaleId).then((updated) => {
+        if (!updated) return;
+        setReceipt((current) =>
+          current && current.localSaleId === updated.localSaleId ? updated : current,
+        );
+        setRecovered((current) =>
+          current.map((item) => (item.localSaleId === updated.localSaleId ? updated : item)),
+        );
       });
     }, 2_000);
     return () => window.clearInterval(timer);
-  }, [bridge, receipt]);
+  }, [bridge, displayReceipt]);
 
   async function completeOfflineSale() {
+    if (isRecovery) {
+      setError("Acknowledge the recovered sale before ringing a new one.");
+      return;
+    }
     if (cart.length === 0) {
       setError("Add at least one item before checkout.");
       return;
@@ -120,6 +152,7 @@ export function OfflineCashier({
       setCart([]);
       setCashReceived("");
       await onRefresh();
+      await refreshUnacknowledged();
     } catch (caught) {
       setError(
         caught instanceof Error ? caught.message : "The offline sale could not be accepted.",
@@ -129,9 +162,26 @@ export function OfflineCashier({
     }
   }
 
-  if (receipt) {
-    const pending = receipt.lifecycle === "accepted_pending_sync";
-    const governed = receipt.lifecycle === "needs_reconciliation";
+  // Acknowledging is what durably records that the cashier saw this specific receipt. Only after it
+  // succeeds do we clear the receipt and (for recovery) advance to the next unacknowledged sale.
+  async function acknowledgeDisplayed() {
+    if (!displayReceipt || acknowledging) return;
+    setAcknowledging(true);
+    setError(null);
+    try {
+      await bridge.acknowledgeSale(displayReceipt.localSaleId);
+      setReceipt(null);
+      await refreshUnacknowledged();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "The sale could not be acknowledged.");
+    } finally {
+      setAcknowledging(false);
+    }
+  }
+
+  if (displayReceipt) {
+    const pending = displayReceipt.lifecycle === "accepted_pending_sync";
+    const governed = displayReceipt.lifecycle === "needs_reconciliation";
     const attention = governed || syncStatus.blocked > 0;
     return (
       <main className="receipt-shell">
@@ -139,17 +189,25 @@ export function OfflineCashier({
           <div className="success-mark" aria-hidden="true">
             ✓
           </div>
-          <p className="eyebrow">Sale accepted</p>
-          <h1>Receipt {receipt.localReceiptId}</h1>
-          <p className={`receipt-status${attention ? " receipt-status--attention" : ""}`}>
-            {attention
-              ? "Accepted · Synchronization needs attention"
-              : pending
-                ? "Saved locally · Pending synchronization"
-                : "Synchronized with Commerce"}
-          </p>
+          <p className="eyebrow">{isRecovery ? "Recovered accepted sale" : "Sale accepted"}</p>
+          <h1>Receipt {displayReceipt.localReceiptId}</h1>
+          {isRecovery ? (
+            <p className="receipt-status receipt-status--attention" role="alert">
+              This accepted cash sale was interrupted before it was acknowledged. Confirm it below —
+              do not ring it again.
+              {recovered.length > 1 ? ` ${recovered.length} sales await acknowledgement.` : ""}
+            </p>
+          ) : (
+            <p className={`receipt-status${attention ? " receipt-status--attention" : ""}`}>
+              {attention
+                ? "Accepted · Synchronization needs attention"
+                : pending
+                  ? "Saved locally · Pending synchronization"
+                  : "Synchronized with Commerce"}
+            </p>
+          )}
           <div className="receipt-lines">
-            {receipt.lines.map((line) => (
+            {displayReceipt.lines.map((line) => (
               <div key={line.lineNumber} className="receipt-line">
                 <div>
                   <strong>{line.productName}</strong>
@@ -157,33 +215,48 @@ export function OfflineCashier({
                     {line.variantName ?? line.optionSummary ?? line.sku} · SKU {line.sku}
                   </span>
                   <span>
-                    {line.quantity} × {formatMoney(line.unitPriceMinor, receipt.currency)}
+                    {line.quantity} × {formatMoney(line.unitPriceMinor, displayReceipt.currency)}
                   </span>
                 </div>
-                <strong>{formatMoney(line.lineTotalMinor, receipt.currency)}</strong>
+                <strong>{formatMoney(line.lineTotalMinor, displayReceipt.currency)}</strong>
               </div>
             ))}
           </div>
           <div className="receipt-totals">
             <div>
               <span>Total</span>
-              <strong>{formatMoney(receipt.totalMinor, receipt.currency)}</strong>
+              <strong>{formatMoney(displayReceipt.totalMinor, displayReceipt.currency)}</strong>
             </div>
             <div>
               <span>Cash received</span>
-              <strong>{formatMoney(receipt.cashReceivedMinor, receipt.currency)}</strong>
+              <strong>
+                {formatMoney(displayReceipt.cashReceivedMinor, displayReceipt.currency)}
+              </strong>
             </div>
             <div className="receipt-change">
               <span>Change</span>
-              <strong>{formatMoney(receipt.changeMinor, receipt.currency)}</strong>
+              <strong>{formatMoney(displayReceipt.changeMinor, displayReceipt.currency)}</strong>
             </div>
             <div>
               <span>Sync state</span>
               <strong>{attention ? "Attention" : pending ? "Pending" : "Synced"}</strong>
             </div>
           </div>
-          <button className="button button--complete" onClick={() => setReceipt(null)}>
-            New offline sale
+          {error ? (
+            <div className="notice notice--error" role="alert">
+              {error}
+            </div>
+          ) : null}
+          <button
+            className="button button--complete"
+            disabled={acknowledging}
+            onClick={() => void acknowledgeDisplayed()}
+          >
+            {acknowledging
+              ? "Acknowledging…"
+              : isRecovery
+                ? "Acknowledge recovered sale"
+                : "New offline sale"}
           </button>
         </section>
       </main>

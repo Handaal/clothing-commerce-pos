@@ -23,7 +23,7 @@ import {
   type CartLine,
 } from "./cart/cart";
 import { loadSellableCatalog, type SellableProduct, type SellableVariant } from "./catalog/catalog";
-import { SaleExecutor, type SaleExecutionState } from "./checkout/sale-executor";
+import { SaleExecutor, type SaleExecutionState, type SalesGateway } from "./checkout/sale-executor";
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
 import { formatMoney } from "./money";
@@ -52,9 +52,9 @@ interface PosApplicationProps {
   auth: PosAuth;
   signedOutContent?: ReactNode;
   clientFactory?: CommerceClientFactory;
-  createKey?: () => string;
   offlineBridge?: OfflineBridge;
   returnsBridge?: ReturnsBridge;
+  salesGateway?: SalesGateway;
 }
 
 type LoadPhase = "idle" | "loading" | "ready" | "choosing" | "empty" | "error";
@@ -81,20 +81,55 @@ export function PosApplication({
   auth,
   signedOutContent,
   clientFactory = createConfiguredCommerceClient,
-  createKey,
   offlineBridge = typeof window === "undefined" ? undefined : window.offline,
   returnsBridge = typeof window === "undefined" ? undefined : window.returns,
+  salesGateway,
 }: PosApplicationProps) {
   const tokenRef = useRef(auth.getToken);
   useEffect(() => {
     tokenRef.current = auth.getToken;
   });
+  // Live session for the durable connected-sale bridge. The ref is synced once tenant selection
+  // resolves (below); the gateway reads it at call time so the executor stays stable.
+  const tenantIdRef = useRef<string | null>(null);
+  const defaultGateway = useMemo<SalesGateway>(() => {
+    const bridge = typeof window === "undefined" ? undefined : window.sales;
+    const session = async () => {
+      const token = await tokenRef.current();
+      const tenant = tenantIdRef.current;
+      if (!bridge || !token || !tenant) return null;
+      return { bridge, session: { tenantId: tenant, accessToken: token } };
+    };
+    return {
+      hasPending: async () =>
+        (typeof window === "undefined" ? false : window.sales?.hasPending()) ?? false,
+      submit: async (intent) => {
+        const context = await session();
+        if (!context) throw new Error("A signed-in tenant session is required to sell.");
+        return context.bridge.submit(context.session, intent);
+      },
+      recover: async () => {
+        const context = await session();
+        if (!context) return null;
+        return context.bridge.recover(context.session);
+      },
+      acknowledge: async (workflowId) => {
+        const context = await session();
+        if (!context) return;
+        await context.bridge.acknowledge(context.session, workflowId);
+      },
+    };
+  }, []);
+  const gateway = salesGateway ?? defaultGateway;
   const [client, setClient] = useState<CommerceClient | null>(null);
   useEffect(() => {
     // The SDK client is an external session boundary and is intentionally composed after render.
     setClient(clientFactory({ getToken: () => tokenRef.current() }));
   }, [clientFactory]);
-  const [executor] = useState(() => new SaleExecutor(createKey));
+  // The gateway is stable (a prop, or a []-memoized closure) and only reads the session refs when its
+  // async methods are invoked — never during render — so constructing the executor here is safe.
+  // eslint-disable-next-line react-hooks/refs -- gateway does not read refs during render
+  const [executor] = useState(() => new SaleExecutor(gateway));
   const [saleState, setSaleState] = useState<SaleExecutionState>(executor.snapshot());
 
   const [tenantPhase, setTenantPhase] = useState<LoadPhase>("idle");
@@ -187,6 +222,24 @@ export function PosApplication({
   useEffect(() => executor.subscribe(setSaleState), [executor]);
   useEffect(() => quoteController.subscribe(setQuoteState), [quoteController]);
 
+  // Keep the durable-sale session ref current for the gateway.
+  useEffect(() => {
+    tenantIdRef.current = tenantId;
+  }, [tenantId]);
+
+  // Startup crash recovery: if a connected sale was prepared/accepted but never acknowledged before
+  // the app died, replay it with its ORIGINAL key. Server idempotency decides whether it committed;
+  // an accepted result surfaces the canonical receipt and blocks new selling until acknowledged.
+  const recoveredForTenantRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!tenantId) return;
+    if (recoveredForTenantRef.current === tenantId) return;
+    recoveredForTenantRef.current = tenantId;
+    void gateway.hasPending().then((pending) => {
+      if (pending) executor.recover();
+    });
+  }, [gateway, executor, tenantId]);
+
   // Requote on relevant connected basket/code/register changes. `sync` de-duplicates by basket
   // signature, so calling it on every change is cheap and stale responses are discarded internally.
   useEffect(() => {
@@ -249,6 +302,13 @@ export function PosApplication({
     setPriceChangedTotal(null);
     setPriceRefreshPending(false);
   }, [executor, quoteController]);
+
+  // Finishing the receipt is the explicit acknowledgement point: it durably records that the cashier
+  // saw the accepted sale (clearing the workflow) before a new sale can begin.
+  const finishAcceptedSale = useCallback(() => {
+    void executor.acknowledge();
+    resetTransaction();
+  }, [executor, resetTransaction]);
 
   // Leaving connected selling must never carry a connected discounted total into an offline sale. The
   // offline cashier already builds its own cart at authorized offline prices; this clears any connected
@@ -460,7 +520,14 @@ export function PosApplication({
 
   function completeSale() {
     if (showReturns) return;
-    if (!tenantClient || !register || saleState.phase === "submitting" || priceConfirmationRequired)
+    if (
+      !tenantClient ||
+      !register ||
+      saleState.phase === "submitting" ||
+      saleState.phase === "recovering" ||
+      saleState.phase === "ambiguous" ||
+      priceConfirmationRequired
+    )
       return;
     const cashReceivedMinor = Number(cashReceived);
     if (cart.length === 0) {
@@ -481,8 +548,9 @@ export function PosApplication({
     }
     setLocalError(null);
     // Tender against the current authoritative NET total; the server re-derives and rejects a stale
-    // value. Only the entered-code intent is threaded — automatic promotions are re-evaluated server side.
-    executor.submit(tenantClient, {
+    // value. The durable journal (main process) owns the idempotency key. Only the entered-code
+    // intent is threaded — automatic promotions are re-evaluated server side.
+    executor.submit({
       registerId: register.registerId,
       expectedTotalMinor: netMinor,
       cashReceivedMinor,
@@ -637,14 +705,18 @@ export function PosApplication({
       <Receipt
         receipt={saleState.receipt}
         identity={business ? receiptIdentity(business, register.branch) : null}
-        onNewSale={resetTransaction}
+        onNewSale={finishAcceptedSale}
       />
     );
 
   const selectedProduct =
     products.find((product) => product.productId === selectedProductId) ?? null;
   const submitting = saleState.phase === "submitting";
+  const recovering = saleState.phase === "recovering";
   const ambiguous = saleState.phase === "ambiguous";
+  // While a sale is in-flight, recovering, or its result is uncertain, the cart is locked: the
+  // durable command is the source of truth and must be resolved (retried) before any edit.
+  const locked = submitting || recovering || ambiguous;
   const cashMinor = Number(cashReceived);
   const previewChange =
     Number.isSafeInteger(cashMinor) && cashMinor >= netMinor ? cashMinor - netMinor : null;
@@ -669,7 +741,7 @@ export function PosApplication({
               aria-label="Register"
               value={register.registerId}
               onChange={(event) => chooseRegister(event.target.value)}
-              disabled={submitting || returnLocked}
+              disabled={locked || returnLocked}
             >
               {registers.map((item) => (
                 <option key={item.registerId} value={item.registerId}>
@@ -682,7 +754,7 @@ export function PosApplication({
             <button
               className="button button--quiet"
               onClick={switchToOffline}
-              disabled={submitting || returnLocked}
+              disabled={locked || returnLocked}
             >
               Work offline
             </button>
@@ -690,7 +762,7 @@ export function PosApplication({
           <button
             className="button button--quiet"
             onClick={() => void signOut()}
-            disabled={submitting || returnLocked}
+            disabled={locked || returnLocked}
           >
             Sign out
           </button>
@@ -878,7 +950,7 @@ export function PosApplication({
                   type="text"
                   autoComplete="off"
                   value={codeDraft}
-                  disabled={submitting || appliedCode !== null}
+                  disabled={locked || appliedCode !== null}
                   onChange={(event) => setCodeDraft(event.target.value)}
                 />
               </label>
@@ -886,7 +958,7 @@ export function PosApplication({
                 <button
                   className="button"
                   onClick={applyPromotionCode}
-                  disabled={submitting || codeDraft.trim() === ""}
+                  disabled={locked || codeDraft.trim() === ""}
                 >
                   Apply
                 </button>
@@ -1017,10 +1089,7 @@ export function PosApplication({
             <div className="notice notice--warning" role="alert">
               <strong>Sale result unknown</strong>
               <span>Retry sends the exact same sale with the same idempotency key.</span>
-              <button
-                className="button button--warning"
-                onClick={() => executor.retry(tenantClient)}
-              >
+              <button className="button button--warning" onClick={() => executor.retry()}>
                 Retry same sale
               </button>
             </div>
@@ -1028,16 +1097,11 @@ export function PosApplication({
           <button
             className="button button--complete"
             disabled={
-              cart.length === 0 ||
-              submitting ||
-              ambiguous ||
-              priceConfirmationRequired ||
-              showReturns ||
-              !quoteReady
+              cart.length === 0 || locked || priceConfirmationRequired || showReturns || !quoteReady
             }
             onClick={completeSale}
           >
-            {submitting ? "Completing sale…" : "Complete sale"}
+            {submitting ? "Completing sale…" : recovering ? "Recovering sale…" : "Complete sale"}
           </button>
           <p className="authority-note">
             Prices, promotions, and final change are confirmed by the Commerce API.

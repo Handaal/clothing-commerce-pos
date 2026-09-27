@@ -99,6 +99,7 @@ function connectedFixture(
     prices?: number[];
     createPosSale?: TenantCommerceClient["createPosSale"];
     posQuote?: TenantCommerceClient["posQuote"];
+    keys?: string[];
   } = {},
 ) {
   const prices = options.prices ?? [2599];
@@ -212,7 +213,106 @@ function connectedFixture(
     getToken: vi.fn(async () => "token"),
     signOut: vi.fn(async () => undefined),
   };
-  return { auth, clientFactory, rootClient, tenantClient, createPosSale, posQuote: posQuoteFn };
+  // A faithful stand-in for the durable main-process connected-sale journal: it mints the
+  // idempotency key (renderer intent never carries one), persists the "workflow" before dispatch,
+  // keeps an uncertain result unresolved for same-key replay, and closes on a definite rejection.
+  const salesGateway = makeFakeSalesGateway(createPosSale, options.keys);
+  return {
+    auth,
+    clientFactory,
+    rootClient,
+    tenantClient,
+    createPosSale,
+    posQuote: posQuoteFn,
+    salesGateway,
+  };
+}
+
+function classifyForFixture(error: unknown): import("../shared/sales").ConnectedSaleError {
+  const base = { authoritativeTotalMinor: null as number | null };
+  if (error instanceof ApiNetworkError)
+    return { ...base, kind: "network", code: "NETWORK_ERROR", message: "offline", uncertain: true };
+  if (error instanceof ApiHttpError) {
+    if (error.status >= 500 || error.code === "IDEMPOTENCY_CONFLICT")
+      return {
+        ...base,
+        kind: error.code === "IDEMPOTENCY_CONFLICT" ? "conflict" : "server",
+        code: error.code,
+        message: error.message,
+        uncertain: true,
+      };
+    if (error.code === "PRICE_CHANGED" || error.code === "CURRENCY_CHANGED")
+      return {
+        kind: "price-changed",
+        code: error.code,
+        message: error.message,
+        authoritativeTotalMinor:
+          (error.details?.find((d) => d.path.includes("expectedTotalMinor"))?.value as number) ??
+          null,
+        uncertain: false,
+      };
+    if (error.code === "PROMOTION_UNAVAILABLE")
+      return {
+        ...base,
+        kind: "promotion",
+        code: error.code,
+        message: error.message,
+        uncertain: false,
+      };
+    return {
+      ...base,
+      kind: error.status === 400 ? "validation" : "server",
+      code: error.code,
+      message: error.message,
+      uncertain: false,
+    };
+  }
+  return { ...base, kind: "server", code: "UNKNOWN_ERROR", message: "unknown", uncertain: true };
+}
+
+function makeFakeSalesGateway(
+  createPosSale: TenantCommerceClient["createPosSale"],
+  keys?: string[],
+): import("./checkout/sale-executor").SalesGateway {
+  const queue = [...(keys ?? [])];
+  let counter = 0;
+  const nextKey = () => queue.shift() ?? `key-${++counter}`;
+  let pending: {
+    id: string;
+    key: string;
+    intent: import("../shared/sales").ConnectedSaleIntent;
+  } | null = null;
+
+  async function dispatch(
+    workflow: { id: string; key: string; intent: import("../shared/sales").ConnectedSaleIntent },
+    firstAttempt: boolean,
+  ): Promise<import("../shared/sales").ConnectedSaleOutcome> {
+    pending = workflow;
+    try {
+      const receipt = await createPosSale({ ...workflow.intent, idempotencyKey: workflow.key });
+      return { status: "accepted", workflowId: workflow.id, receipt };
+    } catch (error) {
+      const classified = classifyForFixture(error);
+      if (firstAttempt && !classified.uncertain) {
+        pending = null;
+        return { status: "rejected", workflowId: workflow.id, error: classified };
+      }
+      return { status: "ambiguous", workflowId: workflow.id, error: classified };
+    }
+  }
+
+  return {
+    hasPending: async () => pending !== null,
+    submit: async (intent) => {
+      if (pending) return dispatch(pending, false);
+      const key = nextKey();
+      return dispatch({ id: `wf-${key}`, key, intent }, true);
+    },
+    recover: async () => (pending ? dispatch(pending, false) : null),
+    acknowledge: async () => {
+      pending = null;
+    },
+  };
 }
 
 function offlineEnablementFixture(): OfflineBridge {
@@ -239,6 +339,8 @@ function offlineEnablementFixture(): OfflineBridge {
     getProjectedInventory: vi.fn(async () => []),
     acceptCashSale: vi.fn(),
     getLocalReceipt: vi.fn(),
+    getUnacknowledgedSales: vi.fn(async () => []),
+    acknowledgeSale: vi.fn(),
     getPendingSyncSummary: vi.fn(async () => ({ pending: 0, leased: 0, retryWait: 0, blocked: 0 })),
     getSyncStatus: vi.fn(async () => ({
       pending: 0,
@@ -322,12 +424,12 @@ describe("connected cashier application", () => {
   });
 
   it("combines cart lines, submits only sale intent, shows receipt, and resets", async () => {
-    const fixture = connectedFixture();
+    const fixture = connectedFixture({ keys: ["sale-key-1"] });
     render(
       <PosApplication
         auth={fixture.auth}
         clientFactory={fixture.clientFactory}
-        createKey={() => "sale-key-1"}
+        salesGateway={fixture.salesGateway}
       />,
     );
     const productButton = await screen.findByRole("button", { name: /Linen Shirt/ });
@@ -387,13 +489,16 @@ describe("connected cashier application", () => {
         ]),
       )
       .mockResolvedValueOnce(receipt);
-    const fixture = connectedFixture({ prices: [2599, 2799], createPosSale });
-    const keys = ["stale-key", "confirmed-key"];
+    const fixture = connectedFixture({
+      prices: [2599, 2799],
+      createPosSale,
+      keys: ["stale-key", "confirmed-key"],
+    });
     render(
       <PosApplication
         auth={fixture.auth}
         clientFactory={fixture.clientFactory}
-        createKey={() => keys.shift() ?? "unexpected"}
+        salesGateway={fixture.salesGateway}
       />,
     );
     fireEvent.click(await screen.findByRole("button", { name: /Linen Shirt/ }));
@@ -470,6 +575,8 @@ function readyOfflineBridge(): OfflineBridge {
     getProjectedInventory: vi.fn(async () => []),
     acceptCashSale: vi.fn(),
     getLocalReceipt: vi.fn(),
+    getUnacknowledgedSales: vi.fn(async () => []),
+    acknowledgeSale: vi.fn(),
     getPendingSyncSummary: vi.fn(async () => ({ pending: 0, leased: 0, retryWait: 0, blocked: 0 })),
     getSyncStatus: vi.fn(async () => ({
       pending: 0,
@@ -522,7 +629,7 @@ describe("connected POS promotions", () => {
       <PosApplication
         auth={fixture.auth}
         clientFactory={fixture.clientFactory}
-        createKey={() => "sale-key"}
+        salesGateway={fixture.salesGateway}
       />,
     );
     await addOneAndReady();
@@ -575,7 +682,7 @@ describe("connected POS promotions", () => {
       <PosApplication
         auth={fixture.auth}
         clientFactory={fixture.clientFactory}
-        createKey={() => "sale-key"}
+        salesGateway={fixture.salesGateway}
       />,
     );
     await addOneAndReady();
@@ -700,13 +807,12 @@ describe("connected POS promotions", () => {
         new ApiHttpError("Voucher exhausted", 409, "PROMOTION_UNAVAILABLE", "request-1"),
       )
       .mockResolvedValueOnce(receipt);
-    const keys = ["stale", "confirmed"];
-    const fixture = connectedFixture({ posQuote, createPosSale });
+    const fixture = connectedFixture({ posQuote, createPosSale, keys: ["stale", "confirmed"] });
     render(
       <PosApplication
         auth={fixture.auth}
         clientFactory={fixture.clientFactory}
-        createKey={() => keys.shift() ?? "x"}
+        salesGateway={fixture.salesGateway}
       />,
     );
     await addOneAndReady();

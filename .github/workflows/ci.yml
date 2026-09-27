@@ -26,4 +26,55 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      # A production build must resolve one canonical Commerce API origin (fail-closed). CI supplies a
+      # placeholder so the packaged smoke build succeeds; real releases inject the true origin.
       - run: pnpm build
+        env:
+          COMMERCE_API_URL: https://commerce.ci.invalid
+
+  # Packaged acceptance gates are Windows/Electron-specific (electron.exe, %APPDATA%, node:sqlite in
+  # the packaged runtime), so they run on a dedicated Windows job. These are REQUIRED release gates.
+  windows-acceptance:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:main
+      # P1-1: renderer (compile-time) and main (runtime) resolve one canonical API origin; fail-closed.
+      - run: pnpm acceptance:origin
+      # Durable local persistence + packaged SQLite runtime.
+      - run: pnpm acceptance:persistence
+      - run: pnpm acceptance:sqlite-packaged
+      # P1-2: connected sale command survives a crash and replays the SAME idempotency key (one Order).
+      - run: pnpm acceptance:sale-recovery
+      # P1-3: offline sale is recovered and requires acknowledgement before a new equivalent sale.
+      - run: pnpm acceptance:offline-ack
+
+  # The connected Returns acceptance drives the disposable API stack, so it only runs where a sibling
+  # clothing-commerce-api checkout is available (COMMERCE_API_CHECKOUT). It is wired but conditional so
+  # it never yields a false red on runners without the API; run it in the release environment.
+  returns-acceptance:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    if: ${{ vars.COMMERCE_API_CHECKOUT != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm acceptance:returns
+        env:
+          COMMERCE_API_CHECKOUT: ${{ vars.COMMERCE_API_CHECKOUT }}

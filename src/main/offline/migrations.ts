@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 4;
+export const LOCAL_SCHEMA_VERSION = 6;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -309,6 +309,64 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
       BEGIN SELECT RAISE(ABORT, 'completed return workflow is archived'); END;
       CREATE TRIGGER retain_return_workflow BEFORE DELETE ON connected_return_workflow
       BEGIN SELECT RAISE(ABORT, 'return workflows must be retained'); END;
+    `,
+  },
+  {
+    version: 5,
+    name: "offline_sale_acknowledgement",
+    sql: `
+      -- Durable operator acknowledgement, distinct from synchronization state. A locally accepted
+      -- sale is "committed" the instant its row exists; "acknowledged" only once the cashier has
+      -- seen its receipt and moved on. Nullable so existing accepted sales remain unacknowledged
+      -- until the operator resolves them, and write-once so acknowledgement cannot be revoked.
+      ALTER TABLE local_sale ADD COLUMN acknowledged_at TEXT;
+      CREATE INDEX local_sale_unacknowledged
+        ON local_sale(created_at, local_sale_id) WHERE acknowledged_at IS NULL;
+      CREATE TRIGGER immutable_sale_acknowledgement BEFORE UPDATE OF acknowledged_at ON local_sale
+        WHEN OLD.acknowledged_at IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'sale acknowledgement is immutable once recorded'); END;
+    `,
+  },
+  {
+    version: 6,
+    name: "connected_sale_recovery",
+    sql: `
+      -- Durable journal for CONNECTED (online) POS sales, so the idempotency key and normalized
+      -- command survive renderer/process death. Without this a crash between server commit and the
+      -- renderer seeing the receipt would let the cashier re-ring with a fresh key -> a second Order.
+      CREATE TABLE connected_sale_workflow (
+        id TEXT PRIMARY KEY,
+        api_base_url TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        register_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        command_json TEXT NOT NULL,
+        command_hash TEXT NOT NULL CHECK (length(command_hash) = 64),
+        expected_total_minor INTEGER NOT NULL CHECK (expected_total_minor >= 0),
+        stage TEXT NOT NULL CHECK (stage IN ('prepared','accepted','acknowledged','rejected')),
+        receipt_json TEXT,
+        rejection_code TEXT,
+        prepared_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        resolved_at TEXT,
+        CHECK (stage != 'accepted' OR receipt_json IS NOT NULL),
+        CHECK (stage != 'acknowledged' OR receipt_json IS NOT NULL),
+        CHECK (stage != 'rejected' OR rejection_code IS NOT NULL),
+        CHECK ((stage IN ('acknowledged','rejected')) = (resolved_at IS NOT NULL))
+      ) STRICT;
+      -- At most one unresolved connected sale at a time: a new sale cannot start until the previous
+      -- one is acknowledged (or definitively rejected).
+      CREATE UNIQUE INDEX one_unresolved_connected_sale ON connected_sale_workflow((1))
+        WHERE stage NOT IN ('acknowledged','rejected');
+      CREATE TRIGGER immutable_connected_sale_command BEFORE UPDATE OF
+        id, api_base_url, tenant_id, register_id, idempotency_key, command_json, command_hash,
+        expected_total_minor, prepared_at ON connected_sale_workflow
+      BEGIN SELECT RAISE(ABORT, 'connected sale command is immutable'); END;
+      CREATE TRIGGER immutable_resolved_connected_sale BEFORE UPDATE ON connected_sale_workflow
+        WHEN OLD.stage IN ('acknowledged','rejected')
+      BEGIN SELECT RAISE(ABORT, 'resolved connected sale is archived'); END;
+      CREATE TRIGGER retain_connected_sale_workflow BEFORE DELETE ON connected_sale_workflow
+      BEGIN SELECT RAISE(ABORT, 'connected sale workflows must be retained'); END;
     `,
   },
 ];

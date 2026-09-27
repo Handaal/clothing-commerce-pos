@@ -77,6 +77,10 @@ export function registerOfflineIpc(runtime: OfflineRuntime, rendererUrl: string)
   handle(OFFLINE_IPC_CHANNELS.receipt, (_event, localSaleId: unknown) =>
     runtime.getLocalReceipt(requireString(localSaleId, "localSaleId")),
   );
+  handle(OFFLINE_IPC_CHANNELS.unacknowledged, () => runtime.getUnacknowledgedSales());
+  handle(OFFLINE_IPC_CHANNELS.acknowledge, (_event, localSaleId: unknown) =>
+    runtime.acknowledgeSale(requireString(localSaleId, "localSaleId")),
+  );
   handle(OFFLINE_IPC_CHANNELS.pendingSummary, () => runtime.getPendingSyncSummary());
   handle(OFFLINE_IPC_CHANNELS.syncStatus, () => runtime.getSyncStatus());
   handle(OFFLINE_IPC_CHANNELS.requestSync, () => runtime.requestSync());

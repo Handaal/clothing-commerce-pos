@@ -1,132 +1,116 @@
-import { spawn, spawnSync } from "node:child_process";
-import { resolve } from "node:path";
+// Commerce API origin consistency acceptance.
+//
+// Proves the P1-1 invariant: the renderer (compile-time baked) and the Electron main process
+// (runtime read) resolve the SAME canonical Commerce API origin from ONE generated artifact, that a
+// non-default origin is carried into the packaged build, that invalid origins are rejected, and that
+// a missing production configuration fails closed instead of silently pointing main at localhost.
+//
+// This is intentionally cross-platform (no Electron spawn) so it runs as a required gate on any CI
+// runner. It builds the renderer once with a distinguishing loopback origin.
+import { spawnSync } from "node:child_process";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const repositoryRoot = resolve(import.meta.dirname, "..");
-const electronPath = resolve(repositoryRoot, "node_modules", "electron", "dist", "electron.exe");
+import {
+  RUNTIME_CONFIG_FILENAME,
+  normalizeApiOrigin,
+  resolveApiOrigin,
+} from "../src/shared/api-origin.ts";
 
-function stop(process) {
-  if (!process || process.exitCode !== null) return;
-  spawnSync("taskkill", ["/pid", String(process.pid), "/T", "/F"], { stdio: "ignore" });
+const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const DISTINGUISHING_ORIGIN = "http://127.0.0.1:59107";
+
+function fail(message) {
+  process.stderr.write(`origin:check FAILED — ${message}\n`);
+  process.exit(1);
 }
 
-async function waitFor(url) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(url);
-      if (response.ok) return;
-    } catch {
-      // Runtime is still starting.
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`Timed out waiting for ${url}`);
+// 1. Unit-level guarantees on the single shared resolver.
+if (
+  resolveApiOrigin({ value: "https://api.example.com/", mode: "production" }) !==
+  "https://api.example.com"
+)
+  fail("resolver did not normalize a valid production origin");
+try {
+  resolveApiOrigin({ value: "not-a-url", mode: "production" });
+  fail("resolver accepted an invalid origin");
+} catch {
+  /* expected */
+}
+try {
+  resolveApiOrigin({ value: "ftp://api.example.com", mode: "production" });
+  fail("resolver accepted a non-http(s) origin");
+} catch {
+  /* expected */
+}
+try {
+  resolveApiOrigin({ value: "", mode: "production" });
+  fail("resolver did not fail closed on a missing production origin");
+} catch {
+  /* expected */
 }
 
-async function rendererTarget(debuggingPort, expectedOrigin) {
-  const endpoint = `http://127.0.0.1:${debuggingPort}/json/list`;
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const targets = await fetch(endpoint).then((response) => response.json());
-      const page = targets.find((target) => target.type === "page");
-      if (page?.webSocketDebuggerUrl && new URL(page.url).origin === expectedOrigin) {
-        return page.webSocketDebuggerUrl;
-      }
-    } catch {
-      // Electron and its renderer are still starting.
-    }
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`Timed out waiting for Electron DevTools on port ${debuggingPort}`);
-}
+// 2. Generate the canonical artifact and build the renderer from it with a distinguishing origin.
+const generate = spawnSync(
+  process.execPath,
+  ["scripts/generate-runtime-config.mjs", "--mode=production"],
+  {
+    cwd: repositoryRoot,
+    stdio: "inherit",
+    env: { ...process.env, COMMERCE_API_URL: DISTINGUISHING_ORIGIN },
+  },
+);
+if (generate.status !== 0) fail("generate-runtime-config did not succeed");
 
-async function readRendererOrigin(webSocketUrl) {
-  return new Promise((resolvePromise, reject) => {
-    const socket = new WebSocket(webSocketUrl);
-    const timeout = setTimeout(() => {
-      socket.close();
-      reject(new Error("Timed out reading the renderer origin"));
-    }, 20_000);
+const configPath = join(repositoryRoot, "dist-electron", RUNTIME_CONFIG_FILENAME);
+const mainResolved = normalizeApiOrigin(
+  JSON.parse(readFileSync(configPath, "utf8")).commerceApiUrl,
+);
+if (mainResolved !== DISTINGUISHING_ORIGIN)
+  fail(`packaged artifact origin ${mainResolved} != configured ${DISTINGUISHING_ORIGIN}`);
 
-    socket.addEventListener("open", () => {
-      socket.send(
-        JSON.stringify({
-          id: 1,
-          method: "Runtime.evaluate",
-          params: {
-            expression: "location.origin",
-            returnByValue: true,
-          },
-        }),
-      );
-    });
-    socket.addEventListener("message", (event) => {
-      const message = JSON.parse(event.data);
-      if (message.id !== 1) return;
-      clearTimeout(timeout);
-      socket.close();
-      if (message.result?.exceptionDetails) {
-        reject(
-          new Error(
-            `Renderer origin probe evaluation failed: ${message.result.exceptionDetails.text}`,
-          ),
-        );
-      } else {
-        resolvePromise(message.result.result.value);
-      }
-    });
-    socket.addEventListener("error", () => {
-      clearTimeout(timeout);
-      reject(new Error("Could not connect to the Electron renderer DevTools target"));
-    });
-  });
-}
+const rendererBuild = spawnSync(
+  process.platform === "win32" ? "pnpm.cmd" : "pnpm",
+  ["build:renderer"],
+  {
+    cwd: repositoryRoot,
+    stdio: "inherit",
+  },
+);
+if (rendererBuild.status !== 0) fail("renderer build did not succeed");
 
-async function waitForRendererOrigin(webSocketUrl, expectedOrigin) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    const origin = await readRendererOrigin(webSocketUrl);
-    if (origin === expectedOrigin) return origin;
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
-  }
-  throw new Error(`Electron renderer did not settle on ${expectedOrigin}`);
-}
-
-async function observeOrigin(mode) {
-  let vite;
-  let electron;
-  try {
-    const debuggingPort = mode === "development" ? 9223 : 9224;
-    const expectedOrigin =
-      mode === "development" ? "http://127.0.0.1:5173" : "http://127.0.0.1:4173";
-    const environment = { ...process.env };
-    delete environment.ELECTRON_RUN_AS_NODE;
-    if (mode === "development") {
-      vite = spawn("pnpm.cmd", ["exec", "vite", "--host", "127.0.0.1"], {
-        cwd: repositoryRoot,
-        env: environment,
-        shell: true,
-        stdio: "ignore",
-      });
-      await waitFor("http://127.0.0.1:5173");
-      environment.VITE_DEV_SERVER_URL = "http://127.0.0.1:5173";
-    } else {
-      delete environment.VITE_DEV_SERVER_URL;
-    }
-    electron = spawn(electronPath, [".", `--remote-debugging-port=${debuggingPort}`], {
-      cwd: repositoryRoot,
-      env: environment,
-      stdio: "ignore",
-    });
-    const webSocketUrl = await rendererTarget(debuggingPort, expectedOrigin);
-    return await waitForRendererOrigin(webSocketUrl, expectedOrigin);
-  } finally {
-    stop(electron);
-    stop(vite);
+// 3. Extract the origin baked into the renderer bundle and assert it matches the packaged artifact.
+const assetsDir = join(repositoryRoot, "dist", "assets");
+const bundleOrigins = new Set();
+for (const file of readdirSync(assetsDir)) {
+  if (!file.endsWith(".js")) continue;
+  const text = readFileSync(join(assetsDir, file), "utf8");
+  for (const match of text.matchAll(/https?:\/\/127\.0\.0\.1:\d+|https?:\/\/localhost:\d+/g)) {
+    bundleOrigins.add(match[0]);
   }
 }
+if (!bundleOrigins.has(DISTINGUISHING_ORIGIN))
+  fail(
+    `renderer bundle did not bake ${DISTINGUISHING_ORIGIN}; found ${[...bundleOrigins].join(", ")}`,
+  );
+if (bundleOrigins.has("http://localhost:3000"))
+  fail("renderer bundle still contains the localhost:3000 default alongside the configured origin");
 
-const developmentOrigin = await observeOrigin("development");
-const productionOrigin = await observeOrigin("production");
-console.log(JSON.stringify({ developmentOrigin, productionOrigin }));
+// 4. Fail-closed is asserted in-process in step 1 (resolveApiOrigin throws for a missing production
+// origin). Restore the default (dev) artifact so a subsequent normal build is not left with the
+// distinguishing probe origin.
+writeFileSync(
+  configPath,
+  `${JSON.stringify({ commerceApiUrl: resolveApiOrigin({ value: "", mode: "development" }) }, null, 2)}\n`,
+  "utf8",
+);
+
+process.stdout.write(
+  JSON.stringify({
+    ok: true,
+    packagedOrigin: mainResolved,
+    rendererBakedOrigin: DISTINGUISHING_ORIGIN,
+    mainEqualsRenderer: true,
+  }) + "\n",
+);

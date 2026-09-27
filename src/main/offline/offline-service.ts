@@ -237,13 +237,13 @@ export class OfflineSaleService {
   getLocalReceipt(localSaleId: string): LocalReceipt | null {
     const sale = this.database.connection
       .prepare(
-        `SELECT s.local_sale_id, s.local_receipt_id, s.lifecycle, s.accepted_at, s.currency,
-          s.total_minor, t.cash_received_minor, t.change_minor
+        `SELECT s.local_sale_id, s.local_receipt_id, s.lifecycle, s.accepted_at, s.acknowledged_at,
+          s.currency, s.total_minor, t.cash_received_minor, t.change_minor
          FROM local_sale s
          JOIN local_cash_tender t ON t.local_sale_id = s.local_sale_id
          WHERE s.local_sale_id = ?`,
       )
-      .get(localSaleId) as Record<string, string | number> | undefined;
+      .get(localSaleId) as Record<string, string | number | null> | undefined;
     if (!sale) return null;
     const lines = this.database.connection
       .prepare(
@@ -271,12 +271,51 @@ export class OfflineSaleService {
       localReceiptId: String(sale.local_receipt_id),
       lifecycle: sale.lifecycle as LocalReceipt["lifecycle"],
       acceptedAt: String(sale.accepted_at),
+      acknowledgedAt: sale.acknowledged_at === null ? null : String(sale.acknowledged_at),
       currency: String(sale.currency),
       totalMinor: Number(sale.total_minor),
       cashReceivedMinor: Number(sale.cash_received_minor),
       changeMinor: Number(sale.change_minor),
       lines,
     };
+  }
+
+  /**
+   * Every locally accepted sale the cashier has not acknowledged, oldest first. Deterministic
+   * ordering guarantees that if several unacknowledged sales somehow exist, recovery presents and
+   * resolves them one at a time without discarding any.
+   */
+  getUnacknowledgedSales(): ReadonlyArray<LocalReceipt> {
+    const ids = this.database.connection
+      .prepare(
+        `SELECT local_sale_id FROM local_sale
+         WHERE acknowledged_at IS NULL
+         ORDER BY created_at, local_sale_id`,
+      )
+      .all() as Array<{ local_sale_id: string }>;
+    return ids
+      .map((row) => this.getLocalReceipt(row.local_sale_id))
+      .filter((receipt): receipt is LocalReceipt => receipt !== null);
+  }
+
+  /**
+   * Record the cashier's acknowledgement of a specific accepted sale. Write-once (the schema trigger
+   * rejects re-acknowledgement); acknowledging an already-acknowledged sale is a no-op that returns
+   * the current receipt. Never touches synchronization state or the outbox.
+   */
+  acknowledgeSale(localSaleId: string): LocalReceipt {
+    return this.database.transaction(() => {
+      const existing = this.getLocalReceipt(localSaleId);
+      if (!existing) throw new OfflineAcceptanceError("SALE_NOT_FOUND", "The sale does not exist.");
+      if (existing.acknowledgedAt === null) {
+        this.database.connection
+          .prepare(
+            "UPDATE local_sale SET acknowledged_at = ? WHERE local_sale_id = ? AND acknowledged_at IS NULL",
+          )
+          .run(this.now().toISOString(), localSaleId);
+      }
+      return this.getLocalReceipt(localSaleId)!;
+    });
   }
 
   getPendingSyncSummary(): PendingSyncSummary {
