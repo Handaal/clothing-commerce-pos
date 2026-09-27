@@ -70,15 +70,29 @@ const mainResolved = normalizeApiOrigin(
 if (mainResolved !== DISTINGUISHING_ORIGIN)
   fail(`packaged artifact origin ${mainResolved} != configured ${DISTINGUISHING_ORIGIN}`);
 
+// Invoke Vite through Node directly rather than the `pnpm`/`pnpm.cmd` shim. Node 24 refuses to spawn
+// a `.cmd`/`.bat` file without `shell: true` (EINVAL), which made this step fail-closed with a
+// swallowed error on the Windows CI runner. Spawning the resolved JS bin with `process.execPath`
+// is the portable convention already used by this repo's other acceptance runners, and it inherits
+// the full environment (PATH, CI variables, and the generated runtime-config artifact on disk).
 const rendererBuild = spawnSync(
-  process.platform === "win32" ? "pnpm.cmd" : "pnpm",
-  ["build:renderer"],
+  process.execPath,
+  [join(repositoryRoot, "node_modules", "vite", "bin", "vite.js"), "build"],
   {
     cwd: repositoryRoot,
     stdio: "inherit",
   },
 );
-if (rendererBuild.status !== 0) fail("renderer build did not succeed");
+if (rendererBuild.status !== 0) {
+  const details = [
+    rendererBuild.error && `error=${rendererBuild.error.code ?? rendererBuild.error.message}`,
+    `status=${rendererBuild.status}`,
+    rendererBuild.signal && `signal=${rendererBuild.signal}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  fail(`renderer build did not succeed (${details})`);
+}
 
 // 3. Extract the origin baked into the renderer bundle and assert it matches the packaged artifact.
 const assetsDir = join(repositoryRoot, "dist", "assets");
