@@ -32,6 +32,7 @@ import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { AttendanceClock } from "./pos/AttendanceClock";
 import { resolveRegisters, type PosRegister } from "./pos/context";
+import { StaffAttendance } from "./staff/StaffAttendance";
 import {
   receiptIdentity,
   type BusinessIdentity,
@@ -1200,7 +1201,17 @@ export function PosApplication({
       onSignOut={() => void signOut()}
       signOutDisabled={locked || returnLocked}
     >
-      {section === "pos" ? posContent : <PlaceholderSection section={activeSection} />}
+      {section === "pos" ? (
+        posContent
+      ) : section === "staff" ? (
+        <StaffAttendance
+          client={tenantClient}
+          currency={register.sellingCurrency}
+          branchId={register.branchId}
+        />
+      ) : (
+        <PlaceholderSection section={activeSection} />
+      )}
     </AppShell>
   );
 }

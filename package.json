@@ -32,7 +32,7 @@
   },
   "dependencies": {
     "@clerk/react": "6.15.1",
-    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.16.0.tgz",
+    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.17.0.tgz",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

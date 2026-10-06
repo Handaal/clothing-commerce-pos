@@ -520,6 +520,222 @@ h3 {
   color: var(--muted, #6b7280);
   max-width: 12rem;
 }
+
+/* ── Staff attendance & payroll ─────────────────────────────────────────── */
+.staff-shell {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+}
+.staff-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.staff-topbar h1 {
+  margin: 0;
+  font-size: 1.6rem;
+}
+.staff-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+.staff-filters label {
+  display: flex;
+  flex-direction: column;
+  font-size: 0.72rem;
+  color: var(--text-dim, #6b7280);
+  gap: 0.2rem;
+}
+.staff-filters input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.45rem 0.6rem;
+  background: var(--field-bg);
+}
+.staff-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.75rem;
+}
+.staff-stat {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 0.85rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  background: var(--surface, #fff);
+}
+.staff-stat span {
+  font-size: 0.74rem;
+  color: var(--text-dim, #6b7280);
+}
+.staff-stat strong {
+  font-size: 1.5rem;
+}
+.staff-stat--accent {
+  border-color: var(--accent, #4f46e5);
+}
+.staff-stat--accent strong {
+  color: var(--accent, #4f46e5);
+}
+.staff-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface, #fff);
+}
+.staff-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--surface-2, #f8f8fb);
+  border-bottom: 1px solid var(--border);
+}
+.staff-card__head h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+.staff-table-wrap {
+  overflow-x: auto;
+}
+.staff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.staff-table th,
+.staff-table td {
+  padding: 0.55rem 0.9rem;
+  text-align: start;
+  border-top: 1px solid var(--line, #eee);
+}
+.staff-table thead th {
+  border-top: none;
+  font-weight: 600;
+  color: var(--text-faint, #9ca3af);
+  font-size: 0.74rem;
+}
+.staff-table td small {
+  display: block;
+  color: var(--text-faint, #9ca3af);
+  font-size: 0.72rem;
+}
+.staff-table .end {
+  text-align: end;
+}
+.staff-table .muted {
+  color: var(--text-dim, #6b7280);
+}
+.staff-table .good {
+  color: var(--good, #15803d);
+}
+.staff-table .bad {
+  color: var(--bad, #b91c1c);
+}
+.staff-table .accent {
+  color: var(--accent, #4f46e5);
+}
+.staff-actions {
+  display: inline-flex;
+  gap: 0.75rem;
+}
+.staff-table .link {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--accent, #4f46e5);
+  font: inherit;
+  padding: 0;
+}
+.staff-table .link.bad {
+  color: var(--bad, #b91c1c);
+}
+.staff-table .link:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.pill {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  background: var(--surface-2, #eef);
+  color: var(--text-dim, #6b7280);
+}
+.pill--good {
+  background: #dcfce7;
+  color: #15803d;
+}
+.pill--bad {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.pill--warn {
+  background: #fef9c3;
+  color: #a16207;
+}
+.staff-empty {
+  padding: 1.5rem;
+  text-align: center;
+  color: var(--text-faint, #9ca3af);
+  font-size: 0.85rem;
+}
+.staff-modal__scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.staff-modal {
+  background: var(--surface, #fff);
+  border-radius: 14px;
+  padding: 1.25rem;
+  width: min(26rem, 92vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.staff-modal h3 {
+  margin: 0 0 1rem;
+}
+.staff-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.staff-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.8rem;
+  color: var(--text-dim, #6b7280);
+}
+.field input,
+.field select {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  background: var(--field-bg);
+  font-size: 0.9rem;
+  color: var(--text, #111);
+}
 .context-summary {
   display: flex;
   flex-direction: column;
