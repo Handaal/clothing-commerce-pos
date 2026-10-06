@@ -510,6 +510,16 @@ h3 {
   padding: 0.65rem 2rem 0.65rem 0.9rem;
   background: var(--field-bg);
 }
+.attendance-clock {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.attendance-clock__message {
+  font-size: 0.76rem;
+  color: var(--muted, #6b7280);
+  max-width: 12rem;
+}
 .context-summary {
   display: flex;
   flex-direction: column;

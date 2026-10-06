@@ -30,6 +30,7 @@ import { formatMoney } from "./money";
 import { PayModal, type SaleTender } from "./checkout/PayModal";
 import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
+import { AttendanceClock } from "./pos/AttendanceClock";
 import { resolveRegisters, type PosRegister } from "./pos/context";
 import {
   receiptIdentity,
@@ -794,6 +795,11 @@ export function PosApplication({
           </span>
         </div>
         <div className="operator-actions">
+          <AttendanceClock
+            client={tenantClient}
+            branchId={register.branchId}
+            disabled={returnLocked}
+          />
           {registers.length > 1 ? (
             <select
               aria-label="Register"
