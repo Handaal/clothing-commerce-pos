@@ -10,6 +10,7 @@ import type {
 import { addVariant, cartTotal, removeLine, updateQuantity, type CartLine } from "../cart/cart";
 import type { SellableProduct, SellableVariant } from "../catalog/catalog";
 import { formatMoney } from "../money";
+import { PayModal, type SaleTender } from "../checkout/PayModal";
 
 export function cachedProducts(items: readonly CachedCatalogItem[]): readonly SellableProduct[] {
   const products = new Map<string, SellableProduct>();
@@ -78,7 +79,7 @@ export function OfflineCashier({
   );
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
   const [cart, setCart] = useState<readonly CartLine[]>([]);
-  const [cashReceived, setCashReceived] = useState("");
+  const [payOpen, setPayOpen] = useState(false);
   const [receipt, setReceipt] = useState<LocalReceipt | null>(null);
   const [recovered, setRecovered] = useState<readonly LocalReceipt[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -101,9 +102,6 @@ export function OfflineCashier({
   }, [refreshUnacknowledged]);
   const selectedProduct = products.find((item) => item.productId === selectedProductId) ?? null;
   const total = cartTotal(cart);
-  const cashMinor = Number(cashReceived);
-  const previewChange =
-    Number.isSafeInteger(cashMinor) && cashMinor >= total ? cashMinor - total : null;
 
   // The receipt on screen is either the just-completed sale or, on restart, the oldest sale awaiting
   // acknowledgement. A fresh sale takes precedence; otherwise a recovered sale blocks new selling.
@@ -126,7 +124,7 @@ export function OfflineCashier({
     return () => window.clearInterval(timer);
   }, [bridge, displayReceipt]);
 
-  async function completeOfflineSale() {
+  function openPayment() {
     if (isRecovery) {
       setError("Acknowledge the recovered sale before ringing a new one.");
       return;
@@ -135,22 +133,31 @@ export function OfflineCashier({
       setError("Add at least one item before checkout.");
       return;
     }
-    if (!Number.isSafeInteger(cashMinor) || cashMinor < total) {
-      setError("Enter enough cash to cover the displayed total.");
-      return;
-    }
+    setError(null);
+    setPayOpen(true);
+  }
+
+  async function completeOfflineSale(tenders: SaleTender[]) {
+    if (isRecovery || cart.length === 0) return;
+    setPayOpen(false);
     setSubmitting(true);
     setError(null);
     try {
       const accepted = await bridge.acceptCashSale({
         lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
-        cashReceivedMinor: cashMinor,
+        cashReceivedMinor: 0,
+        tenders: tenders.map((tender) => ({
+          method: tender.method,
+          amountMinor: tender.amountMinor,
+          ...(tender.cashReceivedMinor !== undefined
+            ? { cashReceivedMinor: tender.cashReceivedMinor }
+            : {}),
+        })),
       });
       const durableReceipt = await bridge.getLocalReceipt(accepted.localSaleId);
       if (!durableReceipt) throw new Error("The accepted local receipt could not be read back.");
       setReceipt(durableReceipt);
       setCart([]);
-      setCashReceived("");
       await onRefresh();
       await refreshUnacknowledged();
     } catch (caught) {
@@ -418,22 +425,6 @@ export function OfflineCashier({
             <span>Total</span>
             <strong>{formatMoney(total, currency)}</strong>
           </div>
-          <label className="cash-field">
-            Cash received <span>minor units</span>
-            <input
-              aria-label="Offline cash received in minor units"
-              type="number"
-              min="0"
-              step="1"
-              value={cashReceived}
-              disabled={submitting}
-              onChange={(event) => setCashReceived(event.target.value)}
-            />
-          </label>
-          <div className="change-row">
-            <span>Expected change</span>
-            <strong>{previewChange === null ? "—" : formatMoney(previewChange, currency)}</strong>
-          </div>
           {error ? (
             <div className="notice notice--error" role="alert">
               {error}
@@ -442,10 +433,19 @@ export function OfflineCashier({
           <button
             className="button button--complete"
             disabled={cart.length === 0 || submitting}
-            onClick={() => void completeOfflineSale()}
+            onClick={openPayment}
           >
-            {submitting ? "Saving sale…" : "Accept offline cash sale"}
+            {submitting ? "Saving sale…" : "Take payment"}
           </button>
+          {payOpen ? (
+            <PayModal
+              netMinor={total}
+              currency={currency}
+              submitting={submitting}
+              onConfirm={(tenders) => void completeOfflineSale(tenders)}
+              onCancel={() => setPayOpen(false)}
+            />
+          ) : null}
           <p className="authority-note">
             The customer sale completes when the local receipt is saved.
           </p>

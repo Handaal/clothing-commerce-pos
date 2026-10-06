@@ -52,9 +52,18 @@ export interface ProjectedInventoryItem {
   readonly advisory: true;
 }
 
+export interface OfflineTender {
+  readonly method: "cash" | "card" | "instapay" | "wallet";
+  readonly amountMinor: number;
+  readonly cashReceivedMinor?: number;
+}
+
 export interface OfflineSaleInput {
   readonly lines: ReadonlyArray<{ readonly variantId: string; readonly quantity: number }>;
+  // Cash-only sale: provide cashReceivedMinor. Split sale: provide tenders summing to the total
+  // (the cash tender carries its own cashReceivedMinor for change). Exactly one of the two is used.
   readonly cashReceivedMinor: number;
+  readonly tenders?: ReadonlyArray<OfflineTender>;
 }
 
 export interface AcceptedOfflineSale {

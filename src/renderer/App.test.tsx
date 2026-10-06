@@ -7,12 +7,34 @@ import type {
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
 import { ApiHttpError, ApiNetworkError } from "@shifted/clothing-commerce-sdk";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { OfflineBridge } from "../shared/offline";
 import { PosApplication, type PosAuth } from "./App";
 import type { CommerceClientFactory } from "./commerce/client";
+import { I18nProvider } from "./shell/i18n";
+import { ThemeProvider } from "./shell/theme";
+
+// The navigation shell relies on the theme + i18n providers that main.tsx installs in production.
+function AllProviders({ children }: { children: React.ReactNode }) {
+  return (
+    <ThemeProvider>
+      <I18nProvider>{children}</I18nProvider>
+    </ThemeProvider>
+  );
+}
+
+function render(ui: ReactElement, options?: Parameters<typeof rtlRender>[1]) {
+  return rtlRender(ui, { wrapper: AllProviders, ...options });
+}
 
 afterEach(cleanup);
 
@@ -74,6 +96,22 @@ const receipt: CreatePosSaleResponse = {
     createdAt: "2026-09-04T12:00:00.000Z",
     updatedAt: "2026-09-04T12:00:00.000Z",
   },
+  payments: [
+    {
+      id: "payment-1",
+      orderId: "order-1",
+      method: "cash",
+      status: "captured",
+      currency: "USD",
+      amountMinor: 5198,
+      cashReceivedMinor: 6000,
+      changeMinor: 802,
+      capturedByMembershipId: "member-1",
+      capturedAt: "2026-09-04T12:00:00.000Z",
+      createdAt: "2026-09-04T12:00:00.000Z",
+      updatedAt: "2026-09-04T12:00:00.000Z",
+    },
+  ],
   fulfillment: {
     id: "fulfillment-1",
     orderId: "order-1",
@@ -438,15 +476,12 @@ describe("connected cashier application", () => {
     fireEvent.click(addButton);
     fireEvent.click(addButton);
     expect((screen.getByLabelText(/Quantity for Linen Shirt/) as HTMLInputElement).value).toBe("2");
-    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
-      target: { value: "6000" },
-    });
     await waitFor(() =>
       expect(
-        (screen.getByRole("button", { name: "Complete sale" }) as HTMLButtonElement).disabled,
+        (screen.getByRole("button", { name: "Take payment" }) as HTMLButtonElement).disabled,
       ).toBe(false),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Complete sale" }));
+    payWithCash("60.00");
 
     expect(await screen.findByRole("heading", { name: "Order POS-0001" })).toBeTruthy();
     expect(screen.getByText("Cash captured · Fulfilled")).toBeTruthy();
@@ -463,7 +498,7 @@ describe("connected cashier application", () => {
       idempotencyKey: "sale-key-1",
       registerId: "register-1",
       expectedTotalMinor: 5198,
-      cashReceivedMinor: 6000,
+      tenders: [{ method: "cash", amountMinor: 5198, cashReceivedMinor: 6000 }],
       lines: [{ variantId: "variant-1", quantity: 2 }],
     });
     const submitted = fixture.createPosSale.mock.calls[0][0];
@@ -475,7 +510,7 @@ describe("connected cashier application", () => {
     fireEvent.click(screen.getByRole("button", { name: "New sale" }));
     expect(await screen.findByText("Your cart is empty.")).toBeTruthy();
     expect(
-      (screen.getByRole("button", { name: "Complete sale" }) as HTMLButtonElement).disabled,
+      (screen.getByRole("button", { name: "Take payment" }) as HTMLButtonElement).disabled,
     ).toBe(true);
     expect(fixture.createPosSale).toHaveBeenCalledTimes(1);
   });
@@ -503,18 +538,14 @@ describe("connected cashier application", () => {
     );
     fireEvent.click(await screen.findByRole("button", { name: /Linen Shirt/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Add" }));
-    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
-      target: { value: "3000" },
-    });
-    const complete = () => screen.getByRole("button", { name: "Complete sale" });
-    await waitFor(() => expect((complete() as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(complete());
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+    payWithCash("30.00");
 
     const confirm = await screen.findByRole("button", { name: "Confirm updated total" });
     expect(screen.getByText(/server reports/)).toBeTruthy();
     fireEvent.click(confirm);
-    await waitFor(() => expect((complete() as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(complete());
+    await waitFor(() => expect(completeButton().disabled).toBe(false));
+    payWithCash("30.00");
     await screen.findByRole("heading", { name: "Order POS-0001" });
 
     expect(createPosSale.mock.calls.map(([input]) => input)).toEqual([
@@ -600,8 +631,19 @@ async function addOneAndReady() {
   fireEvent.click(await screen.findByRole("button", { name: "Add" }));
 }
 
+// The cart's primary action now opens the payment modal.
 function completeButton() {
-  return screen.getByRole("button", { name: "Complete sale" }) as HTMLButtonElement;
+  return screen.getByRole("button", { name: "Take payment" }) as HTMLButtonElement;
+}
+
+// Settle a sale as cash through the payment modal: the cash tender pre-fills to the net total, the
+// cashier enters physical cash received, then confirms.
+function payWithCash(cashReceivedMajor: string) {
+  fireEvent.click(screen.getByRole("button", { name: "Take payment" }));
+  fireEvent.change(screen.getByLabelText(/Cash received/), {
+    target: { value: cashReceivedMajor },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Complete sale" }));
 }
 
 describe("connected POS promotions", () => {
@@ -637,11 +679,8 @@ describe("connected POS promotions", () => {
     expect(screen.getByText(/Automatic promotion/)).toBeTruthy();
     expect(screen.getByText("Promotion discount")).toBeTruthy();
 
-    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
-      target: { value: "2099" },
-    });
     await waitFor(() => expect(completeButton().disabled).toBe(false));
-    fireEvent.click(completeButton());
+    payWithCash("30.00");
 
     await screen.findByRole("heading", { name: "Order POS-0001" });
     const submitted = createPosSale.mock.calls[0][0];
@@ -693,11 +732,8 @@ describe("connected POS promotions", () => {
       expect(posQuote.mock.calls.some(([body]) => body.promotionCode === "SAVE10")).toBe(true),
     );
 
-    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
-      target: { value: "1599" },
-    });
     await waitFor(() => expect(completeButton().disabled).toBe(false));
-    fireEvent.click(completeButton());
+    payWithCash("30.00");
     await screen.findByRole("heading", { name: "Order POS-0001" });
     expect(createPosSale.mock.calls[0][0]).toMatchObject({
       expectedTotalMinor: 1599,
@@ -717,9 +753,6 @@ describe("connected POS promotions", () => {
     fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "NOPE" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect(await screen.findByText(/isn.t available/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
-      target: { value: "3000" },
-    });
     await waitFor(() => expect(completeButton().disabled).toBe(false));
   });
 
@@ -819,18 +852,15 @@ describe("connected POS promotions", () => {
     fireEvent.change(screen.getByLabelText("Promotion code"), { target: { value: "LAST1" } });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect(await screen.findByText("Last Voucher")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Cash received in minor units"), {
-      target: { value: "3000" },
-    });
     await waitFor(() => expect(completeButton().disabled).toBe(false));
-    fireEvent.click(completeButton());
+    payWithCash("30.00");
 
     expect(await screen.findByRole("button", { name: "Confirm updated total" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Order POS-0001" })).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Confirm updated total" }));
     await waitFor(() => expect(completeButton().disabled).toBe(false));
-    fireEvent.click(completeButton());
+    payWithCash("30.00");
     await screen.findByRole("heading", { name: "Order POS-0001" });
     expect(createPosSale.mock.calls.map(([input]) => input.idempotencyKey)).toEqual([
       "stale",
