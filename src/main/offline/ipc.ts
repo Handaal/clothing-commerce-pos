@@ -38,7 +38,11 @@ function parseOfflineTender(raw: unknown): OfflineTender {
     if (!Number.isSafeInteger(tender.cashReceivedMinor) || Number(tender.cashReceivedMinor) < 0) {
       throw new TypeError("Offline tender cash received is invalid.");
     }
-    return { method, amountMinor: Number(tender.amountMinor), cashReceivedMinor: Number(tender.cashReceivedMinor) };
+    return {
+      method,
+      amountMinor: Number(tender.amountMinor),
+      cashReceivedMinor: Number(tender.cashReceivedMinor),
+    };
   }
   return { method, amountMinor: Number(tender.amountMinor) };
 }
@@ -50,7 +54,10 @@ export function parseOfflineSaleInput(value: unknown): OfflineSaleInput {
     throw new TypeError("Offline sale lines are invalid.");
   }
   const hasTenders = Array.isArray(input.tenders) && input.tenders.length > 0;
-  if (!hasTenders && (!Number.isSafeInteger(input.cashReceivedMinor) || Number(input.cashReceivedMinor) < 0)) {
+  if (
+    !hasTenders &&
+    (!Number.isSafeInteger(input.cashReceivedMinor) || Number(input.cashReceivedMinor) < 0)
+  ) {
     throw new TypeError("Offline cash received is invalid.");
   }
   const tenders = hasTenders

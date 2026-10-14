@@ -27,7 +27,6 @@ export function AppShell({
   const t = useT();
   const { toggleLang } = useI18n();
   const { theme, toggle: toggleTheme } = useTheme();
-  const activeLabel = sections.find((s) => s.id === active)?.labelKey ?? "nav.pos";
   const initial = userName.trim().slice(0, 1).toUpperCase() || "?";
 
   return (
@@ -75,7 +74,6 @@ export function AppShell({
 
       <div className="shell-main">
         <header className="shell-header">
-          <h1 className="shell-header__title">{t(activeLabel)}</h1>
           <div className="shell-header__actions">
             <button
               type="button"

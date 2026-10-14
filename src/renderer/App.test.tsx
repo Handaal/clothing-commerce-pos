@@ -7,13 +7,7 @@ import type {
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
 import { ApiHttpError, ApiNetworkError } from "@shifted/clothing-commerce-sdk";
-import {
-  cleanup,
-  fireEvent,
-  render as rtlRender,
-  screen,
-  waitFor,
-} from "@testing-library/react";
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

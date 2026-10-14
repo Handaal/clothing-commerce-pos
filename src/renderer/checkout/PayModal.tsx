@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
+import { useModalA11y } from "../shell/useModalA11y";
 
 export type TenderMethod = "cash" | "card" | "instapay" | "wallet";
 
@@ -8,6 +9,19 @@ export interface SaleTender {
   method: TenderMethod;
   amountMinor: number;
   cashReceivedMinor?: number;
+}
+
+export interface SaleCustomer {
+  name: string;
+  phone: string;
+}
+
+// Phone is matched/stored in E.164; normalization keeps only + and digits.
+function normalizePhone(value: string): string {
+  return value.replace(/[^+0-9]/g, "");
+}
+function isValidPhone(value: string): boolean {
+  return /^\+[1-9][0-9]{6,14}$/.test(normalizePhone(value));
 }
 
 const METHODS: readonly TenderMethod[] = ["cash", "card", "instapay", "wallet"];
@@ -34,18 +48,61 @@ export function PayModal({
   submitting,
   onConfirm,
   onCancel,
+  lookupCustomer,
 }: {
   netMinor: number;
   currency: string;
   submitting: boolean;
-  onConfirm: (tenders: SaleTender[]) => void;
+  onConfirm: (tenders: SaleTender[], customer?: SaleCustomer) => void;
   onCancel: () => void;
+  // Optional phone lookup; returns the matched customer's name or null. Absent ⇒ no live matching.
+  lookupCustomer?: (phone: string) => Promise<{ name: string } | null>;
 }) {
   const [rows, setRows] = useState<Row[]>([
     { method: "cash", amount: minorToMajorInput(netMinor) },
   ]);
   const [cashReceived, setCashReceived] = useState("");
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [matchedName, setMatchedName] = useState<string | null>(null);
+  const [lookingUp, setLookingUp] = useState(false);
   const symbol = currencySymbol(currency);
+
+  const phoneValid = isValidPhone(customerPhone);
+  const nameValid = customerName.trim().length >= 1 && customerName.trim().length <= 200;
+  // Customer is optional: attach only when both name and a valid phone are present.
+  const customerValid = nameValid && phoneValid;
+  const customerPartial =
+    (customerName.trim() !== "" || customerPhone.trim() !== "") && !customerValid;
+
+  // Debounced match-by-phone. When a known phone is typed we surface the stored name and prefill an
+  // empty name field so the cashier can confirm the existing customer at a glance.
+  useEffect(() => {
+    /* eslint-disable react-hooks/set-state-in-effect -- synchronize match state with the phone input */
+    if (!lookupCustomer || !phoneValid) {
+      setMatchedName(null);
+      setLookingUp(false);
+      return;
+    }
+    let active = true;
+    setLookingUp(true);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    const handle = window.setTimeout(() => {
+      void lookupCustomer(normalizePhone(customerPhone))
+        .then((match) => {
+          if (!active) return;
+          setMatchedName(match?.name ?? null);
+          if (match?.name)
+            setCustomerName((current) => (current.trim() === "" ? match.name : current));
+        })
+        .catch(() => active && setMatchedName(null))
+        .finally(() => active && setLookingUp(false));
+    }, 400);
+    return () => {
+      active = false;
+      window.clearTimeout(handle);
+    };
+  }, [customerPhone, phoneValid, lookupCustomer]);
 
   const amounts = useMemo(() => rows.map((row) => parseMajorToMinor(row.amount)), [rows]);
   const sum = amounts.reduce<number>((total, value) => total + (value ?? 0), 0);
@@ -87,16 +144,18 @@ export function PayModal({
     const tenders: SaleTender[] = rows.map((row, index) => ({
       method: row.method,
       amountMinor: amounts[index] as number,
-      ...(row.method === "cash"
-        ? { cashReceivedMinor: cashReceivedMinor ?? cashAmountMinor }
-        : {}),
+      ...(row.method === "cash" ? { cashReceivedMinor: cashReceivedMinor ?? cashAmountMinor } : {}),
     }));
-    onConfirm(tenders);
+    const customer: SaleCustomer | undefined = customerValid
+      ? { name: customerName.trim(), phone: normalizePhone(customerPhone) }
+      : undefined;
+    onConfirm(tenders, customer);
   }
 
+  const dialogRef = useModalA11y<HTMLDivElement>(onCancel);
   return (
     <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Take payment">
-      <div className="modal-card pay-modal">
+      <div className="modal-card pay-modal" ref={dialogRef}>
         <p className="eyebrow">Payment</p>
         <div className="pay-due">
           <span>Amount due</span>
@@ -148,7 +207,12 @@ export function PayModal({
         </div>
 
         {availableToAdd.length > 0 ? (
-          <button type="button" className="button button--quiet" disabled={submitting} onClick={addRow}>
+          <button
+            type="button"
+            className="button button--quiet"
+            disabled={submitting}
+            onClick={addRow}
+          >
             + Split payment
           </button>
         ) : null}
@@ -166,6 +230,43 @@ export function PayModal({
           </label>
         ) : null}
 
+        <div className="pay-customer">
+          <p className="eyebrow">Customer (optional)</p>
+          <div className="pay-customer__fields">
+            <input
+              aria-label="Customer phone"
+              inputMode="tel"
+              placeholder="Phone (e.g. +20100…)"
+              value={customerPhone}
+              disabled={submitting}
+              onChange={(event) => setCustomerPhone(event.target.value)}
+            />
+            <input
+              aria-label="Customer name"
+              placeholder="Name"
+              value={customerName}
+              disabled={submitting}
+              onChange={(event) => setCustomerName(event.target.value)}
+            />
+          </div>
+          {lookingUp ? (
+            <span className="pay-customer__status">Checking for an existing customer…</span>
+          ) : matchedName ? (
+            <span className="pay-customer__status pay-customer__status--match">
+              Existing customer: {matchedName}
+            </span>
+          ) : customerPartial ? (
+            <span className="pay-customer__status pay-customer__status--hint">
+              Enter a name and a valid phone to attach a customer, or leave blank for a walk-in
+              sale.
+            </span>
+          ) : phoneValid && customerName.trim() === "" ? (
+            <span className="pay-customer__status pay-customer__status--hint">
+              New customer — add a name.
+            </span>
+          ) : null}
+        </div>
+
         <div className="pay-summary">
           {remaining !== 0 ? (
             <div className={`pay-remaining${remaining < 0 ? " pay-remaining--over" : ""}`}>
@@ -182,10 +283,20 @@ export function PayModal({
         </div>
 
         <div className="pay-actions">
-          <button type="button" className="button button--quiet" disabled={submitting} onClick={onCancel}>
+          <button
+            type="button"
+            className="button button--quiet"
+            disabled={submitting}
+            onClick={onCancel}
+          >
             Cancel
           </button>
-          <button type="button" className="button button--complete" disabled={!canConfirm} onClick={confirm}>
+          <button
+            type="button"
+            className="button button--complete"
+            disabled={!canConfirm}
+            onClick={confirm}
+          >
             {submitting ? "Completing sale…" : "Complete sale"}
           </button>
         </div>

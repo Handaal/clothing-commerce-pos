@@ -21,6 +21,45 @@ function safeNonNegativeInteger(value: unknown, field: string): number {
   return value as number;
 }
 
+const TENDER_METHODS = new Set(["cash", "card", "instapay", "wallet"]);
+
+// Split tender: one or more cashier-confirmed payment lines. The cash tender may carry the physical
+// cash received for change. The API re-derives and validates amounts/change; this only guards the shape
+// so the durable, replayable command never persists a malformed payment.
+function parseTenders(value: unknown): NonNullable<ConnectedSaleIntent["tenders"]> {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 20) {
+    throw new TypeError("tenders is invalid.");
+  }
+  return value.map((raw) => {
+    if (!raw || typeof raw !== "object") throw new TypeError("tender is invalid.");
+    const tender = raw as Record<string, unknown>;
+    if (typeof tender.method !== "string" || !TENDER_METHODS.has(tender.method)) {
+      throw new TypeError("tender.method is invalid.");
+    }
+    return {
+      method: tender.method as "cash" | "card" | "instapay" | "wallet",
+      amountMinor: safeNonNegativeInteger(tender.amountMinor, "tender.amountMinor"),
+      ...(tender.cashReceivedMinor === undefined
+        ? {}
+        : {
+            cashReceivedMinor: safeNonNegativeInteger(
+              tender.cashReceivedMinor,
+              "tender.cashReceivedMinor",
+            ),
+          }),
+    };
+  });
+}
+
+function parseCustomer(value: unknown): { name: string; phone: string } {
+  if (!value || typeof value !== "object") throw new TypeError("customer is invalid.");
+  const customer = value as Record<string, unknown>;
+  return {
+    name: boundedString(customer.name, "customer.name"),
+    phone: boundedString(customer.phone, "customer.phone"),
+  };
+}
+
 export function parseConnectedSaleSession(value: unknown): ConnectedSaleSession {
   if (!value || typeof value !== "object")
     throw new TypeError("Connected sale session is invalid.");
@@ -41,10 +80,24 @@ export function parseConnectedSaleIntent(value: unknown): ConnectedSaleIntent {
     input.promotionCode === undefined || input.promotionCode === null
       ? undefined
       : boundedString(input.promotionCode, "promotionCode");
+  // Split tender (preferred) and/or a single cash-received amount; both are optional in the SDK
+  // contract, but a sale with neither has no payment and must never be persisted as a durable command.
+  const tenders =
+    input.tenders === undefined || input.tenders === null ? undefined : parseTenders(input.tenders);
+  const cashReceivedMinor =
+    input.cashReceivedMinor === undefined || input.cashReceivedMinor === null
+      ? undefined
+      : safeNonNegativeInteger(input.cashReceivedMinor, "cashReceivedMinor");
+  if (tenders === undefined && cashReceivedMinor === undefined) {
+    throw new TypeError("Connected sale payment is invalid.");
+  }
+  const customer =
+    input.customer === undefined || input.customer === null
+      ? undefined
+      : parseCustomer(input.customer);
   return {
     registerId: boundedString(input.registerId, "registerId"),
     expectedTotalMinor: safeNonNegativeInteger(input.expectedTotalMinor, "expectedTotalMinor"),
-    cashReceivedMinor: safeNonNegativeInteger(input.cashReceivedMinor, "cashReceivedMinor"),
     lines: input.lines.map((raw) => {
       if (!raw || typeof raw !== "object") throw new TypeError("Connected sale line is invalid.");
       const line = raw as Record<string, unknown>;
@@ -53,6 +106,9 @@ export function parseConnectedSaleIntent(value: unknown): ConnectedSaleIntent {
         quantity: safePositiveInteger(line.quantity, "quantity"),
       };
     }),
+    ...(tenders !== undefined ? { tenders } : {}),
+    ...(cashReceivedMinor !== undefined ? { cashReceivedMinor } : {}),
     ...(promotionCode !== undefined ? { promotionCode } : {}),
+    ...(customer !== undefined ? { customer } : {}),
   };
 }

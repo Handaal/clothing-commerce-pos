@@ -11,9 +11,18 @@ importers:
       '@clerk/react':
         specifier: 6.15.1
         version: 6.15.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@fontsource-variable/cairo':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource-variable/fraunces':
+        specifier: ^5.3.0
+        version: 5.3.0
+      '@fontsource-variable/plus-jakarta-sans':
+        specifier: ^5.3.0
+        version: 5.3.0
       '@shifted/clothing-commerce-sdk':
-        specifier: file:vendor/shifted-clothing-commerce-sdk-0.17.0.tgz
-        version: file:vendor/shifted-clothing-commerce-sdk-0.17.0.tgz
+        specifier: file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz
+        version: file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -319,6 +328,15 @@ packages:
       '@noble/hashes':
         optional: true
 
+  '@fontsource-variable/cairo@5.3.0':
+    resolution: {integrity: sha512-zkxIsVQ406AJXD1qaldeOj+CIsMzRMXRT2x6fkYjNJE2DFsqGMzNGFhdrZdZagq3qX9JwaMaZetMc7/oUlpfpg==}
+
+  '@fontsource-variable/fraunces@5.3.0':
+    resolution: {integrity: sha512-9BYGySn4AHEJdgp9Z28tQ3X+laJMEOITXkQarZXeloWQZDq5oOvXJ3kDA8c7MGIfpogIaZfjrQBqmda8POOCKA==}
+
+  '@fontsource-variable/plus-jakarta-sans@5.3.0':
+    resolution: {integrity: sha512-/l/4r0yyWK9JzAlmA0LiYgGgmJe/Gswt4jTJEzr5QhJfwMbvJZDmYWyW0M4X7yCK69BajMVlV/Lx8g7WDc1+sw==}
+
   '@hapi/address@5.1.1':
     resolution: {integrity: sha512-A+po2d/dVoY7cYajycYI43ZbYMXukuopIsqCjh5QzsBCipDtdofHntljDlpccMjIfTy6UOkg+5KPriwYch2bXA==}
     engines: {node: '>=14.0.0'}
@@ -505,9 +523,9 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.17.0.tgz':
-    resolution: {integrity: sha512-0GKDHXjnxMW7bBdtH+g8C3rOeFvvpSnSGKUrT3HfDzp6HwFOp9H5RIo3Ee3PLG/xGI1pmIjttYZH6EX3bnLNJg==, tarball: file:vendor/shifted-clothing-commerce-sdk-0.17.0.tgz}
-    version: 0.17.0
+  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz':
+    resolution: {integrity: sha512-LYkhWfHA0qGpkw1OXc33sxAyAY5B1KliiKEc9QMCf0H7Z19t8I+h5UKV4agE3Mf1R+1mAI5BJz6+OFSUjpN+fw==, tarball: file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz}
+    version: 0.19.0
 
   '@sindresorhus/is@4.6.0':
     resolution: {integrity: sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw==}
@@ -2674,6 +2692,12 @@ snapshots:
     optionalDependencies:
       '@noble/hashes': 2.3.0
 
+  '@fontsource-variable/cairo@5.3.0': {}
+
+  '@fontsource-variable/fraunces@5.3.0': {}
+
+  '@fontsource-variable/plus-jakarta-sans@5.3.0': {}
+
   '@hapi/address@5.1.1':
     dependencies:
       '@hapi/hoek': 11.0.7
@@ -2814,7 +2838,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.17.0.tgz':
+  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz':
     dependencies:
       zod: 4.4.3
 

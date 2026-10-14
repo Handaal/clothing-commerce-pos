@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 
+import type { ActivityBridge, ActivityEventInput, ActivityListQuery } from "../shared/activity";
 import type { OfflineBridge, OfflineBootstrapInput, OfflineSaleInput } from "../shared/offline";
 import type { ReturnsBridge, ReturnSession, ReturnIntent } from "../shared/returns";
 import type { ConnectedSaleIntent, ConnectedSaleSession, SalesBridge } from "../shared/sales";
@@ -86,3 +87,15 @@ const salesBridge: SalesBridge = Object.freeze({
     ipcRenderer.invoke(SALES_IPC_CHANNELS.acknowledge, session, workflowId),
 });
 contextBridge.exposeInMainWorld("sales", salesBridge);
+
+// Client-only activity ledger. Inlined channel names keep the sandboxed preload self-contained.
+const ACTIVITY_IPC_CHANNELS = Object.freeze({
+  append: "activity:append",
+  list: "activity:list",
+});
+
+const activityBridge: ActivityBridge = Object.freeze({
+  append: (event: ActivityEventInput) => ipcRenderer.invoke(ACTIVITY_IPC_CHANNELS.append, event),
+  list: (query: ActivityListQuery) => ipcRenderer.invoke(ACTIVITY_IPC_CHANNELS.list, query),
+});
+contextBridge.exposeInMainWorld("activity", activityBridge);

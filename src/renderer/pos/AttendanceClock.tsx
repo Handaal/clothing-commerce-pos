@@ -46,9 +46,7 @@ export function AttendanceClock({
     setPhase("working");
     setMessage(null);
     try {
-      const result = openEntry
-        ? await client.clockOut()
-        : await client.clockIn({ branchId });
+      const result = openEntry ? await client.clockOut() : await client.clockIn({ branchId });
       if (activeClient.current !== client) return;
       // Clock-out closes the entry (no longer open); clock-in opens a new one.
       setOpenEntry(result.entry.clockOut === null ? result.entry : null);
@@ -57,7 +55,11 @@ export function AttendanceClock({
       if (activeClient.current !== client) return;
       // Re-sync from the server: the most common failure is a stale open/closed view (already clocked
       // in/out from another device), which a refresh resolves to the true state.
-      setMessage(openEntry ? "Could not clock out. Refreshing status." : "Could not clock in. Refreshing status.");
+      setMessage(
+        openEntry
+          ? "Could not clock out. Refreshing status."
+          : "Could not clock in. Refreshing status.",
+      );
       void refresh();
     }
   }, [client, openEntry, branchId, refresh]);

@@ -14,6 +14,7 @@ import type {
   ReturnsBridge,
 } from "../../shared/returns";
 import { formatMoney } from "../money";
+import { Select } from "../shell/Select";
 import type { PosRegister } from "../pos/context";
 import { CONNECTION_REQUIRED, returnFailure, type ReturnIntent } from "./commands.mjs";
 
@@ -539,17 +540,16 @@ export function ReturnDesk({
                           <label>
                             Reason for line {line.lineNumber}
                             {eligibility.policy.allowedReasons !== null ? (
-                              <select
+                              <Select
+                                ariaLabel={`Reason for line ${line.lineNumber}`}
+                                placeholder="Choose reason"
                                 value={selected.reason}
-                                onChange={(event) =>
-                                  update(line.orderLineId, { reason: event.target.value })
-                                }
-                              >
-                                <option value="">Choose reason</option>
-                                {eligibility.policy.allowedReasons.map((reason) => (
-                                  <option key={reason}>{reason}</option>
-                                ))}
-                              </select>
+                                onChange={(value) => update(line.orderLineId, { reason: value })}
+                                options={eligibility.policy.allowedReasons.map((reason) => ({
+                                  value: reason,
+                                  label: reason,
+                                }))}
+                              />
                             ) : (
                               <input
                                 maxLength={500}
@@ -562,21 +562,21 @@ export function ReturnDesk({
                           </label>
                           <label>
                             Disposition for line {line.lineNumber}
-                            <select
+                            <Select<Selection["disposition"]>
+                              ariaLabel={`Disposition for line ${line.lineNumber}`}
                               value={selected.disposition}
-                              onChange={(event) =>
-                                update(line.orderLineId, {
-                                  disposition: event.target.value as Selection["disposition"],
-                                })
-                              }
-                            >
-                              <option value="non_restock">
-                                NON-RESTOCK — does not increase sellable inventory
-                              </option>
-                              <option value="restock">
-                                RESTOCK — returns units to sellable inventory
-                              </option>
-                            </select>
+                              onChange={(disposition) => update(line.orderLineId, { disposition })}
+                              options={[
+                                {
+                                  value: "non_restock",
+                                  label: "NON-RESTOCK — does not increase sellable inventory",
+                                },
+                                {
+                                  value: "restock",
+                                  label: "RESTOCK — returns units to sellable inventory",
+                                },
+                              ]}
+                            />
                           </label>
                         </div>
                       ) : null}

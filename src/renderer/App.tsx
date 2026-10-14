@@ -27,7 +27,7 @@ import { SaleExecutor, type SaleExecutionState, type SalesGateway } from "./chec
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
 import { formatMoney } from "./money";
-import { PayModal, type SaleTender } from "./checkout/PayModal";
+import { PayModal, type SaleCustomer, type SaleTender } from "./checkout/PayModal";
 import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
 import { AttendanceClock } from "./pos/AttendanceClock";
@@ -39,10 +39,26 @@ import {
   type ReceiptIdentity,
 } from "./pos/receipt-identity";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
+import { OrdersDesk } from "./orders/OrdersDesk";
+import { ActivityDesk } from "./activity/ActivityDesk";
+import {
+  installActivityClickCapture,
+  logActivity,
+  setActivityActor,
+  setActivitySection,
+  setActivityTenant,
+} from "./activity/log";
+import { InventoryDesk } from "./inventory/InventoryDesk";
+import { CustomersDesk } from "./customers/CustomersDesk";
+import { VouchersDesk } from "./vouchers/VouchersDesk";
+import { SuppliersDesk } from "./suppliers/SuppliersDesk";
+import { ReportsDesk } from "./reports/ReportsDesk";
+import { SettingsDesk } from "./settings/SettingsDesk";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
 import { AppShell } from "./shell/AppShell";
 import { PlaceholderSection } from "./shell/PlaceholderSection";
+import { Select } from "./shell/Select";
 import { accessibleSections, SECTIONS, type Capabilities, type SectionId } from "./shell/sections";
 
 // Cashier-facing labels for captured tender methods, shown on the cart and receipt.
@@ -268,6 +284,21 @@ export function PosApplication({
     tenantIdRef.current = tenantId;
   }, [tenantId]);
 
+  // Client-only activity ledger: install the global click capture once, and keep the ambient context
+  // (who is signed in, which tenant, which section is open) stamped onto every recorded event.
+  useEffect(() => {
+    installActivityClickCapture();
+  }, []);
+  useEffect(() => {
+    setActivityActor({ id: auth.userId, name: auth.displayName ?? null });
+  }, [auth.userId, auth.displayName]);
+  useEffect(() => {
+    setActivityTenant(tenantId);
+  }, [tenantId]);
+  useEffect(() => {
+    setActivitySection(section);
+  }, [section]);
+
   // Startup crash recovery: if a connected sale was prepared/accepted but never acknowledged before
   // the app died, replay it with its ORIGINAL key. Server idempotency decides whether it committed;
   // an accepted result surfaces the canonical receipt and blocks new selling until acknowledged.
@@ -360,6 +391,18 @@ export function PosApplication({
     setAppliedCode(null);
     setSellingMode("offline");
   }, [quoteController]);
+
+  // Navigating between workspace sections is a first-class audit event (the raw sidebar click is also
+  // captured, but this records the destination explicitly).
+  const handleNavigate = useCallback((id: SectionId) => {
+    logActivity({
+      category: "navigation",
+      action: "navigate",
+      description: `Opened the ${id} section`,
+      details: { to: id },
+    });
+    setSection(id);
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect -- These effects deliberately expose loading and
      reset transitions for external Clerk/API state machines before their asynchronous results settle. */
@@ -488,6 +531,16 @@ export function PosApplication({
     if (saleState.phase === "success") {
       setCart([]);
       setPayOpen(false);
+      logActivity({
+        category: "sale",
+        action: "sale_completed",
+        description: `Completed sale ${saleState.receipt.order.orderNumber}`,
+        details: {
+          orderNumber: saleState.receipt.order.orderNumber,
+          totalMinor: saleState.receipt.order.totalMinor,
+          currency: saleState.receipt.order.currency,
+        },
+      });
     } else if (saleState.phase === "price-changed" || saleState.phase === "promotion-changed") {
       // The final server sale re-evaluated and the pricing changed (price, promotion winner, code
       // exhaustion, eligibility). Stop, reload prices, force a fresh quote, and require reconfirmation
@@ -568,7 +621,7 @@ export function PosApplication({
     setPayOpen(true);
   }
 
-  function completeSale(tenders: SaleTender[]) {
+  function completeSale(tenders: SaleTender[], customer?: SaleCustomer) {
     if (!tenantClient || !register || locked || priceConfirmationRequired) return;
     if (cart.length === 0 || !quoteReady || quote === null) return;
     setPayOpen(false);
@@ -588,11 +641,13 @@ export function PosApplication({
       })),
       lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
       ...(appliedCode ? { promotionCode: appliedCode } : {}),
+      ...(customer ? { customer } : {}),
     });
   }
 
   async function signOut() {
     if (returnLocked) return;
+    logActivity({ category: "session", action: "sign_out", description: "Signed out of the POS" });
     resetTransaction();
     setSellingMode("connected");
     setTenantId(null);
@@ -802,18 +857,17 @@ export function PosApplication({
             disabled={returnLocked}
           />
           {registers.length > 1 ? (
-            <select
-              aria-label="Register"
+            <Select
+              ariaLabel="Register"
+              className="operator-actions__select"
               value={register.registerId}
-              onChange={(event) => chooseRegister(event.target.value)}
+              onChange={(value) => chooseRegister(value)}
               disabled={locked || returnLocked}
-            >
-              {registers.map((item) => (
-                <option key={item.registerId} value={item.registerId}>
-                  {item.registerName}
-                </option>
-              ))}
-            </select>
+              options={registers.map((item) => ({
+                value: item.registerId,
+                label: item.registerName,
+              }))}
+            />
           ) : null}
           {offlineReadiness.ready ? (
             <button
@@ -1181,6 +1235,9 @@ export function PosApplication({
               submitting={submitting}
               onConfirm={completeSale}
               onCancel={() => setPayOpen(false)}
+              lookupCustomer={(phone) =>
+                tenantClient.lookupCustomerByPhone(phone).then((result) => result.customer)
+              }
             />
           ) : null}
           <p className="authority-note">
@@ -1196,19 +1253,35 @@ export function PosApplication({
     <AppShell
       sections={visibleSections}
       active={section}
-      onNavigate={setSection}
+      onNavigate={handleNavigate}
       userName={auth.displayName ?? "Operator"}
       onSignOut={() => void signOut()}
       signOutDisabled={locked || returnLocked}
     >
       {section === "pos" ? (
         posContent
+      ) : section === "orders" ? (
+        <OrdersDesk client={tenantClient} />
+      ) : section === "inventory" ? (
+        <InventoryDesk client={tenantClient} />
+      ) : section === "customers" ? (
+        <CustomersDesk client={tenantClient} currency={register.sellingCurrency} />
+      ) : section === "vouchers" ? (
+        <VouchersDesk client={tenantClient} currency={register.sellingCurrency} />
       ) : section === "staff" ? (
         <StaffAttendance
           client={tenantClient}
           currency={register.sellingCurrency}
           branchId={register.branchId}
         />
+      ) : section === "suppliers" ? (
+        <SuppliersDesk client={tenantClient} />
+      ) : section === "reports" ? (
+        <ReportsDesk client={tenantClient} />
+      ) : section === "activity" ? (
+        <ActivityDesk />
+      ) : section === "settings" ? (
+        <SettingsDesk client={tenantClient} currency={register.sellingCurrency} />
       ) : (
         <PlaceholderSection section={activeSection} />
       )}

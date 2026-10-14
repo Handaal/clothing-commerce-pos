@@ -33,8 +33,10 @@ const EN: Dict = {
   "chrome.theme.toLight": "Light mode",
   "chrome.language": "العربية",
   "section.comingSoon": "Coming soon",
-  "section.orders.desc": "Browse every order by number — items, totals, receipt, customer, and returns.",
-  "section.inventory.desc": "Manage stock across storage units, create storage, and add or edit products.",
+  "section.orders.desc":
+    "Browse every order by number — items, totals, receipt, customer, and returns.",
+  "section.inventory.desc":
+    "Manage stock across storage units, create storage, and add or edit products.",
   "section.customers.desc": "Customer directory with profiles, purchase history, and totals.",
   "section.reports.desc": "Rich analytics and reports across the whole business.",
   "section.vouchers.desc": "Create and manage vouchers and discounts.",
@@ -63,7 +65,8 @@ const AR: Dict = {
   "chrome.language": "English",
   "section.comingSoon": "قريبًا",
   "section.orders.desc": "تصفح كل طلب برقمه — الأصناف، الإجمالي، الإيصال، العميل، والمرتجعات.",
-  "section.inventory.desc": "إدارة المخزون عبر وحدات التخزين، وإنشاء تخزين، وإضافة أو تعديل المنتجات.",
+  "section.inventory.desc":
+    "إدارة المخزون عبر وحدات التخزين، وإنشاء تخزين، وإضافة أو تعديل المنتجات.",
   "section.customers.desc": "دليل العملاء مع الملفات، وسجل الشراء، والإجماليات.",
   "section.reports.desc": "تحليلات وتقارير غنية عبر النشاط بالكامل.",
   "section.vouchers.desc": "إنشاء وإدارة القسائم والخصومات.",

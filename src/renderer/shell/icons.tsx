@@ -102,6 +102,46 @@ export const Icons = {
       <path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10" />
     </Svg>
   ),
+  edit: () => (
+    <Svg>
+      <path d="M4 20h4L19 9l-4-4L4 16v4z" />
+      <path d="M14 6l4 4" />
+    </Svg>
+  ),
+  receive: () => (
+    <Svg>
+      <path d="M12 3v10M8 9l4 4 4-4" />
+      <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2" />
+    </Svg>
+  ),
+  adjust: () => (
+    <Svg>
+      <path d="M4 7h16M4 17h16" />
+      <circle cx="9" cy="7" r="2.2" />
+      <circle cx="15" cy="17" r="2.2" />
+    </Svg>
+  ),
+  transfer: () => (
+    <Svg>
+      <path d="M4 8h13l-3-3M20 16H7l3 3" />
+    </Svg>
+  ),
+  trash: () => (
+    <Svg>
+      <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" />
+    </Svg>
+  ),
+  eye: () => (
+    <Svg>
+      <path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7z" />
+      <circle cx="12" cy="12" r="3" />
+    </Svg>
+  ),
+  plus: () => (
+    <Svg>
+      <path d="M12 5v14M5 12h14" />
+    </Svg>
+  ),
 } as const;
 
 export type IconName = keyof typeof Icons;

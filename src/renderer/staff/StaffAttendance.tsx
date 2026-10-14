@@ -12,6 +12,10 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
+import { Select } from "../shell/Select";
+import { SkeletonTable } from "../shell/Skeleton";
+import { useToast } from "../shell/Toast";
+import { useModalA11y } from "../shell/useModalA11y";
 
 // ── date helpers (local calendar dates, YYYY-MM-DD) ──────────────────────────
 const isoDate = (d: Date): string =>
@@ -24,7 +28,9 @@ const daysAgoISO = (n: number): string => {
 };
 const fmtDateTime = (iso: string): string => {
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  return Number.isNaN(d.getTime())
+    ? "—"
+    : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 };
 // ISO ↔ <input type="datetime-local"> (local wall-clock, no seconds).
 const toLocalInput = (iso: string | null): string => {
@@ -82,17 +88,26 @@ export function StaffAttendance({
   const [to, setTo] = useState(todayISO());
   const [payroll, setPayroll] = useState<PayrollReportResponse>({
     items: [],
-    totals: { baseSalaryMinor: 0, overtimeAmountMinor: 0, bonusMinor: 0, deductionMinor: 0, netPayMinor: 0 },
+    totals: {
+      baseSalaryMinor: 0,
+      overtimeAmountMinor: 0,
+      bonusMinor: 0,
+      deductionMinor: 0,
+      netPayMinor: 0,
+    },
   });
   const [adjustments, setAdjustments] = useState<Adjustment[]>([]);
   const [leaves, setLeaves] = useState<LeaveEntry[]>([]);
   const [entries, setEntries] = useState<AttendanceEntry[]>([]);
   const [staff, setStaff] = useState<StaffSummary[]>([]);
-  const [settings, setSettings] = useState<PayrollSettings>({ normalHours: 0, shiftDurationHours: 9 });
+  const [settings, setSettings] = useState<PayrollSettings>({
+    normalHours: 0,
+    shiftDurationHours: 9,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const toast = useToast();
 
   const [entryEdit, setEntryEdit] = useState<EntryEdit | null>(null);
   const [adjEdit, setAdjEdit] = useState<AdjEdit | null>(null);
@@ -167,13 +182,12 @@ export function StaffAttendance({
 
   const run = async (action: () => Promise<unknown>, done: string) => {
     setBusy(true);
-    setNotice(null);
     try {
       await action();
-      setNotice(done);
+      toast.success(done);
       await reload();
     } catch (err) {
-      setNotice(classifyCommerceError(err).message);
+      toast.error(classifyCommerceError(err).message);
     } finally {
       setBusy(false);
     }
@@ -183,7 +197,7 @@ export function StaffAttendance({
     if (!entryEdit) return;
     const clockIn = fromLocalInput(entryEdit.clockIn);
     if (!clockIn) {
-      setNotice("A valid clock-in time is required.");
+      toast.error("A valid clock-in time is required.");
       return;
     }
     const clockOut = entryEdit.clockOut ? fromLocalInput(entryEdit.clockOut) : null;
@@ -206,7 +220,7 @@ export function StaffAttendance({
     if (!adjEdit) return;
     const amountMinor = parseMajorToMinor(adjEdit.amount);
     if (amountMinor === null) {
-      setNotice("Enter a valid amount.");
+      toast.error("Enter a valid amount.");
       return;
     }
     void run(async () => {
@@ -227,7 +241,7 @@ export function StaffAttendance({
     const overtime = parseMajorToMinor(compEdit.overtime);
     const normalHours = Number(compEdit.normalHours);
     if (base === null || overtime === null || !Number.isFinite(normalHours) || normalHours < 0) {
-      setNotice("Enter valid salary, overtime rate and normal hours.");
+      toast.error("Enter valid salary, overtime rate and normal hours.");
       return;
     }
     void run(async () => {
@@ -247,7 +261,7 @@ export function StaffAttendance({
     const normalHours = Number(settingsEdit.normalHours);
     const shift = Number(settingsEdit.shiftDurationHours);
     if (!Number.isFinite(normalHours) || normalHours < 0 || !Number.isFinite(shift) || shift <= 0) {
-      setNotice("Enter valid payroll settings.");
+      toast.error("Enter valid payroll settings.");
       return;
     }
     void run(async () => {
@@ -306,9 +320,15 @@ export function StaffAttendance({
           <h1>Attendance &amp; payroll</h1>
         </div>
         <div className="staff-filters">
-          <button className="button button--quiet" onClick={() => quick(0)}>Today</button>
-          <button className="button button--quiet" onClick={() => quick(7)}>Week</button>
-          <button className="button button--quiet" onClick={() => quick(30)}>Month</button>
+          <button className="button button--quiet" onClick={() => quick(0)}>
+            Today
+          </button>
+          <button className="button button--quiet" onClick={() => quick(7)}>
+            Week
+          </button>
+          <button className="button button--quiet" onClick={() => quick(30)}>
+            Month
+          </button>
           <label>
             From
             <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
@@ -317,10 +337,16 @@ export function StaffAttendance({
             To
             <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
           </label>
-          <button className="button button--quiet" onClick={exportCsv} disabled={payroll.items.length === 0}>
+          <button
+            className="button button--quiet"
+            onClick={exportCsv}
+            disabled={payroll.items.length === 0}
+          >
             Export CSV
           </button>
-          <button className="button button--quiet" onClick={() => window.print()}>Print</button>
+          <button className="button button--quiet" onClick={() => window.print()}>
+            Print
+          </button>
           <button
             className="button button--quiet"
             onClick={() =>
@@ -338,11 +364,10 @@ export function StaffAttendance({
       {error ? (
         <div className="notice notice--error" role="alert">
           <span>{error}</span>
-          <button className="button button--quiet" onClick={() => void reload()}>Retry</button>
+          <button className="button button--quiet" onClick={() => void reload()}>
+            Retry
+          </button>
         </div>
-      ) : null}
-      {notice ? (
-        <div className="operation-message" role="status">{notice}</div>
       ) : null}
 
       <div className="staff-stats">
@@ -398,14 +423,22 @@ export function StaffAttendance({
                   <td className="end">
                     {r.workedHours.toFixed(1)}
                     <span className="muted"> / {r.normalHours}</span>
-                    {r.overtimeHours > 0 ? <span className="good"> +{r.overtimeHours}h</span> : null}
+                    {r.overtimeHours > 0 ? (
+                      <span className="good"> +{r.overtimeHours}h</span>
+                    ) : null}
                   </td>
                   <td className="end">{r.workedDays ?? "—"}</td>
                   <td className="end">{money(r.baseSalaryMinor)}</td>
-                  <td className="end good">{r.overtimeAmountMinor > 0 ? `+${money(r.overtimeAmountMinor)}` : "—"}</td>
+                  <td className="end good">
+                    {r.overtimeAmountMinor > 0 ? `+${money(r.overtimeAmountMinor)}` : "—"}
+                  </td>
                   <td className="end good">{r.bonusMinor > 0 ? `+${money(r.bonusMinor)}` : "—"}</td>
-                  <td className="end bad">{r.deductionMinor > 0 ? `−${money(r.deductionMinor)}` : "—"}</td>
-                  <td className="end accent"><strong>{money(r.netPayMinor)}</strong></td>
+                  <td className="end bad">
+                    {r.deductionMinor > 0 ? `−${money(r.deductionMinor)}` : "—"}
+                  </td>
+                  <td className="end accent">
+                    <strong>{money(r.netPayMinor)}</strong>
+                  </td>
                   <td className="end">
                     {openMembers.has(r.membershipId) ? (
                       <span className="pill pill--good">In</span>
@@ -461,7 +494,9 @@ export function StaffAttendance({
       {/* Adjustments log */}
       {adjustments.length > 0 ? (
         <section className="staff-card">
-          <div className="staff-card__head"><h2>Adjustments</h2></div>
+          <div className="staff-card__head">
+            <h2>Adjustments</h2>
+          </div>
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
@@ -477,9 +512,15 @@ export function StaffAttendance({
               <tbody>
                 {adjustments.map((a) => (
                   <tr key={a.id}>
-                    <td><strong>{displayName(a.membershipId, a.memberDisplayName)}</strong></td>
                     <td>
-                      <span className={`pill ${a.type === "deduction" ? "pill--bad" : "pill--good"}`}>{a.type}</span>
+                      <strong>{displayName(a.membershipId, a.memberDisplayName)}</strong>
+                    </td>
+                    <td>
+                      <span
+                        className={`pill ${a.type === "deduction" ? "pill--bad" : "pill--good"}`}
+                      >
+                        {a.type}
+                      </span>
                     </td>
                     <td className="muted">{a.effectiveDate}</td>
                     <td className="muted">{a.reason ?? "—"}</td>
@@ -491,7 +532,9 @@ export function StaffAttendance({
                       <button
                         className="link bad"
                         disabled={busy}
-                        onClick={() => void run(() => client.removeAdjustment(a.id), "Adjustment removed.")}
+                        onClick={() =>
+                          void run(() => client.removeAdjustment(a.id), "Adjustment removed.")
+                        }
                       >
                         Remove
                       </button>
@@ -536,12 +579,20 @@ export function StaffAttendance({
             <tbody>
               {entries.map((e) => (
                 <tr key={e.id}>
-                  <td><strong>{displayName(e.membershipId, e.memberDisplayName)}</strong></td>
+                  <td>
+                    <strong>{displayName(e.membershipId, e.memberDisplayName)}</strong>
+                  </td>
                   <td className="muted">{fmtDateTime(e.clockIn)}</td>
                   <td className="muted">
-                    {e.clockOut ? fmtDateTime(e.clockOut) : <span className="pill pill--good">Still in</span>}
+                    {e.clockOut ? (
+                      fmtDateTime(e.clockOut)
+                    ) : (
+                      <span className="pill pill--good">Still in</span>
+                    )}
                   </td>
-                  <td className="end">{e.workedMinutes != null ? (e.workedMinutes / 60).toFixed(1) : "—"}</td>
+                  <td className="end">
+                    {e.workedMinutes != null ? (e.workedMinutes / 60).toFixed(1) : "—"}
+                  </td>
                   <td className="end">
                     <span className="staff-actions">
                       <button
@@ -561,7 +612,9 @@ export function StaffAttendance({
                       <button
                         className="link bad"
                         disabled={busy}
-                        onClick={() => void run(() => client.removeAttendanceEntry(e.id), "Entry removed.")}
+                        onClick={() =>
+                          void run(() => client.removeAttendanceEntry(e.id), "Entry removed.")
+                        }
                       >
                         Delete
                       </button>
@@ -572,13 +625,17 @@ export function StaffAttendance({
             </tbody>
           </table>
         </div>
-        {!loading && entries.length === 0 ? <p className="staff-empty">No attendance entries yet.</p> : null}
+        {!loading && entries.length === 0 ? (
+          <p className="staff-empty">No attendance entries yet.</p>
+        ) : null}
       </section>
 
       {/* Leave log */}
       {leaves.length > 0 ? (
         <section className="staff-card">
-          <div className="staff-card__head"><h2>Leave log</h2></div>
+          <div className="staff-card__head">
+            <h2>Leave log</h2>
+          </div>
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
@@ -592,10 +649,16 @@ export function StaffAttendance({
               <tbody>
                 {leaves.map((l) => (
                   <tr key={l.id}>
-                    <td><strong>{displayName(l.membershipId, l.memberDisplayName)}</strong></td>
+                    <td>
+                      <strong>{displayName(l.membershipId, l.memberDisplayName)}</strong>
+                    </td>
                     <td className="muted">{fmtDateTime(l.leftAt)}</td>
                     <td className="muted">
-                      {l.returnedAt ? fmtDateTime(l.returnedAt) : <span className="pill pill--warn">Out</span>}
+                      {l.returnedAt ? (
+                        fmtDateTime(l.returnedAt)
+                      ) : (
+                        <span className="pill pill--warn">Out</span>
+                      )}
                     </td>
                     <td className="end">{fmtMinutes(l.minutes)}</td>
                   </tr>
@@ -606,24 +669,28 @@ export function StaffAttendance({
         </section>
       ) : null}
 
-      {loading ? <p className="staff-empty">Loading…</p> : null}
+      {loading ? <SkeletonTable rows={6} cols={5} label="Loading attendance" /> : null}
 
       {/* ── Modals ── */}
       {entryEdit ? (
-        <Modal title={entryEdit.id ? "Edit entry" : "Add entry"} onClose={() => setEntryEdit(null)} onSave={saveEntry} busy={busy}>
+        <Modal
+          title={entryEdit.id ? "Edit entry" : "Add entry"}
+          onClose={() => setEntryEdit(null)}
+          onSave={saveEntry}
+          busy={busy}
+        >
           {!entryEdit.id ? (
             <label className="field">
               Employee
-              <select
+              <Select
+                ariaLabel="Employee"
                 value={entryEdit.membershipId}
-                onChange={(e) => setEntryEdit({ ...entryEdit, membershipId: e.target.value })}
-              >
-                {staff.map((s) => (
-                  <option key={s.membershipId} value={s.membershipId}>
-                    {s.displayName ?? s.email ?? s.membershipId}
-                  </option>
-                ))}
-              </select>
+                onChange={(membershipId) => setEntryEdit({ ...entryEdit, membershipId })}
+                options={staff.map((s) => ({
+                  value: s.membershipId,
+                  label: s.displayName ?? s.email ?? s.membershipId,
+                }))}
+              />
             </label>
           ) : null}
           <label className="field">
@@ -646,16 +713,23 @@ export function StaffAttendance({
       ) : null}
 
       {adjEdit ? (
-        <Modal title={`Adjustment · ${adjEdit.name}`} onClose={() => setAdjEdit(null)} onSave={saveAdjustment} busy={busy}>
+        <Modal
+          title={`Adjustment · ${adjEdit.name}`}
+          onClose={() => setAdjEdit(null)}
+          onSave={saveAdjustment}
+          busy={busy}
+        >
           <label className="field">
             Type
-            <select
+            <Select<"bonus" | "deduction">
+              ariaLabel="Adjustment type"
               value={adjEdit.type}
-              onChange={(e) => setAdjEdit({ ...adjEdit, type: e.target.value as "bonus" | "deduction" })}
-            >
-              <option value="deduction">Deduction</option>
-              <option value="bonus">Bonus</option>
-            </select>
+              onChange={(type) => setAdjEdit({ ...adjEdit, type })}
+              options={[
+                { value: "deduction", label: "Deduction" },
+                { value: "bonus", label: "Bonus" },
+              ]}
+            />
           </label>
           <label className="field">
             Amount ({sym})
@@ -668,17 +742,29 @@ export function StaffAttendance({
           </label>
           <label className="field">
             Date
-            <input type="date" value={adjEdit.date} onChange={(e) => setAdjEdit({ ...adjEdit, date: e.target.value })} />
+            <input
+              type="date"
+              value={adjEdit.date}
+              onChange={(e) => setAdjEdit({ ...adjEdit, date: e.target.value })}
+            />
           </label>
           <label className="field">
             Reason
-            <input value={adjEdit.reason} onChange={(e) => setAdjEdit({ ...adjEdit, reason: e.target.value })} />
+            <input
+              value={adjEdit.reason}
+              onChange={(e) => setAdjEdit({ ...adjEdit, reason: e.target.value })}
+            />
           </label>
         </Modal>
       ) : null}
 
       {compEdit ? (
-        <Modal title={`Compensation · ${compEdit.name}`} onClose={() => setCompEdit(null)} onSave={saveCompensation} busy={busy}>
+        <Modal
+          title={`Compensation · ${compEdit.name}`}
+          onClose={() => setCompEdit(null)}
+          onSave={saveCompensation}
+          busy={busy}
+        >
           <label className="field">
             Monthly base salary ({sym})
             <input
@@ -707,7 +793,12 @@ export function StaffAttendance({
       ) : null}
 
       {settingsEdit ? (
-        <Modal title="Payroll settings" onClose={() => setSettingsEdit(null)} onSave={saveSettings} busy={busy}>
+        <Modal
+          title="Payroll settings"
+          onClose={() => setSettingsEdit(null)}
+          onSave={saveSettings}
+          busy={busy}
+        >
           <label className="field">
             Default normal hours
             <input
@@ -721,7 +812,9 @@ export function StaffAttendance({
             <input
               inputMode="decimal"
               value={settingsEdit.shiftDurationHours}
-              onChange={(e) => setSettingsEdit({ ...settingsEdit, shiftDurationHours: e.target.value })}
+              onChange={(e) =>
+                setSettingsEdit({ ...settingsEdit, shiftDurationHours: e.target.value })
+              }
             />
           </label>
         </Modal>
@@ -743,14 +836,19 @@ function Modal({
   onSave: () => void;
   busy: boolean;
 }) {
+  const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="staff-modal__scrim" role="dialog" aria-modal="true" onClick={onClose}>
-      <div className="staff-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="staff-modal" ref={dialogRef} onClick={(e) => e.stopPropagation()}>
         <h3>{title}</h3>
         <div className="staff-modal__body">{children}</div>
         <div className="staff-modal__actions">
-          <button className="button button--quiet" onClick={onClose} disabled={busy}>Cancel</button>
-          <button className="button" onClick={onSave} disabled={busy}>Save</button>
+          <button className="button button--quiet" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="button" onClick={onSave} disabled={busy}>
+            Save
+          </button>
         </div>
       </div>
     </div>

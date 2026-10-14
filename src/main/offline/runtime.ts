@@ -10,6 +10,7 @@ import type {
   PendingSyncSummary,
   ProjectedInventoryItem,
 } from "../../shared/offline";
+import { ActivityStore } from "../activity/store";
 import { OfflineAuthorityStore } from "./authority-store";
 import { OfflineBootstrapService } from "./bootstrap";
 import { LocalDatabase, localDatabasePath } from "./database";
@@ -47,6 +48,7 @@ export class OfflineRuntime {
     private readonly initializationError: string | undefined,
     private readonly returnService?: ReturnService,
     private readonly saleService?: ConnectedSaleService,
+    private readonly activityStore?: ActivityStore,
   ) {}
 
   static async initialize(
@@ -102,6 +104,9 @@ export class OfflineRuntime {
           apiBaseUrl.replace(/\/+$/, ""),
           { networkOnline: options.networkOnline },
         ),
+        // Client-only activity ledger. Available whenever the local database is healthy, independent
+        // of offline-selling enrollment.
+        new ActivityStore(database.connection),
       );
       if (options.startSyncWorker !== false) syncWorker.start();
       return runtime;
@@ -129,6 +134,10 @@ export class OfflineRuntime {
         "Connected return persistence is unavailable. Return submission is disabled.",
       );
     return this.returnService;
+  }
+
+  getActivityStore(): ActivityStore | undefined {
+    return this.activityStore;
   }
 
   getSales(): ConnectedSaleService {
