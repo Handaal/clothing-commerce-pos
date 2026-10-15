@@ -99,7 +99,7 @@ export function VouchersDesk({
         setBusy(false);
       }
     },
-    [load],
+    [load, toast],
   );
 
   const openNew = () => setForm(blankForm());

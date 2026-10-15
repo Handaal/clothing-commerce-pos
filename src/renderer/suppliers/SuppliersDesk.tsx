@@ -161,16 +161,19 @@ export function SuppliersDesk({ client }: { client: TenantCommerceClient }) {
     void loadAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- search text is applied explicitly
   }, [client, statusFilter]);
-  const run = useCallback(async (action: () => Promise<void>) => {
-    setBusy(true);
-    try {
-      await action();
-    } catch (caught) {
-      toast.error(classifyCommerceError(caught).message);
-    } finally {
-      setBusy(false);
-    }
-  }, []);
+  const run = useCallback(
+    async (action: () => Promise<void>) => {
+      setBusy(true);
+      try {
+        await action();
+      } catch (caught) {
+        toast.error(classifyCommerceError(caught).message);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [toast],
+  );
   const currencyFor = (supplierId: string) => dueBySupplier.get(supplierId)?.currency ?? "USD";
 
   const openEdit = (supplierId: string) =>
@@ -272,7 +275,7 @@ export function SuppliersDesk({ client }: { client: TenantCommerceClient }) {
     return () => {
       active = false;
     };
-  }, [client, purchase?.inventoryLocationId]);
+  }, [client, purchase?.inventoryLocationId, toast]);
   const purchaseTotal = useMemo(
     () =>
       purchase?.lines.reduce((sum, line) => {

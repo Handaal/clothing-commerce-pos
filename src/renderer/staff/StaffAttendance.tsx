@@ -140,6 +140,7 @@ export function StaffAttendance({
   }, [client, from, to]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load reads external attendance data
     void reload();
   }, [reload]);
   useEffect(() => {

@@ -125,7 +125,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
         setBusy(false);
       }
     },
-    [loadLevels],
+    [loadLevels, toast],
   );
 
   const submitDraft = () => {

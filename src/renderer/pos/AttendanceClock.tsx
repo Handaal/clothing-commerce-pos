@@ -39,6 +39,7 @@ export function AttendanceClock({
   }, [client]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load reads external attendance status
     void refresh();
   }, [refresh]);
 
