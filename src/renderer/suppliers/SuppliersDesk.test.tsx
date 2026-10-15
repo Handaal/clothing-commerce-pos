@@ -101,7 +101,9 @@ describe("SuppliersDesk money workflow", () => {
     );
 
     expect(await screen.findByText("Payments due")).toBeTruthy();
-    expect((await screen.findAllByText(/Due\s+60\.00.*EGP/u)).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText(/Due\s+(?:60\.00\s*EGP|EGP\s*60\.00)/u)).length,
+    ).toBeGreaterThan(0);
     expect(screen.getByText("INV-9 ▸")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Pay" }));
