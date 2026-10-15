@@ -1,4 +1,4 @@
-import { SignIn, useAuth, useClerk } from "@clerk/react";
+import { SignIn, useAuth, useClerk, useUser } from "@clerk/react";
 import type {
   CommerceClient,
   CreatePosSaleResponse,
@@ -27,23 +27,54 @@ import { SaleExecutor, type SaleExecutionState, type SalesGateway } from "./chec
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
 import { formatMoney } from "./money";
+import { PayModal, type SaleCustomer, type SaleTender } from "./checkout/PayModal";
 import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
+import { AttendanceClock } from "./pos/AttendanceClock";
 import { resolveRegisters, type PosRegister } from "./pos/context";
+import { StaffAttendance } from "./staff/StaffAttendance";
 import {
   receiptIdentity,
   type BusinessIdentity,
   type ReceiptIdentity,
 } from "./pos/receipt-identity";
 import { bootstrapTenants, type Tenant } from "./session/tenant";
+import { OrdersDesk } from "./orders/OrdersDesk";
+import { ActivityDesk } from "./activity/ActivityDesk";
+import {
+  installActivityClickCapture,
+  logActivity,
+  setActivityActor,
+  setActivitySection,
+  setActivityTenant,
+} from "./activity/log";
+import { InventoryDesk } from "./inventory/InventoryDesk";
+import { CustomersDesk } from "./customers/CustomersDesk";
+import { VouchersDesk } from "./vouchers/VouchersDesk";
+import { SuppliersDesk } from "./suppliers/SuppliersDesk";
+import { ReportsDesk } from "./reports/ReportsDesk";
+import { SettingsDesk } from "./settings/SettingsDesk";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
+import { AppShell } from "./shell/AppShell";
+import { PlaceholderSection } from "./shell/PlaceholderSection";
+import { Select } from "./shell/Select";
+import { accessibleSections, SECTIONS, type Capabilities, type SectionId } from "./shell/sections";
+
+// Cashier-facing labels for captured tender methods, shown on the cart and receipt.
+const TENDER_LABELS: Record<"cash" | "card" | "instapay" | "wallet", string> = {
+  cash: "Cash",
+  card: "Card",
+  instapay: "Instapay",
+  wallet: "Wallet",
+};
 
 export interface PosAuth {
   isLoaded: boolean;
   isSignedIn: boolean;
   userId: string | null;
   sessionId: string | null;
+  displayName?: string;
   getToken: () => Promise<string | null>;
   signOut: () => Promise<unknown>;
 }
@@ -61,7 +92,10 @@ type LoadPhase = "idle" | "loading" | "ready" | "choosing" | "empty" | "error";
 
 export function App() {
   const { isLoaded, isSignedIn, userId, sessionId, getToken } = useAuth();
+  const { user } = useUser();
   const clerk = useClerk();
+  const displayName =
+    user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? user?.username ?? undefined;
   return (
     <PosApplication
       auth={{
@@ -69,6 +103,7 @@ export function App() {
         isSignedIn: isSignedIn === true,
         userId: userId ?? null,
         sessionId: sessionId ?? null,
+        displayName,
         getToken: async () => (await getToken()) ?? null,
         signOut: () => clerk.signOut(),
       }}
@@ -150,9 +185,10 @@ export function PosApplication({
   const [catalogError, setCatalogError] = useState<CommerceErrorView | null>(null);
   const [catalogNonce, setCatalogNonce] = useState(0);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [catalogQuery, setCatalogQuery] = useState("");
 
   const [cart, setCart] = useState<readonly CartLine[]>([]);
-  const [cashReceived, setCashReceived] = useState("");
+  const [payOpen, setPayOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [quoteController] = useState(() => new QuoteController());
   const [quoteState, setQuoteState] = useState<QuoteState>(quoteController.snapshot());
@@ -163,7 +199,28 @@ export function PosApplication({
   const [priceChangedTotal, setPriceChangedTotal] = useState<number | null>(null);
   const [priceRefreshPending, setPriceRefreshPending] = useState(false);
   const [sellingMode, setSellingMode] = useState<"connected" | "offline">("connected");
+  const [section, setSection] = useState<SectionId>("pos");
   const [showReturns, setShowReturns] = useState(false);
+
+  // Role-based navigation. The gating mechanism is live (see `accessibleSections`); capabilities
+  // are permissive during the section build-out and will be sourced from the operator's
+  // server-resolved access guidance as each section is wired to the API.
+  const capabilities = useMemo<Capabilities>(
+    () => ({
+      isManager: true,
+      orders: true,
+      inventory: true,
+      customers: true,
+      reports: true,
+      vouchers: true,
+      suppliers: true,
+      staff: true,
+      activity: true,
+      settings: true,
+    }),
+    [],
+  );
+  const visibleSections = useMemo(() => accessibleSections(capabilities), [capabilities]);
   const [returnLocked, setReturnLocked] = useState(false);
   useEffect(() => {
     if (!auth.isLoaded || !auth.isSignedIn || !returnsBridge) return;
@@ -226,6 +283,21 @@ export function PosApplication({
   useEffect(() => {
     tenantIdRef.current = tenantId;
   }, [tenantId]);
+
+  // Client-only activity ledger: install the global click capture once, and keep the ambient context
+  // (who is signed in, which tenant, which section is open) stamped onto every recorded event.
+  useEffect(() => {
+    installActivityClickCapture();
+  }, []);
+  useEffect(() => {
+    setActivityActor({ id: auth.userId, name: auth.displayName ?? null });
+  }, [auth.userId, auth.displayName]);
+  useEffect(() => {
+    setActivityTenant(tenantId);
+  }, [tenantId]);
+  useEffect(() => {
+    setActivitySection(section);
+  }, [section]);
 
   // Startup crash recovery: if a connected sale was prepared/accepted but never acknowledged before
   // the app died, replay it with its ORIGINAL key. Server idempotency decides whether it committed;
@@ -294,7 +366,7 @@ export function PosApplication({
     executor.reset();
     quoteController.reset();
     setCart([]);
-    setCashReceived("");
+    setPayOpen(false);
     setLocalError(null);
     setCodeDraft("");
     setAppliedCode(null);
@@ -319,6 +391,18 @@ export function PosApplication({
     setAppliedCode(null);
     setSellingMode("offline");
   }, [quoteController]);
+
+  // Navigating between workspace sections is a first-class audit event (the raw sidebar click is also
+  // captured, but this records the destination explicitly).
+  const handleNavigate = useCallback((id: SectionId) => {
+    logActivity({
+      category: "navigation",
+      action: "navigate",
+      description: `Opened the ${id} section`,
+      details: { to: id },
+    });
+    setSection(id);
+  }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect -- These effects deliberately expose loading and
      reset transitions for external Clerk/API state machines before their asynchronous results settle. */
@@ -446,7 +530,17 @@ export function PosApplication({
   useEffect(() => {
     if (saleState.phase === "success") {
       setCart([]);
-      setCashReceived("");
+      setPayOpen(false);
+      logActivity({
+        category: "sale",
+        action: "sale_completed",
+        description: `Completed sale ${saleState.receipt.order.orderNumber}`,
+        details: {
+          orderNumber: saleState.receipt.order.orderNumber,
+          totalMinor: saleState.receipt.order.totalMinor,
+          currency: saleState.receipt.order.currency,
+        },
+      });
     } else if (saleState.phase === "price-changed" || saleState.phase === "promotion-changed") {
       // The final server sale re-evaluated and the pricing changed (price, promotion winner, code
       // exhaustion, eligibility). Stop, reload prices, force a fresh quote, and require reconfirmation
@@ -499,11 +593,6 @@ export function PosApplication({
     changeCart((current) => addVariant(current, variant));
   }
 
-  function changeCash(value: string) {
-    invalidateIntent();
-    setCashReceived(value);
-  }
-
   function applyPromotionCode() {
     const trimmed = codeDraft.trim();
     if (trimmed === "" || appliedCode !== null) return;
@@ -518,18 +607,8 @@ export function PosApplication({
     setCodeDraft("");
   }
 
-  function completeSale() {
-    if (showReturns) return;
-    if (
-      !tenantClient ||
-      !register ||
-      saleState.phase === "submitting" ||
-      saleState.phase === "recovering" ||
-      saleState.phase === "ambiguous" ||
-      priceConfirmationRequired
-    )
-      return;
-    const cashReceivedMinor = Number(cashReceived);
+  function openPayment() {
+    if (showReturns || locked || priceConfirmationRequired) return;
     if (cart.length === 0) {
       setLocalError("Add at least one item before checkout.");
       return;
@@ -538,29 +617,37 @@ export function PosApplication({
       setLocalError("Waiting for the authoritative total. Try again once pricing is ready.");
       return;
     }
-    if (!Number.isSafeInteger(cashReceivedMinor) || cashReceivedMinor < 0) {
-      setLocalError("Cash received must be a whole number of minor currency units.");
-      return;
-    }
-    if (cashReceivedMinor < netMinor) {
-      setLocalError("Cash received is below the amount due.");
-      return;
-    }
     setLocalError(null);
-    // Tender against the current authoritative NET total; the server re-derives and rejects a stale
-    // value. The durable journal (main process) owns the idempotency key. Only the entered-code
-    // intent is threaded — automatic promotions are re-evaluated server side.
+    setPayOpen(true);
+  }
+
+  function completeSale(tenders: SaleTender[], customer?: SaleCustomer) {
+    if (!tenantClient || !register || locked || priceConfirmationRequired) return;
+    if (cart.length === 0 || !quoteReady || quote === null) return;
+    setPayOpen(false);
+    setLocalError(null);
+    // Tender against the current authoritative NET total; the server re-derives the split, validates
+    // it sums to the total, and rejects a stale value. The durable journal owns the idempotency key.
+    // Only the entered-code intent is threaded — automatic promotions are re-evaluated server side.
     executor.submit({
       registerId: register.registerId,
       expectedTotalMinor: netMinor,
-      cashReceivedMinor,
+      tenders: tenders.map((tender) => ({
+        method: tender.method,
+        amountMinor: tender.amountMinor,
+        ...(tender.cashReceivedMinor !== undefined
+          ? { cashReceivedMinor: tender.cashReceivedMinor }
+          : {}),
+      })),
       lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
       ...(appliedCode ? { promotionCode: appliedCode } : {}),
+      ...(customer ? { customer } : {}),
     });
   }
 
   async function signOut() {
     if (returnLocked) return;
+    logActivity({ category: "session", action: "sign_out", description: "Signed out of the POS" });
     resetTransaction();
     setSellingMode("connected");
     setTenantId(null);
@@ -711,44 +798,76 @@ export function PosApplication({
 
   const selectedProduct =
     products.find((product) => product.productId === selectedProductId) ?? null;
+
+  // Search matches product name, style code, and any variant name or SKU. A barcode scanner types
+  // the SKU then sends Enter: an exact SKU match adds that variant straight to the cart.
+  const normalizedQuery = catalogQuery.trim().toLowerCase();
+  const filteredProducts =
+    normalizedQuery === ""
+      ? products
+      : products.filter(
+          (product) =>
+            product.productName.toLowerCase().includes(normalizedQuery) ||
+            (product.styleCode?.toLowerCase().includes(normalizedQuery) ?? false) ||
+            product.variants.some(
+              (variant) =>
+                variant.sku.toLowerCase().includes(normalizedQuery) ||
+                (variant.variantName?.toLowerCase().includes(normalizedQuery) ?? false),
+            ),
+        );
+
+  function submitCatalogSearch() {
+    if (normalizedQuery === "" || locked) return;
+    const exactSku = products
+      .flatMap((product) => product.variants)
+      .find((variant) => variant.sku.toLowerCase() === normalizedQuery);
+    if (exactSku) {
+      addToCart(exactSku);
+      setSelectedProductId(exactSku.productId);
+      setCatalogQuery("");
+      return;
+    }
+    if (filteredProducts.length === 1) {
+      setSelectedProductId(filteredProducts[0].productId);
+    }
+  }
   const submitting = saleState.phase === "submitting";
   const recovering = saleState.phase === "recovering";
   const ambiguous = saleState.phase === "ambiguous";
   // While a sale is in-flight, recovering, or its result is uncertain, the cart is locked: the
   // durable command is the source of truth and must be resolved (retried) before any edit.
   const locked = submitting || recovering || ambiguous;
-  const cashMinor = Number(cashReceived);
-  const previewChange =
-    Number.isSafeInteger(cashMinor) && cashMinor >= netMinor ? cashMinor - netMinor : null;
   const promotion = quote?.promotion ?? null;
   const codeStatus = quote?.codeStatus ?? "none";
 
-  return (
+  const posContent = (
     <main className="pos-shell">
       <header className="topbar">
-        <div>
-          <p className="eyebrow">Connected cashier</p>
-          <h1>Commerce POS</h1>
+        <div className="register-identity">
+          <p className="eyebrow">Register</p>
+          <strong>{register.registerName}</strong>
+          <span>
+            {register.branchName} · {register.defaultInventoryLocationName}
+          </span>
         </div>
         <div className="operator-actions">
-          <div className="context-summary">
-            <strong>{register.registerName}</strong>
-            <span>{register.branchName}</span>
-            <span>{register.defaultInventoryLocationName}</span>
-          </div>
+          <AttendanceClock
+            client={tenantClient}
+            branchId={register.branchId}
+            disabled={returnLocked}
+          />
           {registers.length > 1 ? (
-            <select
-              aria-label="Register"
+            <Select
+              ariaLabel="Register"
+              className="operator-actions__select"
               value={register.registerId}
-              onChange={(event) => chooseRegister(event.target.value)}
+              onChange={(value) => chooseRegister(value)}
               disabled={locked || returnLocked}
-            >
-              {registers.map((item) => (
-                <option key={item.registerId} value={item.registerId}>
-                  {item.registerName}
-                </option>
-              ))}
-            </select>
+              options={registers.map((item) => ({
+                value: item.registerId,
+                label: item.registerName,
+              }))}
+            />
           ) : null}
           {offlineReadiness.ready ? (
             <button
@@ -759,13 +878,6 @@ export function PosApplication({
               Work offline
             </button>
           ) : null}
-          <button
-            className="button button--quiet"
-            onClick={() => void signOut()}
-            disabled={locked || returnLocked}
-          >
-            Sign out
-          </button>
         </div>
       </header>
 
@@ -831,6 +943,33 @@ export function PosApplication({
             </div>
             <span className="currency-pill">{register.sellingCurrency}</span>
           </div>
+          <div className="catalog-search">
+            <input
+              className="catalog-search__input"
+              aria-label="Search or scan products"
+              placeholder="Search or scan — name, SKU, barcode"
+              value={catalogQuery}
+              disabled={catalogPhase !== "ready"}
+              autoFocus
+              onChange={(event) => setCatalogQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitCatalogSearch();
+                }
+              }}
+            />
+            {catalogQuery !== "" ? (
+              <button
+                type="button"
+                className="catalog-search__clear"
+                aria-label="Clear search"
+                onClick={() => setCatalogQuery("")}
+              >
+                ×
+              </button>
+            ) : null}
+          </div>
           {catalogPhase === "loading" ? <InlineState>Loading current prices…</InlineState> : null}
           {catalogPhase === "empty" ? (
             <InlineState>No active sellable products are available.</InlineState>
@@ -848,8 +987,11 @@ export function PosApplication({
               ) : null}
             </>
           ) : null}
+          {catalogPhase === "ready" && filteredProducts.length === 0 && normalizedQuery !== "" ? (
+            <InlineState>No products match “{catalogQuery}”.</InlineState>
+          ) : null}
           <div className="product-grid">
-            {products.map((product) => (
+            {filteredProducts.map((product) => (
               <button
                 key={product.productId}
                 className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
@@ -916,6 +1058,9 @@ export function PosApplication({
                       step="1"
                       value={line.quantity}
                       disabled={submitting}
+                      // Prevent the scroll wheel from silently changing the quantity while the
+                      // cashier scrolls the page.
+                      onWheel={(event) => event.currentTarget.blur()}
                       onChange={(event) =>
                         changeCart((current) =>
                           updateQuantity(current, line.variantId, Number(event.target.value)),
@@ -1032,26 +1177,6 @@ export function PosApplication({
             <span>Amount due</span>
             <strong>{formatMoney(netMinor, register.sellingCurrency)}</strong>
           </div>
-          <label className="cash-field">
-            Cash received <span>minor units</span>
-            <input
-              aria-label="Cash received in minor units"
-              inputMode="numeric"
-              type="number"
-              min="0"
-              step="1"
-              value={cashReceived}
-              disabled={submitting}
-              onChange={(event) => changeCash(event.target.value)}
-            />
-          </label>
-          <div className="change-row">
-            <span>Expected change</span>
-            <strong>
-              {previewChange === null ? "—" : formatMoney(previewChange, register.sellingCurrency)}
-            </strong>
-          </div>
-
           {priceConfirmationRequired ? (
             <div className="notice notice--warning" role="alert">
               <strong>Pricing changed</strong>
@@ -1099,16 +1224,68 @@ export function PosApplication({
             disabled={
               cart.length === 0 || locked || priceConfirmationRequired || showReturns || !quoteReady
             }
-            onClick={completeSale}
+            onClick={openPayment}
           >
-            {submitting ? "Completing sale…" : recovering ? "Recovering sale…" : "Complete sale"}
+            {submitting ? "Completing sale…" : recovering ? "Recovering sale…" : "Take payment"}
           </button>
+          {payOpen ? (
+            <PayModal
+              netMinor={netMinor}
+              currency={register.sellingCurrency}
+              submitting={submitting}
+              onConfirm={completeSale}
+              onCancel={() => setPayOpen(false)}
+              lookupCustomer={(phone) =>
+                tenantClient.lookupCustomerByPhone(phone).then((result) => result.customer)
+              }
+            />
+          ) : null}
           <p className="authority-note">
             Prices, promotions, and final change are confirmed by the Commerce API.
           </p>
         </aside>
       </div>
     </main>
+  );
+
+  const activeSection = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
+  return (
+    <AppShell
+      sections={visibleSections}
+      active={section}
+      onNavigate={handleNavigate}
+      userName={auth.displayName ?? "Operator"}
+      onSignOut={() => void signOut()}
+      signOutDisabled={locked || returnLocked}
+    >
+      {section === "pos" ? (
+        posContent
+      ) : section === "orders" ? (
+        <OrdersDesk client={tenantClient} />
+      ) : section === "inventory" ? (
+        <InventoryDesk client={tenantClient} />
+      ) : section === "customers" ? (
+        <CustomersDesk client={tenantClient} currency={register.sellingCurrency} />
+      ) : section === "vouchers" ? (
+        <VouchersDesk client={tenantClient} currency={register.sellingCurrency} />
+      ) : section === "staff" ? (
+        <StaffAttendance
+          client={tenantClient}
+          currency={register.sellingCurrency}
+          branchId={register.branchId}
+        />
+      ) : section === "suppliers" ? (
+        <SuppliersDesk client={tenantClient} />
+      ) : section === "reports" ? (
+        <ReportsDesk client={tenantClient} />
+      ) : section === "activity" ? (
+        <ActivityDesk />
+      ) : section === "settings" ? (
+        <SettingsDesk client={tenantClient} currency={register.sellingCurrency} />
+      ) : (
+        <PlaceholderSection section={activeSection} />
+      )}
+    </AppShell>
   );
 }
 
@@ -1130,6 +1307,7 @@ function Receipt({
     0,
   );
   const discountMinor = grossSubtotalMinor - receipt.order.totalMinor;
+  const cashTender = receipt.payments.find((tender) => tender.method === "cash") ?? null;
   return (
     <main className="receipt-shell">
       <section className="receipt-card">
@@ -1186,20 +1364,29 @@ function Receipt({
             <span>Total</span>
             <strong>{formatMoney(receipt.order.totalMinor, receipt.order.currency)}</strong>
           </div>
-          <div>
-            <span>Payment</span>
-            <strong>Cash · Captured</strong>
-          </div>
-          <div>
-            <span>Cash received</span>
-            <strong>
-              {formatMoney(receipt.payment.cashReceivedMinor, receipt.payment.currency)}
-            </strong>
-          </div>
-          <div className="receipt-change">
-            <span>Change</span>
-            <strong>{formatMoney(receipt.payment.changeMinor, receipt.payment.currency)}</strong>
-          </div>
+          {receipt.payments.map((tender) => (
+            <div key={tender.id}>
+              <span>{TENDER_LABELS[tender.method]}</span>
+              <strong>{formatMoney(tender.amountMinor, tender.currency)}</strong>
+            </div>
+          ))}
+          {cashTender ? (
+            <>
+              <div>
+                <span>Cash received</span>
+                <strong>
+                  {formatMoney(
+                    cashTender.cashReceivedMinor ?? cashTender.amountMinor,
+                    cashTender.currency,
+                  )}
+                </strong>
+              </div>
+              <div className="receipt-change">
+                <span>Change</span>
+                <strong>{formatMoney(cashTender.changeMinor ?? 0, cashTender.currency)}</strong>
+              </div>
+            </>
+          ) : null}
           <div>
             <span>Fulfillment</span>
             <strong>Completed</strong>

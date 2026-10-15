@@ -116,16 +116,16 @@ describe("offline cashier", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /Foundation Tee/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
-    fireEvent.change(screen.getByLabelText("Offline cash received in minor units"), {
-      target: { value: "3000" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Accept offline cash sale" }));
+    fireEvent.click(screen.getByRole("button", { name: "Take payment" }));
+    fireEvent.change(screen.getByLabelText(/Cash received/), { target: { value: "30.00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Complete sale" }));
     expect(await screen.findByRole("heading", { name: "Receipt A123-000001" })).toBeTruthy();
     expect(screen.getByText("Saved locally · Pending synchronization")).toBeTruthy();
     await waitFor(() =>
       expect(offline.acceptCashSale).toHaveBeenCalledWith({
         lines: [{ variantId: "variant-1", quantity: 1 }],
-        cashReceivedMinor: 3_000,
+        cashReceivedMinor: 0,
+        tenders: [{ method: "cash", amountMinor: 2_599, cashReceivedMinor: 3_000 }],
       }),
     );
   });
@@ -149,13 +149,13 @@ describe("offline cashier", () => {
     // selling surface (with its "Accept offline cash sale" button) is not reachable until resolved.
     expect(await screen.findByRole("heading", { name: "Receipt A123-000001" })).toBeTruthy();
     expect(screen.getByText(/interrupted before it was acknowledged/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Accept offline cash sale" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Take payment" })).toBeNull();
 
     (offline.getUnacknowledgedSales as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     fireEvent.click(screen.getByRole("button", { name: "Acknowledge recovered sale" }));
     await waitFor(() => expect(offline.acknowledgeSale).toHaveBeenCalledWith("local-sale-1"));
     // Once acknowledged, ordinary selling resumes.
-    expect(await screen.findByRole("button", { name: "Accept offline cash sale" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Take payment" })).toBeTruthy();
   });
 
   it("prioritizes reconciliation and blocked statuses for cashier attention", () => {

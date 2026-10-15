@@ -24,14 +24,25 @@ a tax engine, and any offline promotions remain absent.
 ## Technology and contract
 
 Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.12.2**:
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.19.0**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`
-- SHA-256: `8115f7a2dddc1d063edd3e1cb2f6b50fac071ddcd599244d239f945dcb442397`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.12.2.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.19.0.tgz`
+- SHA-256: `78ca20340b19364ccba6936c048492e05fc2d7d6c444a2ee0ef52380e38f3c30`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz`
 
-The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.12.2 exposes the connected
-POS quote (`posQuote`) and the canonical `promotionCode` field on `CreatePosSaleInput` used by Phase 2P.
+The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.19.0 includes the
+existing selling/workforce/customer surface plus supplier purchase money, standalone payments,
+server-computed dues, and payment reminders.
+
+## Supplier payables desk
+
+The Suppliers back-office desk records one atomic multi-line clothing-variant purchase into an
+authorized inventory location. Each line carries an immutable supplier unit cost in tenant-currency
+minor units; that cost is AP/history data only and is not inventory valuation or COGS. The API owns
+stock receipt atomicity, purchase totals, due computation, overpayment/no-dues guards, reminder lead
+windows, authorization, and exact replay. Standalone payments appear against purchase history
+oldest-first without being stored as invoice allocations. The renderer uses only SDK `0.19.0` and
+does not add preload, Node, Electron, SQLite, or server-secret access.
 
 There is no API workspace link or API source import. The renderer supplies only the current Clerk
 session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and

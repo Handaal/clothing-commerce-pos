@@ -28,15 +28,28 @@ describe("resolveMainApiOrigin", () => {
     );
   });
 
-  it("prefers the packaged artifact even in development", () => {
-    writeConfig({ commerceApiUrl: "https://packaged.example.com" });
+  it("ignores a stale packaged artifact in development and mirrors the renderer env", () => {
+    // A dist-electron/runtime-config.json left over from a prior `pnpm build` must not poison dev:
+    // main resolves from the environment (the same .env the renderer bakes), never the stale artifact.
+    writeConfig({ commerceApiUrl: "https://stale-packaged.example.com" });
     expect(
       resolveMainApiOrigin({
         configDirectory: directory,
         isDevelopment: true,
-        env: { COMMERCE_API_URL: "https://ignored.example.com" } as NodeJS.ProcessEnv,
+        env: { COMMERCE_API_URL: "https://dev.example.com" } as NodeJS.ProcessEnv,
       }),
-    ).toBe("https://packaged.example.com");
+    ).toBe("https://dev.example.com");
+  });
+
+  it("ignores a stale packaged artifact in development and falls back to localhost", () => {
+    writeConfig({ commerceApiUrl: "https://stale-packaged.example.com" });
+    expect(
+      resolveMainApiOrigin({
+        configDirectory: directory,
+        isDevelopment: true,
+        env: {} as NodeJS.ProcessEnv,
+      }),
+    ).toBe("http://localhost:3000");
   });
 
   it("fails closed in a packaged app when the artifact is missing", () => {

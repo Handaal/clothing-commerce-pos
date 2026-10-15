@@ -12,3 +12,6 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local Claude Code tooling
+.claude/

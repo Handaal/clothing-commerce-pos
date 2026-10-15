@@ -353,7 +353,15 @@ export class OfflineSaleService {
         "The grant sale amount limit is exceeded.",
       );
     }
-    if (input.cashReceivedMinor < totalMinor) {
+    if (input.tenders) {
+      const tenderSum = input.tenders.reduce((sum, tender) => sum + tender.amountMinor, 0);
+      if (tenderSum !== totalMinor) {
+        throw new OfflineAcceptanceError(
+          "TENDERS_MISMATCH",
+          "The split tenders do not sum to the amount due.",
+        );
+      }
+    } else if (input.cashReceivedMinor < totalMinor) {
       throw new OfflineAcceptanceError(
         "INSUFFICIENT_CASH",
         "Cash received is below the amount due.",
@@ -376,7 +384,14 @@ export class OfflineSaleService {
     const localSaleId = randomUUID();
     const syncCommandId = randomUUID();
     const localReceiptId = this.allocateReceipt();
-    const changeMinor = input.cashReceivedMinor - totalMinor;
+    // For a split sale, the top-level cash fields describe the cash tender only (change comes from it);
+    // a cashless split records zero cash received and zero change.
+    const cashTender = input.tenders?.find((tender) => tender.method === "cash") ?? null;
+    const cashAmountMinor = input.tenders ? (cashTender?.amountMinor ?? 0) : totalMinor;
+    const cashReceivedMinor = input.tenders
+      ? (cashTender?.cashReceivedMinor ?? cashTender?.amountMinor ?? 0)
+      : input.cashReceivedMinor;
+    const changeMinor = cashReceivedMinor - cashAmountMinor;
     const command: OfflineSaleCommand = {
       schemaVersion: 1,
       localSaleId,
@@ -393,8 +408,19 @@ export class OfflineSaleService {
         priceId: line.priceId,
       })),
       totalMinor,
-      cashReceivedMinor: input.cashReceivedMinor,
+      cashReceivedMinor,
       changeMinor,
+      ...(input.tenders
+        ? {
+            tenders: input.tenders.map((tender) => ({
+              method: tender.method,
+              amountMinor: tender.amountMinor,
+              ...(tender.cashReceivedMinor !== undefined
+                ? { cashReceivedMinor: tender.cashReceivedMinor }
+                : {}),
+            })),
+          }
+        : {}),
       offlineSaleOrdinal,
       cumulativeExposureMinor,
     };
@@ -465,7 +491,7 @@ export class OfflineSaleService {
           local_sale_id, amount_due_minor, cash_received_minor, change_minor, accepted_at
         ) VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(localSaleId, totalMinor, input.cashReceivedMinor, changeMinor, acceptedAt);
+      .run(localSaleId, totalMinor, cashReceivedMinor, changeMinor, acceptedAt);
     this.testSeam?.afterStage?.("tender");
     this.database.connection
       .prepare(
@@ -496,7 +522,7 @@ export class OfflineSaleService {
       acceptedAt,
       currency: authority.currency,
       totalMinor,
-      cashReceivedMinor: input.cashReceivedMinor,
+      cashReceivedMinor,
       changeMinor,
     };
   }

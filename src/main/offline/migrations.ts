@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 6;
+export const LOCAL_SCHEMA_VERSION = 7;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -367,6 +367,31 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
       BEGIN SELECT RAISE(ABORT, 'resolved connected sale is archived'); END;
       CREATE TRIGGER retain_connected_sale_workflow BEFORE DELETE ON connected_sale_workflow
       BEGIN SELECT RAISE(ABORT, 'connected sale workflows must be retained'); END;
+    `,
+  },
+  {
+    version: 7,
+    name: "activity_log",
+    sql: `
+      -- Client-only activity ledger: who did what, when, with a comprehensive description. This is a
+      -- local telemetry/audit stream (every click, navigation and domain event) and is intentionally
+      -- append-driven and mutable only via retention trimming — it carries no money and no durable
+      -- selling state, so it is deliberately NOT governed by the immutability triggers above.
+      CREATE TABLE activity_log (
+        event_id TEXT NOT NULL PRIMARY KEY,
+        occurred_at TEXT NOT NULL,
+        actor_id TEXT,
+        actor_name TEXT,
+        tenant_id TEXT,
+        section TEXT,
+        category TEXT NOT NULL,
+        action TEXT NOT NULL,
+        description TEXT NOT NULL,
+        severity TEXT NOT NULL CHECK (severity IN ('info', 'warning', 'alert')),
+        details_json TEXT
+      ) STRICT;
+      CREATE INDEX activity_log_by_time ON activity_log(occurred_at DESC);
+      CREATE INDEX activity_log_by_severity ON activity_log(severity, occurred_at DESC);
     `,
   },
 ];

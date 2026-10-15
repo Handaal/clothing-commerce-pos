@@ -4,6 +4,7 @@ import {
   OFFLINE_IPC_CHANNELS,
   type OfflineBootstrapInput,
   type OfflineSaleInput,
+  type OfflineTender,
 } from "../../shared/offline";
 import { isAllowedRendererNavigation } from "../renderer-origin";
 import { OfflineRuntime } from "./runtime";
@@ -21,17 +22,52 @@ function requireString(value: unknown, field: string, maximumLength = 200): stri
   return value;
 }
 
+const OFFLINE_TENDER_METHODS = new Set(["cash", "card", "instapay", "wallet"]);
+
+function parseOfflineTender(raw: unknown): OfflineTender {
+  if (!raw || typeof raw !== "object") throw new TypeError("Offline tender is invalid.");
+  const tender = raw as Record<string, unknown>;
+  if (typeof tender.method !== "string" || !OFFLINE_TENDER_METHODS.has(tender.method)) {
+    throw new TypeError("Offline tender method is invalid.");
+  }
+  if (!Number.isSafeInteger(tender.amountMinor) || Number(tender.amountMinor) <= 0) {
+    throw new TypeError("Offline tender amount is invalid.");
+  }
+  const method = tender.method as OfflineTender["method"];
+  if (tender.cashReceivedMinor !== undefined) {
+    if (!Number.isSafeInteger(tender.cashReceivedMinor) || Number(tender.cashReceivedMinor) < 0) {
+      throw new TypeError("Offline tender cash received is invalid.");
+    }
+    return {
+      method,
+      amountMinor: Number(tender.amountMinor),
+      cashReceivedMinor: Number(tender.cashReceivedMinor),
+    };
+  }
+  return { method, amountMinor: Number(tender.amountMinor) };
+}
+
 export function parseOfflineSaleInput(value: unknown): OfflineSaleInput {
   if (!value || typeof value !== "object") throw new TypeError("Offline sale input is invalid.");
   const input = value as Record<string, unknown>;
   if (!Array.isArray(input.lines) || input.lines.length === 0 || input.lines.length > 100) {
     throw new TypeError("Offline sale lines are invalid.");
   }
-  if (!Number.isSafeInteger(input.cashReceivedMinor) || Number(input.cashReceivedMinor) < 0) {
+  const hasTenders = Array.isArray(input.tenders) && input.tenders.length > 0;
+  if (
+    !hasTenders &&
+    (!Number.isSafeInteger(input.cashReceivedMinor) || Number(input.cashReceivedMinor) < 0)
+  ) {
     throw new TypeError("Offline cash received is invalid.");
   }
+  const tenders = hasTenders
+    ? (input.tenders as unknown[]).slice(0, 4).map(parseOfflineTender)
+    : undefined;
   return {
-    cashReceivedMinor: Number(input.cashReceivedMinor),
+    cashReceivedMinor: Number.isSafeInteger(input.cashReceivedMinor)
+      ? Number(input.cashReceivedMinor)
+      : 0,
+    ...(tenders ? { tenders } : {}),
     lines: input.lines.map((raw) => {
       if (!raw || typeof raw !== "object") throw new TypeError("Offline sale line is invalid.");
       const line = raw as Record<string, unknown>;

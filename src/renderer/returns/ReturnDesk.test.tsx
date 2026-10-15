@@ -216,10 +216,19 @@ async function selectLine() {
   );
   fireEvent.click(checkbox);
 }
+// The reason control is the themed Select (a button + listbox) when the policy supplies reasons, and a
+// free-text input otherwise; pick the value whichever it is.
+async function chooseReason(reason: string) {
+  const control = screen.getByLabelText("Reason for line 1");
+  if (control.tagName === "BUTTON") {
+    fireEvent.click(control);
+    fireEvent.mouseDown(await screen.findByRole("option", { name: reason }));
+  } else {
+    fireEvent.change(control, { target: { value: reason } });
+  }
+}
 async function review() {
-  fireEvent.change(screen.getByLabelText("Reason for line 1"), {
-    target: { value: "Size did not fit" },
-  });
+  await chooseReason("Size did not fit");
   fireEvent.click(screen.getByText("Review return"));
 }
 
@@ -234,9 +243,10 @@ describe("connected return cashier", () => {
     await review();
     expect((screen.getByText("Review return") as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Quantity for line 1"), { target: { value: "1" } });
-    fireEvent.change(screen.getByLabelText("Disposition for line 1"), {
-      target: { value: "restock" },
-    });
+    fireEvent.click(screen.getByLabelText("Disposition for line 1"));
+    fireEvent.mouseDown(
+      screen.getByRole("option", { name: /returns units to sellable inventory/ }),
+    );
     fireEvent.click(screen.getByText("Review return"));
     fireEvent.click(screen.getByText("Confirm return"));
     await screen.findByText(/Refund:.*pending/);
@@ -277,7 +287,13 @@ describe("connected return cashier", () => {
       { ...result, refund: { ...result.refund, method: "electronic" } },
     );
     await selectLine();
-    expect(screen.getByLabelText("Reason for line 1").tagName).toBe("SELECT");
+    const reasonControl = screen.getByLabelText("Reason for line 1");
+    expect(reasonControl.tagName).toBe("BUTTON");
+    expect(reasonControl.getAttribute("aria-haspopup")).toBe("listbox");
+    fireEvent.click(reasonControl);
+    expect(screen.getByRole("option", { name: "Size did not fit" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Damaged" })).toBeTruthy();
+    fireEvent.keyDown(reasonControl, { key: "Escape" });
     await review();
     fireEvent.click(screen.getByText("Confirm return"));
     await screen.findByText(/Electronic refunds await provider processing/);

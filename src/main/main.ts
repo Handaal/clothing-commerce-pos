@@ -1,6 +1,7 @@
 import { app, BrowserWindow, net, safeStorage, session, shell } from "electron";
 import path from "node:path";
 
+import { registerActivityIpc } from "./activity/ipc";
 import { registerOfflineIpc } from "./offline/ipc";
 import { registerReturnIpc } from "./returns/ipc";
 import { registerSalesIpc } from "./sales/ipc";
@@ -76,6 +77,7 @@ if (!hasSingleInstanceLock) {
       registerOfflineIpc(offlineRuntime, rendererUrl);
       registerReturnIpc(() => offlineRuntime!.getReturns(), rendererUrl);
       registerSalesIpc(() => offlineRuntime!.getSales(), rendererUrl);
+      registerActivityIpc(() => offlineRuntime!.getActivityStore(), rendererUrl);
       createWindow(rendererUrl);
     })();
     app.on("activate", () => {
