@@ -2,12 +2,25 @@
 /// <reference types="node" />
 import process from "node:process";
 import { createCommerceClient } from "@shifted/clothing-commerce-sdk";
-import { cleanup, configure, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  configure,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../shell/i18n";
 import { ReturnDesk } from "./ReturnDesk";
 import { ReturnService } from "../../main/returns/service";
 import { ReturnStore } from "../../main/returns/store";
 import { makeHarness, type OfflineHarness } from "../../../tests/offline/fixtures";
+
+function render(ui: ReactElement, options?: Parameters<typeof rtlRender>[1]) {
+  return rtlRender(ui, { wrapper: I18nProvider, ...options });
+}
 
 let local: OfflineHarness | undefined;
 afterEach(() => {

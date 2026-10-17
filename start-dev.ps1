@@ -63,8 +63,14 @@ if (-not (Test-Path $ApiDir)) {
 # Under $ErrorActionPreference='Stop' PowerShell turns that stderr into a thrown
 # error even on success, so every native call below is routed through cmd.exe
 # (which swallows stderr internally) and judged only by its real exit code.
+#
+# The native stdout is discarded (Out-Null) rather than left on the success
+# stream: otherwise it would be returned to the caller alongside the exit code
+# as a single array, and a check like `(Invoke-Native ...) -ne 0` would compare
+# against those stdout lines and be truthy even on success. These calls are
+# gates judged only by exit code, so their stdout is not needed.
 function Invoke-Native([string]$CommandLine) {
-    & cmd /c "$CommandLine 2>nul"
+    & cmd /c "$CommandLine 2>nul" | Out-Null
     return $LASTEXITCODE
 }
 

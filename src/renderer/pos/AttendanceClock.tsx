@@ -1,5 +1,6 @@
 import type { AttendanceEntry, TenantCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useI18n } from "../shell/i18n";
 
 type Phase = "loading" | "ready" | "working" | "error";
 
@@ -16,9 +17,14 @@ export function AttendanceClock({
   branchId: string | null;
   disabled?: boolean;
 }) {
+  const { t, locale } = useI18n();
   const [openEntry, setOpenEntry] = useState<AttendanceEntry | null>(null);
   const [phase, setPhase] = useState<Phase>("loading");
   const [message, setMessage] = useState<string | null>(null);
+  // Mid-shift leave is self-service start/end. The API exposes no "my open leave" read, so this is
+  // tracked optimistically from the start/end responses and only offered while on shift (clocked in).
+  const [onLeave, setOnLeave] = useState(false);
+  const [leaveBusy, setLeaveBusy] = useState(false);
   // Discards results from a client that has been swapped out (tenant/session change) mid-flight.
   const activeClient = useRef(client);
 
@@ -34,9 +40,9 @@ export function AttendanceClock({
     } catch {
       if (activeClient.current !== client) return;
       setPhase("error");
-      setMessage("Attendance status is unavailable.");
+      setMessage(t("attendance.unavailable"));
     }
-  }, [client]);
+  }, [client, t]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial load reads external attendance status
@@ -49,23 +55,39 @@ export function AttendanceClock({
     try {
       const result = openEntry ? await client.clockOut() : await client.clockIn({ branchId });
       if (activeClient.current !== client) return;
-      // Clock-out closes the entry (no longer open); clock-in opens a new one.
-      setOpenEntry(result.entry.clockOut === null ? result.entry : null);
+      // Clock-out closes the entry (no longer open); clock-in opens a new one. Ending the shift also
+      // clears any lingering leave state — leave only applies while clocked in.
+      const stillOpen = result.entry.clockOut === null;
+      setOpenEntry(stillOpen ? result.entry : null);
+      if (!stillOpen) setOnLeave(false);
       setPhase("ready");
     } catch {
       if (activeClient.current !== client) return;
       // Re-sync from the server: the most common failure is a stale open/closed view (already clocked
       // in/out from another device), which a refresh resolves to the true state.
-      setMessage(
-        openEntry
-          ? "Could not clock out. Refreshing status."
-          : "Could not clock in. Refreshing status.",
-      );
+      setMessage(openEntry ? t("attendance.clockOutFail") : t("attendance.clockInFail"));
       void refresh();
     }
-  }, [client, openEntry, branchId, refresh]);
+  }, [client, openEntry, branchId, refresh, t]);
 
-  const since = openEntry ? formatClockInTime(openEntry.clockIn) : null;
+  const toggleLeave = useCallback(async () => {
+    if (!openEntry) return;
+    setLeaveBusy(true);
+    setMessage(null);
+    try {
+      const result = onLeave ? await client.endLeave() : await client.startLeave({ branchId });
+      if (activeClient.current !== client) return;
+      // An open leave has no return time yet; ending it stamps `returnedAt`.
+      setOnLeave(result.entry.returnedAt === null);
+    } catch {
+      if (activeClient.current !== client) return;
+      setMessage(onLeave ? t("attendance.endLeaveFail") : t("attendance.startLeaveFail"));
+    } finally {
+      if (activeClient.current === client) setLeaveBusy(false);
+    }
+  }, [client, openEntry, onLeave, branchId, t]);
+
+  const since = openEntry ? formatClockInTime(openEntry.clockIn, locale) : null;
   const busy = phase === "loading" || phase === "working";
 
   return (
@@ -73,22 +95,39 @@ export function AttendanceClock({
       <button
         type="button"
         className={`button ${openEntry ? "button--quiet" : ""}`.trim()}
-        aria-label={openEntry ? "Clock out of your shift" : "Clock in to start your shift"}
-        disabled={disabled || busy}
+        aria-label={openEntry ? t("attendance.clockOutAria") : t("attendance.clockInAria")}
+        disabled={disabled || busy || leaveBusy}
         onClick={() => void toggle()}
       >
         {phase === "loading"
-          ? "Attendance…"
+          ? t("attendance.loading")
           : phase === "working"
             ? openEntry
-              ? "Clocking out…"
-              : "Clocking in…"
+              ? t("attendance.clockingOut")
+              : t("attendance.clockingIn")
             : openEntry
               ? since
-                ? `Clock out · since ${since}`
-                : "Clock out"
-              : "Clock in"}
+                ? t("attendance.clockOutSince", { since })
+                : t("attendance.clockOut")
+              : t("attendance.clockIn")}
       </button>
+      {openEntry ? (
+        <button
+          type="button"
+          className={`button ${onLeave ? "" : "button--quiet"}`.trim()}
+          aria-label={onLeave ? t("attendance.endLeaveAria") : t("attendance.startLeaveAria")}
+          disabled={disabled || busy || leaveBusy}
+          onClick={() => void toggleLeave()}
+        >
+          {leaveBusy
+            ? onLeave
+              ? t("attendance.endingLeave")
+              : t("attendance.startingLeave")
+            : onLeave
+              ? t("attendance.endLeave")
+              : t("attendance.startLeave")}
+        </button>
+      ) : null}
       {message ? (
         <span className="attendance-clock__message" role="status">
           {message}
@@ -100,8 +139,8 @@ export function AttendanceClock({
 
 // Renders the open-entry start time in the operator's local time, hour:minute. Falls back to null on an
 // unparseable timestamp so the button simply omits the "since" hint rather than showing a broken value.
-function formatClockInTime(iso: string): string | null {
+function formatClockInTime(iso: string, locale: string): string | null {
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return null;
-  return parsed.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return parsed.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
 }

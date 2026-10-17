@@ -4,6 +4,7 @@ import type { TenantCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { I18nProvider } from "../shell/i18n";
 import { ToastProvider } from "../shell/Toast";
 import { SuppliersDesk } from "./SuppliersDesk";
 
@@ -95,9 +96,11 @@ describe("SuppliersDesk money workflow", () => {
     } as unknown as TenantCommerceClient;
 
     render(
-      <ToastProvider>
-        <SuppliersDesk client={client} />
-      </ToastProvider>,
+      <I18nProvider>
+        <ToastProvider>
+          <SuppliersDesk client={client} />
+        </ToastProvider>
+      </I18nProvider>,
     );
 
     expect(await screen.findByText("Payments due")).toBeTruthy();

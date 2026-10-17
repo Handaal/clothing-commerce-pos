@@ -14,6 +14,8 @@ import type {
   ReturnsBridge,
 } from "../../shared/returns";
 import { formatMoney } from "../money";
+import { formatDateTime } from "../format";
+import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import type { PosRegister } from "../pos/context";
 import { CONNECTION_REQUIRED, returnFailure, type ReturnIntent } from "./commands.mjs";
@@ -36,6 +38,7 @@ export function ReturnDesk({
   getToken,
   bridge = window.returns,
 }: Props) {
+  const { t, locale } = useI18n();
   const [connected, setConnected] = useState(false);
   const connectedRef = useRef(false);
   const [orders, setOrders] = useState<OrderListResponse | null>(null);
@@ -64,9 +67,9 @@ export function ReturnDesk({
 
   const session = useCallback(async (): Promise<ReturnSession> => {
     const accessToken = await tokenRef.current();
-    if (!accessToken) throw new Error("Restore your operator session to confirm the saved return.");
+    if (!accessToken) throw new Error(t("returns.err.restoreSession"));
     return { tenantId: client.tenantId, accessToken };
-  }, [client.tenantId]);
+  }, [client.tenantId, t]);
   const displayReply = useCallback(
     async (reply: ReturnReply) => {
       setWorkflow(reply.workflow);
@@ -119,13 +122,12 @@ export function ReturnDesk({
         } else await displayReply(reply);
       })
       .catch(() => {
-        if (active)
-          setError("Connection and local persistence are required to check previous returns.");
+        if (active) setError(t("returns.err.checkPrevious"));
       });
     return () => {
       active = false;
     };
-  }, [bridge, connected, recoveryChecked, session, displayReply]);
+  }, [bridge, connected, recoveryChecked, session, displayReply, t]);
 
   useEffect(() => {
     let active = true;
@@ -181,7 +183,7 @@ export function ReturnDesk({
     try {
       await displayReply(await bridge.recover(await session()));
     } catch {
-      setError("Connection and local persistence are required to complete confirmation.");
+      setError(t("returns.err.completeConfirmation"));
     } finally {
       pendingRef.current = false;
       setPending(false);
@@ -194,7 +196,7 @@ export function ReturnDesk({
     try {
       await displayReply(await bridge.finish(await session(), workflow.id));
     } catch {
-      setError("The acknowledged return could not be archived. Retry confirmation.");
+      setError(t("returns.err.archive"));
     } finally {
       pendingRef.current = false;
       setPending(false);
@@ -210,11 +212,7 @@ export function ReturnDesk({
       await action();
     } catch (failure) {
       const view = returnFailure(failure);
-      setError(
-        view.uncertain
-          ? "Could not load current order/return data. Check the connection and retry."
-          : view.message,
-      );
+      setError(view.uncertain ? t("returns.err.loadData") : view.message);
     } finally {
       pendingRef.current = false;
       setPending(false);
@@ -314,97 +312,88 @@ export function ReturnDesk({
   }
   function itemName(lineNumber: number) {
     const item = order?.lines.find((line) => line.lineNumber === lineNumber);
-    return item ? `${item.productName} · ${item.sku}` : `Order line ${lineNumber}`;
+    return item ? `${item.productName} · ${item.sku}` : t("returns.orderLine", { n: lineNumber });
+  }
+  function disposition(value: "restock" | "non_restock") {
+    return value === "restock" ? t("orders.restock") : t("orders.nonRestock");
   }
   function receipt(value: ReturnDetailResponse) {
     return (
       <article className="return-result" key={value.id}>
-        <h3>Return accepted · Order {order?.header.orderNumber ?? workflow?.orderReference}</h3>
+        <h3>
+          {t("returns.accepted", {
+            number: order?.header.orderNumber ?? workflow?.orderReference ?? "",
+          })}
+        </h3>
+        <p>{t("returns.referenceNote")}</p>
         <p>
-          Return reference: unavailable from the API. Identify this return by its original order and
-          timestamp.
-        </p>
-        <p>
-          Timestamp: <time dateTime={value.createdAt}>{value.createdAt}</time>
+          {t("returns.timestamp")} <time dateTime={value.createdAt}>{value.createdAt}</time>
         </p>
         <ul>
           {value.lines.map((line) => (
             <li key={line.orderLineId}>
-              {itemName(line.lineNumber)} · Quantity {line.quantity} ·{" "}
-              {line.disposition === "restock" ? "RESTOCK" : "NON-RESTOCK"} · {line.reason} ·{" "}
-              {formatMoney(line.amountMinor, value.currency)}
+              {itemName(line.lineNumber)} · {t("returns.quantityShort", { q: line.quantity })} ·{" "}
+              {disposition(line.disposition)} · {line.reason} ·{" "}
+              {formatMoney(line.amountMinor, value.currency, locale)}
             </li>
           ))}
         </ul>
         <p>
           <strong>
-            Refund: {formatMoney(value.refund.amountMinor, value.refund.currency)} ·{" "}
-            {value.refund.status}
+            {t("returns.refundStatus", {
+              amount: formatMoney(value.refund.amountMinor, value.refund.currency, locale),
+              status: value.refund.status,
+            })}
           </strong>
         </p>
         <p>
-          Method: {value.refund.method}
-          {value.refund.settledAt ? ` · Settled: ${value.refund.settledAt}` : ""}
+          {t("returns.method", { method: value.refund.method })}
+          {value.refund.settledAt
+            ? ` · ${t("returns.settledAt", { when: value.refund.settledAt })}`
+            : ""}
         </p>
         {value.refund.status === "pending" ? (
           <p>
-            Settlement is still owed.
-            {value.refund.method === "electronic"
-              ? " Electronic refunds await provider processing; this POS cannot settle them."
-              : ""}
+            {t("returns.settlementOwed")}
+            {value.refund.method === "electronic" ? ` ${t("returns.electronicNote")}` : ""}
           </p>
         ) : null}
-        {value.refund.status === "failed" ? (
-          <p>
-            The refund failed. Ask an authorized supervisor to review it; do not create another
-            return for these items.
-          </p>
-        ) : null}
+        {value.refund.status === "failed" ? <p>{t("returns.failedNote")}</p> : null}
       </article>
     );
   }
 
   return (
-    <section className="returns-panel" aria-label="Connected returns">
-      <h2>Returns and refunds</h2>
-      <p role="status">{connected ? "Connected · Returns available" : CONNECTION_REQUIRED}</p>
+    <section className="returns-panel" aria-label={t("returns.ariaLabel")}>
+      <h2>{t("pos.returns")}</h2>
+      <p role="status">{connected ? t("returns.connectedAvailable") : CONNECTION_REQUIRED}</p>
       {error ? <p role="alert">{error}</p> : null}
-      {!bridge ? (
-        <p role="alert">
-          Durable return storage is unavailable. Use the Electron application to submit returns.
-        </p>
-      ) : null}
+      {!bridge ? <p role="alert">{t("returns.noDurable")}</p> : null}
       {!recoveryChecked || uncertain ? (
         <div className="return-review">
-          <p>
-            Confirming a previously submitted return… Connection is required to complete
-            confirmation. The saved command and key survive application restart.
-          </p>
+          <p>{t("returns.confirmingPrev")}</p>
           <button
             className="button"
             disabled={!bridge || !connected || pending}
             onClick={() => void recoverSaved()}
           >
-            Recover saved return/refund
+            {t("returns.recoverSaved")}
           </button>
         </div>
       ) : null}
       {workflow?.stage === "return_acknowledged" ? (
         <div className="return-review">
-          <p>
-            Previous return acknowledged · Order {workflow.orderReference}. Record cash settlement
-            below, or finish with the canonical refund state shown.
-          </p>
+          <p>{t("returns.prevAcknowledged", { ref: workflow.orderReference })}</p>
           <button disabled={!connected || pending} onClick={() => void finishWorkflow()}>
             {workflow.result?.refund.status === "pending"
-              ? "Finish and leave refund pending"
-              : "Finish acknowledged return"}
+              ? t("returns.finishPending")
+              : t("returns.finishAck")}
           </button>
         </div>
       ) : null}
       {result && (!order || !eligibility) ? receipt(result) : null}
       <fieldset disabled={!connected || locked || activeWorkflow}>
-        <legend>Find original order</legend>
+        <legend>{t("returns.findOrder")}</legend>
         <button
           className="button"
           onClick={() =>
@@ -420,16 +409,13 @@ export function ReturnDesk({
             )
           }
         >
-          Load connected orders
+          {t("returns.loadConnected")}
         </button>
         <label>
-          Filter loaded orders by receipt/order number
+          {t("returns.filterLabel")}
           <input value={query} onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <p>
-          Orders from {register.branchName}. Load more to search further; unsynchronized local
-          receipts are not connected orders.
-        </p>
+        <p>{t("returns.ordersFrom", { branch: register.branchName })}</p>
         {orders?.items
           .filter((item) => item.orderNumber.toLowerCase().includes(query.trim().toLowerCase()))
           .map((item) => (
@@ -438,15 +424,16 @@ export function ReturnDesk({
               key={item.id}
               onClick={() => void read(() => loadOrder(item.id))}
             >
-              Order {item.orderNumber} · {formatMoney(item.totalMinor, item.currency)} ·{" "}
-              {new Date(item.placedAt).toLocaleString()}
+              {t("receipt.order", { number: item.orderNumber })} ·{" "}
+              {formatMoney(item.totalMinor, item.currency, locale)} ·{" "}
+              {formatDateTime(item.placedAt, locale)}
             </button>
           ))}
         {orders &&
         !orders.items.some((item) =>
           item.orderNumber.toLowerCase().includes(query.trim().toLowerCase()),
         ) ? (
-          <p>No matching order in the loaded results.</p>
+          <p>{t("returns.noMatchLoaded")}</p>
         ) : null}
         {orders?.pageInfo.hasMore ? (
           <button
@@ -463,33 +450,35 @@ export function ReturnDesk({
               })
             }
           >
-            Load more orders
+            {t("returns.loadMoreOrders")}
           </button>
         ) : null}
       </fieldset>
       {order && eligibility ? (
         <>
-          <h3>Original order {order.header.orderNumber}</h3>
+          <h3>{t("returns.originalOrder", { number: order.header.orderNumber })}</h3>
           <p>
-            Server eligibility: {eligibility.eligible ? "Eligible" : "Not eligible"}
+            {t("returns.serverEligibility")}{" "}
+            {eligibility.eligible ? t("returns.eligible") : t("returns.notEligible")}
             {eligibility.reason ? ` · ${eligibility.reason}` : ""}
           </p>
           <p>
-            Maximum remaining refundable amount:{" "}
-            {formatMoney(eligibility.maxRefundableMinor, eligibility.currency)}
+            {t("returns.maxRefundable", {
+              amount: formatMoney(eligibility.maxRefundableMinor, eligibility.currency, locale),
+            })}
           </p>
           <button
             disabled={!connected || locked || activeWorkflow}
             onClick={() => void read(() => loadOrder(order.header.id))}
           >
-            Refresh eligibility and return history
+            {t("returns.refreshEligibility")}
           </button>
           {!result ? (
             <>
               <fieldset
                 disabled={!connected || locked || activeWorkflow || review || !eligibility.eligible}
               >
-                <legend>Select received items</legend>
+                <legend>{t("returns.selectItems")}</legend>
                 {eligibility.lines.map((line) => {
                   const selected = selection[line.orderLineId];
                   return (
@@ -517,15 +506,17 @@ export function ReturnDesk({
                         {itemName(line.lineNumber)}
                       </label>
                       <p>
-                        Purchased: {line.purchasedQuantity} · Previously returned:{" "}
-                        {line.returnedQuantity} · Remaining eligible: {line.eligibleQuantity} ·
-                        Original unit amount:{" "}
-                        {formatMoney(line.unitPriceMinor, eligibility.currency)}
+                        {t("returns.lineInfo", {
+                          purchased: line.purchasedQuantity,
+                          returned: line.returnedQuantity,
+                          eligible: line.eligibleQuantity,
+                          amount: formatMoney(line.unitPriceMinor, eligibility.currency, locale),
+                        })}
                       </p>
                       {selected ? (
                         <div className="return-fields">
                           <label>
-                            Quantity for line {line.lineNumber}
+                            {t("returns.quantityFor", { n: line.lineNumber })}
                             <input
                               type="number"
                               min="1"
@@ -538,11 +529,11 @@ export function ReturnDesk({
                             />
                           </label>
                           <label>
-                            Reason for line {line.lineNumber}
+                            {t("returns.reasonFor", { n: line.lineNumber })}
                             {eligibility.policy.allowedReasons !== null ? (
                               <Select
-                                ariaLabel={`Reason for line ${line.lineNumber}`}
-                                placeholder="Choose reason"
+                                ariaLabel={t("returns.reasonFor", { n: line.lineNumber })}
+                                placeholder={t("returns.chooseReason")}
                                 value={selected.reason}
                                 onChange={(value) => update(line.orderLineId, { reason: value })}
                                 options={eligibility.policy.allowedReasons.map((reason) => ({
@@ -561,19 +552,19 @@ export function ReturnDesk({
                             )}
                           </label>
                           <label>
-                            Disposition for line {line.lineNumber}
+                            {t("returns.dispositionFor", { n: line.lineNumber })}
                             <Select<Selection["disposition"]>
-                              ariaLabel={`Disposition for line ${line.lineNumber}`}
+                              ariaLabel={t("returns.dispositionFor", { n: line.lineNumber })}
                               value={selected.disposition}
                               onChange={(disposition) => update(line.orderLineId, { disposition })}
                               options={[
                                 {
                                   value: "non_restock",
-                                  label: "NON-RESTOCK — does not increase sellable inventory",
+                                  label: t("returns.nonRestockOption"),
                                 },
                                 {
                                   value: "restock",
-                                  label: "RESTOCK — returns units to sellable inventory",
+                                  label: t("returns.restockOption"),
                                 },
                               ]}
                             />
@@ -586,11 +577,12 @@ export function ReturnDesk({
               </fieldset>
               {restock ? (
                 <p>
-                  RESTOCK destination: {register.defaultInventoryLocationName}. The server verifies
-                  receiving permission and sellable location eligibility.
+                  {t("returns.restockDestination", {
+                    location: register.defaultInventoryLocationName,
+                  })}
                 </p>
               ) : (
-                <p>NON-RESTOCK does not increase sellable inventory.</p>
+                <p>{t("returns.nonRestockNote")}</p>
               )}
               {!review ? (
                 <button
@@ -598,11 +590,11 @@ export function ReturnDesk({
                   disabled={!connected || locked || !valid}
                   onClick={() => setReview(true)}
                 >
-                  Review return
+                  {t("returns.reviewReturn")}
                 </button>
               ) : (
                 <div className="return-review">
-                  <h3>Confirm received merchandise</h3>
+                  <h3>{t("returns.confirmReceived")}</h3>
                   <ul>
                     {lines.map((line) => (
                       <li key={line.orderLineId}>
@@ -610,25 +602,21 @@ export function ReturnDesk({
                           eligibility.lines.find((item) => item.orderLineId === line.orderLineId)!
                             .lineNumber,
                         )}{" "}
-                        · Quantity {line.quantity} ·{" "}
-                        {line.disposition === "restock" ? "RESTOCK" : "NON-RESTOCK"} · {line.reason}
+                        · {t("returns.quantityShort", { q: line.quantity })} ·{" "}
+                        {disposition(line.disposition)} · {line.reason}
                       </li>
                     ))}
                   </ul>
-                  <p>
-                    Confirm that these items have been received and accepted. The API calculates the
-                    exact refund when it accepts the return. A pending refund will be recorded;
-                    review its amount before handing back cash.
-                  </p>
+                  <p>{t("returns.confirmNote")}</p>
                   <button disabled={!connected || locked} onClick={() => setReview(false)}>
-                    Edit return
+                    {t("returns.editReturn")}
                   </button>
                   <button
                     className="button"
                     disabled={!connected || locked || activeWorkflow || !valid}
                     onClick={() => void submit("create")}
                   >
-                    Confirm return
+                    {t("returns.confirmReturn")}
                   </button>
                 </div>
               )}
@@ -642,14 +630,18 @@ export function ReturnDesk({
               (eligibility.policy.maxManualRefundMinor === null ||
                 result.refund.amountMinor <= eligibility.policy.maxManualRefundMinor) ? (
                 <div className="return-settlement">
-                  <h3>Record cash refund</h3>
+                  <h3>{t("returns.recordCashRefund")}</h3>
                   <p>
-                    Only after handing back exactly{" "}
-                    {formatMoney(result.refund.amountMinor, result.refund.currency)}, record the
-                    completed payment below. Server authorization and policy apply.
+                    {t("returns.handBackNote", {
+                      amount: formatMoney(
+                        result.refund.amountMinor,
+                        result.refund.currency,
+                        locale,
+                      ),
+                    })}
                   </p>
                   <label>
-                    Settlement reference
+                    {t("returns.settlementReference")}
                     <input
                       maxLength={200}
                       disabled={locked}
@@ -664,7 +656,7 @@ export function ReturnDesk({
                       disabled={locked}
                       onChange={(event) => setCashConfirmed(event.target.checked)}
                     />
-                    I have handed back the displayed cash amount.
+                    {t("returns.cashAttest")}
                   </label>
                   <button
                     className="button"
@@ -672,8 +664,8 @@ export function ReturnDesk({
                     onClick={() => void submit("settle")}
                   >
                     {uncertain === "settle"
-                      ? "Retry exact cash confirmation"
-                      : "Record cash refund"}
+                      ? t("returns.retryCash")
+                      : t("returns.recordCashRefund")}
                   </button>
                 </div>
               ) : null}
@@ -681,12 +673,12 @@ export function ReturnDesk({
                 disabled={!connected || locked}
                 onClick={() => void read(async () => setResult(await client.getReturn(result.id)))}
               >
-                Refresh refund result
+                {t("returns.refreshResult")}
               </button>
             </>
           )}
           <details>
-            <summary>Previous returns for this order</summary>
+            <summary>{t("returns.previousReturns")}</summary>
             {history.map(receipt)}
             {historyCursor ? (
               <button
@@ -701,14 +693,14 @@ export function ReturnDesk({
                   })
                 }
               >
-                Load more returns
+                {t("returns.loadMoreReturns")}
               </button>
             ) : null}
-            {history.length === 0 ? <p>No previous returns in the loaded history.</p> : null}
+            {history.length === 0 ? <p>{t("returns.noPrevious")}</p> : null}
           </details>
           {history.length > 0 && !result ? (
             <fieldset disabled={!connected || locked || activeWorkflow}>
-              <legend>Open previous return result</legend>
+              <legend>{t("returns.openPrevious")}</legend>
               {history.map((item) => (
                 <button
                   key={item.id}
@@ -718,7 +710,8 @@ export function ReturnDesk({
                     setCashConfirmed(false);
                   }}
                 >
-                  {item.createdAt} · {formatMoney(item.refund.amountMinor, item.refund.currency)} ·{" "}
+                  {formatDateTime(item.createdAt, locale)} ·{" "}
+                  {formatMoney(item.refund.amountMinor, item.refund.currency, locale)} ·{" "}
                   {item.refund.status}
                 </button>
               ))}

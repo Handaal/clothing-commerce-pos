@@ -6,11 +6,18 @@ import {
   type ReturnEligibilityResponse,
   type TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ReturnsBridge, ReturnWorkflow } from "../../shared/returns";
+import { I18nProvider } from "../shell/i18n";
 import { ReturnDesk } from "./ReturnDesk";
 import { CONNECTION_REQUIRED } from "./commands.mjs";
+
+// ReturnDesk reads language/locale from the i18n context; the test-setup pins it to English.
+function render(ui: ReactElement, options?: Parameters<typeof rtlRender>[1]) {
+  return rtlRender(ui, { wrapper: I18nProvider, ...options });
+}
 
 const order: OrderDetailResponse = {
   header: {

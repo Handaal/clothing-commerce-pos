@@ -1,10 +1,17 @@
-export function formatMoney(amountMinor: number, currency: string): string {
+// The business operates exclusively in Egyptian pounds. Dev fixtures and some backend records still
+// echo other currency codes (notably "USD"), but the POS must never surface a "$"/"USD" mark to staff
+// or on receipts. This module is the single place amounts are rendered, so coercing the display
+// currency here guarantees every amount shows as EGP everywhere. The `currency` argument is kept for
+// call-site compatibility (and future multi-currency work) but is intentionally ignored today.
+export const BUSINESS_CURRENCY = "EGP";
+
+export function formatMoney(amountMinor: number, _currency?: string, locale?: string): string {
   try {
-    return new Intl.NumberFormat(undefined, { style: "currency", currency }).format(
+    return new Intl.NumberFormat(locale, { style: "currency", currency: BUSINESS_CURRENCY }).format(
       amountMinor / 100,
     );
   } catch {
-    return `${currency} ${(amountMinor / 100).toFixed(2)}`;
+    return `${BUSINESS_CURRENCY} ${(amountMinor / 100).toFixed(2)}`;
   }
 }
 
@@ -26,15 +33,15 @@ export function minorToMajorInput(amountMinor: number): string {
   return (amountMinor / 100).toFixed(2);
 }
 
-/** The currency's symbol (or code) for inline field labels. */
-export function currencySymbol(currency: string): string {
+/** The currency's symbol (or code) for inline field labels — always EGP (see `formatMoney`). */
+export function currencySymbol(_currency?: string, locale?: string): string {
   try {
-    const parts = new Intl.NumberFormat(undefined, {
+    const parts = new Intl.NumberFormat(locale, {
       style: "currency",
-      currency,
+      currency: BUSINESS_CURRENCY,
     }).formatToParts(0);
-    return parts.find((part) => part.type === "currency")?.value ?? currency;
+    return parts.find((part) => part.type === "currency")?.value ?? BUSINESS_CURRENCY;
   } catch {
-    return currency;
+    return BUSINESS_CURRENCY;
   }
 }

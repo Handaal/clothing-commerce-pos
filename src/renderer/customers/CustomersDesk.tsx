@@ -9,35 +9,35 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
 import { formatMoney } from "../money";
+import { formatDate, formatDateTime } from "../format";
+import type { ReceiptIdentity } from "../pos/receipt-identity";
+import { useI18n, type TVars } from "../shell/i18n";
 import { SkeletonLines } from "../shell/Skeleton";
+import { OrderReceiptModal } from "./OrderReceiptModal";
 
 type CustomerItem = CustomerListResponse["items"][number];
+type T = (key: string, vars?: TVars) => string;
 
-const fmtDateTime = (iso: string): string => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-};
-const fmtDate = (iso: string | null): string => {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { dateStyle: "medium" });
-};
-
-function statusPill(status: "placed" | "cancelled") {
+function statusPill(status: "placed" | "cancelled", t: T) {
   return (
-    <span className={`pill ${status === "cancelled" ? "pill--bad" : "pill--good"}`}>{status}</span>
+    <span className={`pill ${status === "cancelled" ? "pill--bad" : "pill--good"}`}>
+      {t(`orders.status.${status}`)}
+    </span>
   );
 }
 
 export function CustomersDesk({
   client,
   currency,
+  identity = null,
 }: {
   client: TenantCommerceClient;
   currency: string;
+  // Business/branch identity for reprinted receipts; null when POS context has not resolved yet.
+  identity?: ReceiptIdentity | null;
 }) {
+  const { t, locale } = useI18n();
+  const [receiptOrderId, setReceiptOrderId] = useState<string | null>(null);
   const [list, setList] = useState<CustomerListResponse | null>(null);
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
@@ -130,20 +130,20 @@ export function CustomersDesk({
     <main className="orders-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">People</p>
-          <h1>Customers</h1>
+          <p className="eyebrow">{t("customers.people")}</p>
+          <h1>{t("nav.customers")}</h1>
         </div>
         <div className="staff-filters">
           <label>
-            Search name or phone
+            {t("customers.searchLabel")}
             <input
               value={query}
-              placeholder="Jane or +20100…"
+              placeholder={t("customers.searchPlaceholder")}
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
           <button className="button button--quiet" onClick={() => void loadList(query)}>
-            Refresh
+            {t("orders.refresh")}
           </button>
         </div>
       </header>
@@ -152,7 +152,7 @@ export function CustomersDesk({
         <div className="notice notice--error" role="alert">
           <span>{listError}</span>
           <button className="button button--quiet" onClick={() => void loadList(query)}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       ) : null}
@@ -160,14 +160,14 @@ export function CustomersDesk({
       <div className="orders-layout">
         <section className="orders-list staff-card">
           <div className="staff-card__head">
-            <h2>All customers</h2>
-            <span>{list ? `${list.items.length} loaded` : ""}</span>
+            <h2>{t("customers.all")}</h2>
+            <span>{list ? t("orders.loaded", { count: list.items.length }) : ""}</span>
           </div>
           <div className="orders-list__body">
-            {listLoading ? <SkeletonLines lines={6} label="Loading customers" /> : null}
+            {listLoading ? <SkeletonLines lines={6} label={t("customers.loading")} /> : null}
             {!listLoading && items.length === 0 ? (
               <p className="staff-empty">
-                {query.trim() === "" ? "No customers yet." : `No customer matches “${query}”.`}
+                {query.trim() === "" ? t("customers.none") : t("customers.noMatch", { query })}
               </p>
             ) : null}
             {items.map((customer) => (
@@ -180,20 +180,20 @@ export function CustomersDesk({
                 <span className="orders-row__top">
                   <strong>{customer.name}</strong>
                   <strong>
-                    {formatMoney(customer.totalSpentMinor, customer.currency ?? currency)}
+                    {formatMoney(customer.totalSpentMinor, customer.currency ?? currency, locale)}
                   </strong>
                 </span>
                 <span className="orders-row__meta">
                   <span className="muted">{customer.phone}</span>
                   <span className="pill">
-                    {customer.orderCount} order{customer.orderCount === 1 ? "" : "s"}
+                    {t("customers.orderCount", { count: customer.orderCount })}
                   </span>
                 </span>
               </button>
             ))}
             {list?.pageInfo.hasMore ? (
               <button className="button button--quiet orders-more" onClick={() => void loadMore()}>
-                Load more customers
+                {t("customers.loadMore")}
               </button>
             ) : null}
           </div>
@@ -202,11 +202,11 @@ export function CustomersDesk({
         <section className="orders-detail">
           {!selectedId ? (
             <div className="staff-card">
-              <p className="staff-empty">Select a customer to see their profile and purchases.</p>
+              <p className="staff-empty">{t("customers.selectPrompt")}</p>
             </div>
           ) : detailLoading ? (
             <div className="staff-card">
-              <SkeletonLines lines={5} label="Loading customer" />
+              <SkeletonLines lines={5} label={t("customers.loadingOne")} />
             </div>
           ) : detailError ? (
             <div className="notice notice--error" role="alert">
@@ -215,7 +215,7 @@ export function CustomersDesk({
                 className="button button--quiet"
                 onClick={() => selectedId && void openCustomer(selectedId)}
               >
-                Retry
+                {t("common.retry")}
               </button>
             </div>
           ) : detail ? (
@@ -224,10 +224,20 @@ export function CustomersDesk({
               orders={orders}
               fallbackCurrency={currency}
               onLoadMore={() => void loadMoreOrders()}
+              onOpenReceipt={setReceiptOrderId}
             />
           ) : null}
         </section>
       </div>
+
+      {receiptOrderId ? (
+        <OrderReceiptModal
+          client={client}
+          orderId={receiptOrderId}
+          identity={identity}
+          onClose={() => setReceiptOrderId(null)}
+        />
+      ) : null}
     </main>
   );
 }
@@ -237,57 +247,63 @@ function CustomerDetail({
   orders,
   fallbackCurrency,
   onLoadMore,
+  onOpenReceipt,
 }: {
   customer: CustomerDetailResponse;
   orders: CustomerOrdersResponse | null;
   fallbackCurrency: string;
   onLoadMore: () => void;
+  onOpenReceipt: (orderId: string) => void;
 }) {
+  const { t, locale } = useI18n();
   const currency = customer.currency ?? fallbackCurrency;
   const items: readonly OrderSummary[] = orders?.items ?? [];
   return (
     <article className="order-detail">
       <header className="order-detail__head">
         <div>
-          <p className="eyebrow">Customer</p>
+          <p className="eyebrow">{t("orders.customer")}</p>
           <h2>{customer.name}</h2>
           <p className="muted">
             {customer.phone}
             {customer.email ? ` · ${customer.email}` : ""}
           </p>
-          <p className="muted">Customer since {fmtDate(customer.createdAt)}</p>
+          <p className="muted">
+            {t("customers.since", { date: formatDate(customer.createdAt, locale) })}
+          </p>
         </div>
       </header>
 
       <div className="voucher-stats">
         <div className="voucher-stat">
           <strong>{customer.orderCount}</strong>
-          <span>Orders</span>
+          <span>{t("customers.orders")}</span>
         </div>
         <div className="voucher-stat voucher-stat--accent">
-          <strong>{formatMoney(customer.totalSpentMinor, currency)}</strong>
-          <span>Lifetime spend</span>
+          <strong>{formatMoney(customer.totalSpentMinor, currency, locale)}</strong>
+          <span>{t("customers.lifetimeSpend")}</span>
         </div>
         <div className="voucher-stat">
-          <strong>{customer.lastOrderAt ? fmtDate(customer.lastOrderAt) : "—"}</strong>
-          <span>Last order</span>
+          <strong>{customer.lastOrderAt ? formatDate(customer.lastOrderAt, locale) : "—"}</strong>
+          <span>{t("customers.lastOrder")}</span>
         </div>
       </div>
 
       <section className="order-card">
-        <h3>Purchase history</h3>
+        <h3>{t("customers.purchaseHistory")}</h3>
         {items.length === 0 ? (
-          <p className="muted">No orders recorded for this customer.</p>
+          <p className="muted">{t("customers.noOrders")}</p>
         ) : (
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
                 <tr>
-                  <th>Order</th>
-                  <th>Channel</th>
-                  <th>Status</th>
-                  <th>Date</th>
-                  <th className="end">Total</th>
+                  <th>{t("orders.order")}</th>
+                  <th>{t("customers.channel")}</th>
+                  <th>{t("orders.statusLabel")}</th>
+                  <th>{t("customers.date")}</th>
+                  <th className="end">{t("cashier.total")}</th>
+                  <th className="end">{t("staff.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -299,10 +315,19 @@ function CustomerDetail({
                     <td>
                       <span className="pill">{order.channel}</span>
                     </td>
-                    <td>{statusPill(order.status)}</td>
-                    <td className="muted">{fmtDateTime(order.placedAt)}</td>
+                    <td>{statusPill(order.status, t)}</td>
+                    <td className="muted">{formatDateTime(order.placedAt, locale)}</td>
                     <td className="end">
-                      <strong>{formatMoney(order.totalMinor, order.currency)}</strong>
+                      <strong>{formatMoney(order.totalMinor, order.currency, locale)}</strong>
+                    </td>
+                    <td className="end">
+                      <button
+                        type="button"
+                        className="row-action"
+                        onClick={() => onOpenReceipt(order.id)}
+                      >
+                        {t("customers.viewReceipt")}
+                      </button>
                     </td>
                   </tr>
                 ))}
@@ -312,7 +337,7 @@ function CustomerDetail({
         )}
         {orders?.pageInfo.hasMore ? (
           <button className="button button--quiet orders-more" onClick={onLoadMore}>
-            Load more orders
+            {t("customers.loadMore")}
           </button>
         ) : null}
       </section>

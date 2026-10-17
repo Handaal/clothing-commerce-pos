@@ -26,7 +26,8 @@ import { loadSellableCatalog, type SellableProduct, type SellableVariant } from 
 import { SaleExecutor, type SaleExecutionState, type SalesGateway } from "./checkout/sale-executor";
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
-import { formatMoney } from "./money";
+import { currencySymbol, formatMoney } from "./money";
+import { VariantDialog } from "./pos/VariantDialog";
 import { PayModal, type SaleCustomer, type SaleTender } from "./checkout/PayModal";
 import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
@@ -57,16 +58,17 @@ import { SettingsDesk } from "./settings/SettingsDesk";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
 import { AppShell } from "./shell/AppShell";
+import { useI18n } from "./shell/i18n";
 import { PlaceholderSection } from "./shell/PlaceholderSection";
 import { Select } from "./shell/Select";
 import { accessibleSections, SECTIONS, type Capabilities, type SectionId } from "./shell/sections";
 
-// Cashier-facing labels for captured tender methods, shown on the cart and receipt.
-const TENDER_LABELS: Record<"cash" | "card" | "instapay" | "wallet", string> = {
-  cash: "Cash",
-  card: "Card",
-  instapay: "Instapay",
-  wallet: "Wallet",
+// i18n keys for captured tender methods, shown on the cart and receipt; resolved through `t`.
+const TENDER_LABEL_KEYS: Record<"cash" | "card" | "instapay" | "wallet", string> = {
+  cash: "pay.method.cash",
+  card: "pay.method.card",
+  instapay: "pay.method.instapay",
+  wallet: "pay.method.wallet",
 };
 
 export interface PosAuth {
@@ -120,6 +122,7 @@ export function PosApplication({
   returnsBridge = typeof window === "undefined" ? undefined : window.returns,
   salesGateway,
 }: PosApplicationProps) {
+  const { t, locale } = useI18n();
   const tokenRef = useRef(auth.getToken);
   useEffect(() => {
     tokenRef.current = auth.getToken;
@@ -610,11 +613,11 @@ export function PosApplication({
   function openPayment() {
     if (showReturns || locked || priceConfirmationRequired) return;
     if (cart.length === 0) {
-      setLocalError("Add at least one item before checkout.");
+      setLocalError(t("pos.err.addItem"));
       return;
     }
     if (!quoteReady || quote === null) {
-      setLocalError("Waiting for the authoritative total. Try again once pricing is ready.");
+      setLocalError(t("pos.err.waitingTotal"));
       return;
     }
     setLocalError(null);
@@ -661,8 +664,7 @@ export function PosApplication({
     setOfflineActionMessage(null);
     try {
       const accessToken = await auth.getToken();
-      if (!accessToken)
-        throw new Error("Your session must be refreshed before enabling offline sales.");
+      if (!accessToken) throw new Error(t("pos.offline.sessionRefresh"));
       const result = await offlineBridge.bootstrap({
         tenantId,
         registerId: register.registerId,
@@ -672,27 +674,25 @@ export function PosApplication({
       await refreshOfflineState();
       setOfflineActionMessage(
         result.releasedProjectionCount > 0
-          ? `Offline data refreshed. ${result.releasedProjectionCount} synchronized sale projection(s) reconciled.`
-          : "Offline selling is ready with current server-issued prices and projected stock.",
+          ? t("pos.offline.refreshed", { count: result.releasedProjectionCount })
+          : t("pos.offline.ready"),
       );
     } catch (error) {
-      setOfflineActionMessage(
-        error instanceof Error ? error.message : "Offline selling could not be enabled.",
-      );
+      setOfflineActionMessage(error instanceof Error ? error.message : t("pos.offline.notEnabled"));
     } finally {
       setOfflineActionPending(false);
     }
   }
 
   if (!auth.isLoaded)
-    return <CenteredState title="Restoring session…" body="Checking your Clerk session." />;
+    return <CenteredState title={t("pos.state.restoring")} body={t("pos.state.restoringBody")} />;
   if (!auth.isSignedIn) {
     return (
       <main className="auth-shell">
         <section className="auth-copy">
-          <p className="eyebrow">Connected cashier</p>
-          <h1>Commerce POS</h1>
-          <p>Sign in with an authorized operator account to start a connected cash sale.</p>
+          <p className="eyebrow">{t("pos.connectedCashier")}</p>
+          <h1>{t("app.name")}</h1>
+          <p>{t("pos.signInPrompt")}</p>
         </section>
         <section className="auth-card">{signedOutContent}</section>
       </main>
@@ -715,14 +715,12 @@ export function PosApplication({
   }
 
   if (tenantPhase === "loading" || tenantPhase === "idle")
-    return (
-      <CenteredState title="Loading businesses…" body="Resolving your authorized tenant access." />
-    );
+    return <CenteredState title={t("pos.state.loadingBiz")} body={t("pos.state.loadingBizBody")} />;
   if (tenantPhase === "empty")
     return (
       <BlockedState
-        title="No available business"
-        body="This operator has no usable tenant membership."
+        title={t("pos.state.noBiz")}
+        body={t("pos.state.noBizBody")}
         onSignOut={signOut}
       />
     );
@@ -738,8 +736,8 @@ export function PosApplication({
   if (tenantPhase === "choosing") {
     return (
       <SelectionState
-        eyebrow="Authorized businesses"
-        title="Choose a business"
+        eyebrow={t("pos.state.authorizedBiz")}
+        title={t("pos.state.chooseBiz")}
         options={tenants.map((tenant) => ({ id: tenant.tenantId, label: tenant.tenantName }))}
         onSelect={chooseTenant}
         onSignOut={signOut}
@@ -747,17 +745,12 @@ export function PosApplication({
     );
   }
   if (contextPhase === "loading" || contextPhase === "idle")
-    return (
-      <CenteredState
-        title="Loading registers…"
-        body="Resolving server-authorized selling context."
-      />
-    );
+    return <CenteredState title={t("pos.state.loadingReg")} body={t("pos.state.loadingRegBody")} />;
   if (contextPhase === "empty")
     return (
       <BlockedState
-        title="No available register"
-        body="No active register is authorized for this operator."
+        title={t("pos.state.noReg")}
+        body={t("pos.state.noRegBody")}
         onSignOut={signOut}
       />
     );
@@ -773,8 +766,8 @@ export function PosApplication({
   if (contextPhase === "choosing") {
     return (
       <SelectionState
-        eyebrow="Selling context"
-        title="Choose a register"
+        eyebrow={t("pos.state.sellingContext")}
+        title={t("pos.state.chooseReg")}
         options={registers.map((item) => ({
           id: item.registerId,
           label: `${item.registerName} — ${item.branchName}`,
@@ -785,7 +778,9 @@ export function PosApplication({
     );
   }
   if (!register || !tenantClient)
-    return <CenteredState title="Loading register…" body="Preparing the cashier." />;
+    return (
+      <CenteredState title={t("pos.state.loadingReg1")} body={t("pos.state.loadingReg1Body")} />
+    );
 
   if (saleState.phase === "success")
     return (
@@ -798,6 +793,13 @@ export function PosApplication({
 
   const selectedProduct =
     products.find((product) => product.productId === selectedProductId) ?? null;
+
+  // Per-variant remaining (projected) quantity, surfaced in the variant dialog. The projection is the
+  // offline-advisory on-hand minus anything pending sync; when it is empty the dialog shows the
+  // variant without a stock figure rather than blocking the sale.
+  const stockByVariant = new Map(
+    projectedInventory.map((item) => [item.variantId, item.projectedAvailable]),
+  );
 
   // Search matches product name, style code, and any variant name or SKU. A barcode scanner types
   // the SKU then sends Enter: an exact SKU match adds that variant straight to the cart.
@@ -844,7 +846,7 @@ export function PosApplication({
     <main className="pos-shell">
       <header className="topbar">
         <div className="register-identity">
-          <p className="eyebrow">Register</p>
+          <p className="eyebrow">{t("pos.register")}</p>
           <strong>{register.registerName}</strong>
           <span>
             {register.branchName} · {register.defaultInventoryLocationName}
@@ -858,7 +860,7 @@ export function PosApplication({
           />
           {registers.length > 1 ? (
             <Select
-              ariaLabel="Register"
+              ariaLabel={t("pos.register")}
               className="operator-actions__select"
               value={register.registerId}
               onChange={(value) => chooseRegister(value)}
@@ -875,7 +877,7 @@ export function PosApplication({
               onClick={switchToOffline}
               disabled={locked || returnLocked}
             >
-              Work offline
+              {t("pos.workOffline")}
             </button>
           ) : null}
         </div>
@@ -883,11 +885,14 @@ export function PosApplication({
 
       <div className="sync-strip">
         <div>
-          <strong>Connected</strong>
+          <strong>{t("pos.connected")}</strong>
           <span>
             {offlineReadiness.ready
-              ? ` · Offline ready · ${syncLabel(syncStatus)} · ${waitingSyncCount(syncStatus)} waiting`
-              : ` · Offline unavailable: ${offlineReadiness.message}`}
+              ? ` · ${t("pos.offlineReadyStrip", {
+                  status: t(syncLabel(syncStatus)),
+                  count: waitingSyncCount(syncStatus),
+                })}`
+              : ` · ${t("pos.offlineUnavailable", { message: offlineReadiness.message })}`}
           </span>
         </div>
         <button
@@ -896,10 +901,10 @@ export function PosApplication({
           onClick={() => void enableOfflineSelling()}
         >
           {offlineActionPending
-            ? "Updating offline data…"
+            ? t("pos.updatingOffline")
             : offlineReadiness.ready
-              ? "Refresh offline data"
-              : "Enable offline selling"}
+              ? t("pos.refreshOffline")
+              : t("pos.enableOffline")}
         </button>
       </div>
       {offlineActionMessage ? (
@@ -909,7 +914,7 @@ export function PosApplication({
       ) : null}
       {syncStatus.needsReconciliation + syncStatus.blocked > 0 ? (
         <div className="attention-strip" role="status">
-          {syncStatus.needsReconciliation + syncStatus.blocked} accepted sale(s) need attention.
+          {t("pos.needAttention", { count: syncStatus.needsReconciliation + syncStatus.blocked })}
         </div>
       ) : null}
 
@@ -919,7 +924,7 @@ export function PosApplication({
           disabled={returnLocked || submitting}
           onClick={() => setShowReturns((value) => !value)}
         >
-          {showReturns ? "Close returns" : "Returns and refunds"}
+          {showReturns ? t("pos.closeReturns") : t("pos.returns")}
         </button>
       </div>
       {showReturns && tenantClient && client ? (
@@ -938,16 +943,18 @@ export function PosApplication({
         <section className="catalog-panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Catalog</p>
-              <h2>Products</h2>
+              <p className="eyebrow">{t("pos.catalog")}</p>
+              <h2>{t("pos.products")}</h2>
             </div>
-            <span className="currency-pill">{register.sellingCurrency}</span>
+            <span className="currency-pill">
+              {currencySymbol(register.sellingCurrency, locale)}
+            </span>
           </div>
           <div className="catalog-search">
             <input
               className="catalog-search__input"
-              aria-label="Search or scan products"
-              placeholder="Search or scan — name, SKU, barcode"
+              aria-label={t("pos.searchAria")}
+              placeholder={t("pos.searchPlaceholder")}
               value={catalogQuery}
               disabled={catalogPhase !== "ready"}
               autoFocus
@@ -963,17 +970,15 @@ export function PosApplication({
               <button
                 type="button"
                 className="catalog-search__clear"
-                aria-label="Clear search"
+                aria-label={t("pos.clearSearch")}
                 onClick={() => setCatalogQuery("")}
               >
                 ×
               </button>
             ) : null}
           </div>
-          {catalogPhase === "loading" ? <InlineState>Loading current prices…</InlineState> : null}
-          {catalogPhase === "empty" ? (
-            <InlineState>No active sellable products are available.</InlineState>
-          ) : null}
+          {catalogPhase === "loading" ? <InlineState>{t("pos.loadingPrices")}</InlineState> : null}
+          {catalogPhase === "empty" ? <InlineState>{t("pos.noSellable")}</InlineState> : null}
           {catalogPhase === "error" && catalogError ? (
             <>
               <InlineError
@@ -982,13 +987,13 @@ export function PosApplication({
               />
               {offlineReadiness.ready ? (
                 <button className="button" onClick={switchToOffline}>
-                  Use offline catalog
+                  {t("pos.useOfflineCatalog")}
                 </button>
               ) : null}
             </>
           ) : null}
           {catalogPhase === "ready" && filteredProducts.length === 0 && normalizedQuery !== "" ? (
-            <InlineState>No products match “{catalogQuery}”.</InlineState>
+            <InlineState>{t("pos.noMatch", { query: catalogQuery })}</InlineState>
           ) : null}
           <div className="product-grid">
             {filteredProducts.map((product) => (
@@ -1000,59 +1005,53 @@ export function PosApplication({
                 <span>{product.productName}</span>
                 <small>
                   {product.styleCode ??
-                    `${product.variants.length} variant${product.variants.length === 1 ? "" : "s"}`}
+                    t("cashier.variantCount", { count: product.variants.length })}
                 </small>
               </button>
             ))}
           </div>
           {selectedProduct ? (
-            <div className="variant-panel">
-              <h3>{selectedProduct.productName}</h3>
-              {selectedProduct.variants.map((variant) => (
-                <div className="variant-row" key={variant.variantId}>
-                  <div>
-                    <strong>{variant.variantName ?? "Standard"}</strong>
-                    <span>SKU {variant.sku}</span>
-                  </div>
-                  <strong>{formatMoney(variant.unitPriceMinor, register.sellingCurrency)}</strong>
-                  <button
-                    className="button"
-                    onClick={() => addToCart(variant)}
-                    disabled={submitting}
-                  >
-                    Add
-                  </button>
-                </div>
-              ))}
-            </div>
+            <VariantDialog
+              product={selectedProduct}
+              stockByVariant={stockByVariant}
+              submitting={submitting}
+              onAdd={addToCart}
+              onClose={() => setSelectedProductId(null)}
+            />
           ) : null}
         </section>
 
         <aside className="checkout-panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Current sale</p>
-              <h2>Cart</h2>
+              <p className="eyebrow">{t("pos.currentSale")}</p>
+              <h2>{t("cashier.cart")}</h2>
             </div>
-            <span>{cart.length} lines</span>
+            <span>{t("cashier.lines", { count: cart.length })}</span>
           </div>
           {cart.length === 0 ? (
-            <InlineState>Your cart is empty.</InlineState>
+            <InlineState>{t("cashier.cartEmpty")}</InlineState>
           ) : (
             <div className="cart-lines">
               {cart.map((line) => (
                 <div className="cart-line" key={line.variantId}>
                   <div className="cart-line__description">
                     <strong>{line.label}</strong>
-                    <span>SKU {line.sku}</span>
+                    <span>{t("cashier.sku", { sku: line.sku })}</span>
                     <span>
-                      {formatMoney(line.displayedUnitPriceMinor, register.sellingCurrency)} each
+                      {t("cashier.each", {
+                        price: formatMoney(
+                          line.displayedUnitPriceMinor,
+                          register.sellingCurrency,
+                          locale,
+                        ),
+                      })}
                     </span>
                   </div>
                   <label>
-                    Qty
+                    {t("cashier.qty")}
                     <input
-                      aria-label={`Quantity for ${line.label}`}
+                      aria-label={t("cashier.qtyFor", { label: line.label })}
                       type="number"
                       min="1"
                       step="1"
@@ -1072,15 +1071,16 @@ export function PosApplication({
                     {formatMoney(
                       line.quantity * line.displayedUnitPriceMinor,
                       register.sellingCurrency,
+                      locale,
                     )}
                   </strong>
                   <button
                     className="remove-button"
-                    aria-label={`Remove ${line.label}`}
+                    aria-label={t("pos.removeLine", { label: line.label })}
                     disabled={submitting}
                     onClick={() => changeCart((current) => removeLine(current, line.variantId))}
                   >
-                    Remove
+                    {t("cashier.remove")}
                   </button>
                 </div>
               ))}
@@ -1089,9 +1089,9 @@ export function PosApplication({
           <div className="promotion-panel">
             <div className="promotion-code-row">
               <label className="promotion-code-field">
-                Promotion code
+                {t("pos.promotionCode")}
                 <input
-                  aria-label="Promotion code"
+                  aria-label={t("pos.promotionCode")}
                   type="text"
                   autoComplete="off"
                   value={codeDraft}
@@ -1105,7 +1105,7 @@ export function PosApplication({
                   onClick={applyPromotionCode}
                   disabled={locked || codeDraft.trim() === ""}
                 >
-                  Apply
+                  {t("pos.apply")}
                 </button>
               ) : (
                 <button
@@ -1113,32 +1113,32 @@ export function PosApplication({
                   onClick={removePromotionCode}
                   disabled={submitting}
                 >
-                  Remove
+                  {t("cashier.remove")}
                 </button>
               )}
             </div>
             {quoteState.status === "loading" ? (
               <p className="inline-state" role="status">
-                Updating total…
+                {t("pos.updatingTotal")}
               </p>
             ) : null}
             {quoteState.status === "error" ? (
               <div className="notice notice--warning" role="status">
                 <span>
                   {quoteState.error.kind === "network"
-                    ? "Promotions require a connection."
-                    : "Pricing is unavailable right now."}
+                    ? t("pos.promotionsNeedConnection")
+                    : t("pos.pricingUnavailable")}
                 </span>
                 <div className="button-row">
                   <button
                     className="button button--quiet"
                     onClick={() => setQuoteNonce((value) => value + 1)}
                   >
-                    Reconnect
+                    {t("pos.reconnect")}
                   </button>
                   {offlineReadiness.ready ? (
                     <button className="button button--quiet" onClick={switchToOffline}>
-                      Continue at offline prices
+                      {t("pos.continueOfflinePrices")}
                     </button>
                   ) : null}
                 </div>
@@ -1146,44 +1146,48 @@ export function PosApplication({
             ) : null}
             {appliedCode !== null && quoteReady && codeStatus === "invalid" ? (
               <p className="promotion-note promotion-note--error" role="status">
-                Code “{appliedCode}” isn’t available.
+                {t("pos.codeUnavailable", { code: appliedCode })}
               </p>
             ) : null}
             {promotion ? (
               <p className="promotion-note" role="status">
-                {promotion.activation === "automatic" ? "Automatic promotion" : "Code applied"}:{" "}
-                <strong>{promotion.name}</strong>
+                {promotion.activation === "automatic"
+                  ? t("pos.automaticPromotion")
+                  : t("pos.codeApplied")}
+                : <strong>{promotion.name}</strong>
                 {promotion.code ? ` (${promotion.code})` : ""} · −
-                {formatMoney(promotion.discountTotalMinor, register.sellingCurrency)}
+                {formatMoney(promotion.discountTotalMinor, register.sellingCurrency, locale)}
                 {appliedCode !== null &&
                 codeStatus === "valid" &&
                 promotion.activation === "automatic"
-                  ? " — a better automatic promotion applied instead of the code."
+                  ? t("pos.betterAutoPromotion")
                   : ""}
               </p>
             ) : null}
           </div>
           <div className="total-row">
-            <span>Gross subtotal</span>
-            <strong>{formatMoney(grossMinor, register.sellingCurrency)}</strong>
+            <span>{t("pos.grossSubtotal")}</span>
+            <strong>{formatMoney(grossMinor, register.sellingCurrency, locale)}</strong>
           </div>
           {discountMinor > 0 ? (
             <div className="total-row total-row--discount">
-              <span>Promotion discount</span>
-              <strong>−{formatMoney(discountMinor, register.sellingCurrency)}</strong>
+              <span>{t("pos.promotionDiscount")}</span>
+              <strong>−{formatMoney(discountMinor, register.sellingCurrency, locale)}</strong>
             </div>
           ) : null}
           <div className="total-row total-row--due">
-            <span>Amount due</span>
-            <strong>{formatMoney(netMinor, register.sellingCurrency)}</strong>
+            <span>{t("pay.amountDue")}</span>
+            <strong>{formatMoney(netMinor, register.sellingCurrency, locale)}</strong>
           </div>
           {priceConfirmationRequired ? (
             <div className="notice notice--warning" role="alert">
-              <strong>Pricing changed</strong>
+              <strong>{t("pos.pricingChanged")}</strong>
               <span>
                 {priceChangedTotal === null
-                  ? "The promotion or price changed. Review the refreshed amount due before confirming."
-                  : `The server reports ${formatMoney(priceChangedTotal, register.sellingCurrency)}.`}
+                  ? t("pos.pricingChangedGeneric")
+                  : t("pos.serverReports", {
+                      amount: formatMoney(priceChangedTotal, register.sellingCurrency, locale),
+                    })}
               </span>
               <button
                 className="button button--warning"
@@ -1195,7 +1199,7 @@ export function PosApplication({
                   executor.invalidate();
                 }}
               >
-                {priceRefreshPending ? "Refreshing prices…" : "Confirm updated total"}
+                {priceRefreshPending ? t("pos.refreshingPrices") : t("pos.confirmUpdated")}
               </button>
             </div>
           ) : null}
@@ -1212,10 +1216,10 @@ export function PosApplication({
           ) : null}
           {ambiguous ? (
             <div className="notice notice--warning" role="alert">
-              <strong>Sale result unknown</strong>
-              <span>Retry sends the exact same sale with the same idempotency key.</span>
+              <strong>{t("pos.saleUnknown")}</strong>
+              <span>{t("pos.saleUnknownBody")}</span>
               <button className="button button--warning" onClick={() => executor.retry()}>
-                Retry same sale
+                {t("pos.retrySame")}
               </button>
             </div>
           ) : null}
@@ -1226,7 +1230,11 @@ export function PosApplication({
             }
             onClick={openPayment}
           >
-            {submitting ? "Completing sale…" : recovering ? "Recovering sale…" : "Take payment"}
+            {submitting
+              ? t("pay.completing")
+              : recovering
+                ? t("pos.recoveringSale")
+                : t("cashier.takePayment")}
           </button>
           {payOpen ? (
             <PayModal
@@ -1240,9 +1248,7 @@ export function PosApplication({
               }
             />
           ) : null}
-          <p className="authority-note">
-            Prices, promotions, and final change are confirmed by the Commerce API.
-          </p>
+          <p className="authority-note">{t("pos.authorityNote")}</p>
         </aside>
       </div>
     </main>
@@ -1254,7 +1260,7 @@ export function PosApplication({
       sections={visibleSections}
       active={section}
       onNavigate={handleNavigate}
-      userName={auth.displayName ?? "Operator"}
+      userName={auth.displayName ?? t("pos.operator")}
       onSignOut={() => void signOut()}
       signOutDisabled={locked || returnLocked}
     >
@@ -1265,7 +1271,11 @@ export function PosApplication({
       ) : section === "inventory" ? (
         <InventoryDesk client={tenantClient} />
       ) : section === "customers" ? (
-        <CustomersDesk client={tenantClient} currency={register.sellingCurrency} />
+        <CustomersDesk
+          client={tenantClient}
+          currency={register.sellingCurrency}
+          identity={business ? receiptIdentity(business, register.branch) : null}
+        />
       ) : section === "vouchers" ? (
         <VouchersDesk client={tenantClient} currency={register.sellingCurrency} />
       ) : section === "staff" ? (
@@ -1298,6 +1308,7 @@ function Receipt({
   identity: ReceiptIdentity | null;
   onNewSale: () => void;
 }) {
+  const { t, locale } = useI18n();
   // Derive every figure from the immutable returned sale. `order.totalMinor` is the payable net; the
   // gross subtotal is the sum of the returned line totals and the discount is the difference. The sale
   // response carries no applied-promotion identity, so no promotion name/code is shown — only the
@@ -1320,7 +1331,9 @@ function Receipt({
           <div className="receipt-identity">
             <strong className="receipt-business-name">{identity.businessName}</strong>
             {identity.legalName ? <span>{identity.legalName}</span> : null}
-            {identity.taxIdentifier ? <span>Tax ID: {identity.taxIdentifier}</span> : null}
+            {identity.taxIdentifier ? (
+              <span>{t("receipt.taxId", { id: identity.taxIdentifier })}</span>
+            ) : null}
             <span className="receipt-branch-name">{identity.branchName}</span>
             {identity.branchAddressLines.map((line, index) => (
               <span key={`address-${index}`}>{line}</span>
@@ -1330,73 +1343,78 @@ function Receipt({
             ))}
           </div>
         ) : null}
-        <p className="eyebrow">Sale completed</p>
-        <h1>Order {receipt.order.orderNumber}</h1>
-        <p className="receipt-status">Cash captured · Fulfilled</p>
+        <p className="eyebrow">{t("receipt.saleCompleted")}</p>
+        <h1>{t("receipt.order", { number: receipt.order.orderNumber })}</h1>
+        <p className="receipt-status">{t("receipt.cashCaptured")}</p>
         <div className="receipt-lines">
           {receipt.order.lines.map((line) => (
             <div key={line.id} className="receipt-line">
               <div>
                 <strong>{line.productName}</strong>
                 <span>
-                  {line.variantName ?? line.optionSummary ?? line.sku} · SKU {line.sku}
+                  {line.variantName ?? line.optionSummary ?? line.sku} ·{" "}
+                  {t("cashier.sku", { sku: line.sku })}
                 </span>
                 <span>
-                  {line.quantity} × {formatMoney(line.unitPriceMinor, receipt.order.currency)}
+                  {line.quantity} ×{" "}
+                  {formatMoney(line.unitPriceMinor, receipt.order.currency, locale)}
                 </span>
               </div>
-              <strong>{formatMoney(line.lineTotalMinor, receipt.order.currency)}</strong>
+              <strong>{formatMoney(line.lineTotalMinor, receipt.order.currency, locale)}</strong>
             </div>
           ))}
         </div>
         <div className="receipt-totals">
           <div>
-            <span>Gross subtotal</span>
-            <strong>{formatMoney(grossSubtotalMinor, receipt.order.currency)}</strong>
+            <span>{t("pos.grossSubtotal")}</span>
+            <strong>{formatMoney(grossSubtotalMinor, receipt.order.currency, locale)}</strong>
           </div>
           {discountMinor > 0 ? (
             <div className="receipt-discount">
-              <span>Promotion discount</span>
-              <strong>−{formatMoney(discountMinor, receipt.order.currency)}</strong>
+              <span>{t("pos.promotionDiscount")}</span>
+              <strong>−{formatMoney(discountMinor, receipt.order.currency, locale)}</strong>
             </div>
           ) : null}
           <div>
-            <span>Total</span>
-            <strong>{formatMoney(receipt.order.totalMinor, receipt.order.currency)}</strong>
+            <span>{t("cashier.total")}</span>
+            <strong>{formatMoney(receipt.order.totalMinor, receipt.order.currency, locale)}</strong>
           </div>
           {receipt.payments.map((tender) => (
             <div key={tender.id}>
-              <span>{TENDER_LABELS[tender.method]}</span>
-              <strong>{formatMoney(tender.amountMinor, tender.currency)}</strong>
+              <span>{t(TENDER_LABEL_KEYS[tender.method])}</span>
+              <strong>{formatMoney(tender.amountMinor, tender.currency, locale)}</strong>
             </div>
           ))}
           {cashTender ? (
             <>
               <div>
-                <span>Cash received</span>
+                <span>{t("cashier.cashReceived")}</span>
                 <strong>
                   {formatMoney(
                     cashTender.cashReceivedMinor ?? cashTender.amountMinor,
                     cashTender.currency,
+                    locale,
                   )}
                 </strong>
               </div>
               <div className="receipt-change">
-                <span>Change</span>
-                <strong>{formatMoney(cashTender.changeMinor ?? 0, cashTender.currency)}</strong>
+                <span>{t("cashier.change")}</span>
+                <strong>
+                  {formatMoney(cashTender.changeMinor ?? 0, cashTender.currency, locale)}
+                </strong>
               </div>
             </>
           ) : null}
           <div>
-            <span>Fulfillment</span>
-            <strong>Completed</strong>
+            <span>{t("receipt.fulfillment")}</span>
+            <strong>{t("receipt.completed")}</strong>
           </div>
         </div>
         {identity?.receiptFooter ? (
           <p className="receipt-footer">{identity.receiptFooter}</p>
         ) : null}
         <button className="button button--complete" onClick={onNewSale}>
-          New sale
+          {t("receipt.newSale")}
         </button>
       </section>
     </main>
@@ -1424,14 +1442,15 @@ function BlockedState({
   body: string;
   onSignOut: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   return (
     <main className="state-shell">
       <section className="state-card">
-        <p className="eyebrow">Selling unavailable</p>
+        <p className="eyebrow">{t("pos.state.sellingUnavailable")}</p>
         <h1>{title}</h1>
         <p>{body}</p>
         <button className="button" onClick={() => void onSignOut()}>
-          Sign out
+          {t("nav.signOut")}
         </button>
       </section>
     </main>
@@ -1449,23 +1468,24 @@ function ErrorState({
   onSignOut: () => Promise<void>;
   onUseOffline?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <main className="state-shell">
       <section className="state-card">
         <p className="eyebrow">{error.code}</p>
-        <h1>Unable to continue</h1>
+        <h1>{t("pos.state.unableContinue")}</h1>
         <p>{error.message}</p>
         <div className="button-row">
           <button className="button" onClick={onRetry}>
-            Retry
+            {t("common.retry")}
           </button>
           {onUseOffline ? (
             <button className="button" onClick={onUseOffline}>
-              Use offline mode
+              {t("pos.useOfflineMode")}
             </button>
           ) : null}
           <button className="button button--quiet" onClick={() => void onSignOut()}>
-            Sign out
+            {t("nav.signOut")}
           </button>
         </div>
       </section>
@@ -1486,6 +1506,7 @@ function SelectionState({
   onSelect: (id: string) => void;
   onSignOut: () => Promise<void>;
 }) {
+  const { t } = useI18n();
   return (
     <main className="state-shell">
       <section className="state-card state-card--wide">
@@ -1499,12 +1520,12 @@ function SelectionState({
               onClick={() => onSelect(option.id)}
             >
               {option.label}
-              <span>Continue →</span>
+              <span>{t("pos.continue")}</span>
             </button>
           ))}
         </div>
         <button className="button button--quiet" onClick={() => void onSignOut()}>
-          Sign out
+          {t("nav.signOut")}
         </button>
       </section>
     </main>
@@ -1516,12 +1537,13 @@ function InlineState({ children }: { children: ReactNode }) {
 }
 
 function InlineError({ error, onRetry }: { error: CommerceErrorView; onRetry: () => void }) {
+  const { t } = useI18n();
   return (
     <div className="notice notice--error" role="alert">
       <strong>{error.code}</strong>
       <span>{error.message}</span>
       <button className="button button--quiet" onClick={onRetry}>
-        Retry
+        {t("common.retry")}
       </button>
     </div>
   );

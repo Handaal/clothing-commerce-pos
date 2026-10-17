@@ -19,20 +19,22 @@ import type {
 import { useCallback, useEffect, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
-import { formatMoney } from "../money";
+import { BUSINESS_CURRENCY, formatMoney } from "../money";
+import { useI18n, type TVars } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonLines } from "../shell/Skeleton";
 
+type T = (key: string, vars?: TVars) => string;
 type Tab = "summary" | "sales" | "products" | "inventory" | "returns" | "promotions" | "suppliers";
 
-const TABS: readonly { id: Tab; label: string }[] = [
-  { id: "summary", label: "Summary" },
-  { id: "sales", label: "Sales" },
-  { id: "products", label: "Products" },
-  { id: "inventory", label: "Inventory" },
-  { id: "returns", label: "Returns" },
-  { id: "promotions", label: "Promotions" },
-  { id: "suppliers", label: "Suppliers" },
+const TABS: readonly { id: Tab; labelKey: string }[] = [
+  { id: "summary", labelKey: "reports.tab.summary" },
+  { id: "sales", labelKey: "reports.tab.sales" },
+  { id: "products", labelKey: "reports.tab.products" },
+  { id: "inventory", labelKey: "reports.tab.inventory" },
+  { id: "returns", labelKey: "reports.tab.returns" },
+  { id: "promotions", labelKey: "reports.tab.promotions" },
+  { id: "suppliers", labelKey: "reports.tab.suppliers" },
 ];
 
 // One loaded report. The union keeps each response strongly typed while a single loader drives the view.
@@ -68,18 +70,28 @@ function defaultRange(): { start: string; end: string } {
   return { start: isoDate(start), end: isoDate(end) };
 }
 
-const fmtDate = (iso: string | null | undefined): string => {
+const fmtDate = (iso: string | null | undefined, locale: string): string => {
   if (!iso) return "—";
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(undefined, { dateStyle: "medium" });
+  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString(locale, { dateStyle: "medium" });
 };
 
-const fmtDateTime = (iso: string | null | undefined): string => {
+// A derived ratio rendered as a percentage. Returns an em dash when the denominator is zero so an
+// empty period never shows a misleading "0%" or NaN.
+const fmtPercent = (numerator: number, denominator: number, locale: string): string => {
+  if (!denominator) return "—";
+  return new Intl.NumberFormat(locale, {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(numerator / denominator);
+};
+
+const fmtDateTime = (iso: string | null | undefined, locale: string): string => {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime())
     ? iso
-    : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+    : d.toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
 };
 
 // Append the next page's items onto the current payload of the same kind (paginated tabs only).
@@ -117,6 +129,7 @@ function nextCursorOf(payload: Payload | null): string | null {
 }
 
 export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
+  const { t } = useI18n();
   const initial = defaultRange();
   const [startDate, setStartDate] = useState(initial.start);
   const [endDate, setEndDate] = useState(initial.end);
@@ -285,12 +298,12 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Analytics</p>
-          <h1>Reports</h1>
+          <p className="eyebrow">{t("reports.analytics")}</p>
+          <h1>{t("nav.reports")}</h1>
         </div>
         <div className="staff-filters">
           <label>
-            From
+            {t("activity.from")}
             <input
               type="date"
               value={startDate}
@@ -299,7 +312,7 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
             />
           </label>
           <label>
-            To
+            {t("activity.to")}
             <input
               type="date"
               value={endDate}
@@ -313,13 +326,13 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
               disabled={exporting || loading}
               onClick={() => void runExport()}
             >
-              {exporting ? "Exporting…" : "Export CSV"}
+              {exporting ? t("reports.exporting") : t("activity.exportCsv")}
             </button>
           ) : null}
         </div>
       </header>
 
-      <nav className="report-tabs" aria-label="Report type">
+      <nav className="report-tabs" aria-label={t("reports.reportType")}>
         {TABS.map((item) => (
           <button
             key={item.id}
@@ -327,7 +340,7 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
             aria-pressed={tab === item.id}
             onClick={() => setTab(item.id)}
           >
-            {item.label}
+            {t(item.labelKey)}
           </button>
         ))}
       </nav>
@@ -355,7 +368,7 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
       ) : null}
 
       {loading ? (
-        <SkeletonLines lines={6} label="Loading report" />
+        <SkeletonLines lines={6} label={t("reports.loading")} />
       ) : payload ? (
         <ReportBody payload={payload} salesView={salesView} />
       ) : null}
@@ -367,7 +380,7 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
             disabled={loadingMore}
             onClick={() => void loadMore()}
           >
-            {loadingMore ? "Loading…" : "Load more"}
+            {loadingMore ? t("reports.loadingMore") : t("inventory.loadMore")}
           </button>
         </div>
       ) : null}
@@ -390,36 +403,37 @@ function ViewSelectors(props: {
   returnsView: ReturnsView;
   onReturnsView: (v: ReturnsView) => void;
 }) {
+  const { t } = useI18n();
   if (props.tab === "sales")
     return (
       <div className="staff-filters">
         <label>
-          View
+          {t("reports.view")}
           <Select<SalesView>
-            ariaLabel="Sales view"
+            ariaLabel={t("reports.salesView")}
             value={props.salesView}
             onChange={props.onSalesView}
             options={[
-              { value: "channel", label: "By channel" },
-              { value: "trend", label: "Over time" },
-              { value: "brand", label: "By brand" },
-              { value: "pos_branch", label: "By branch" },
-              { value: "pos_register", label: "By register" },
-              { value: "pos_operator", label: "By operator" },
+              { value: "channel", label: t("reports.byChannel") },
+              { value: "trend", label: t("reports.overTime") },
+              { value: "brand", label: t("reports.byBrand") },
+              { value: "pos_branch", label: t("reports.byBranch") },
+              { value: "pos_register", label: t("reports.byRegister") },
+              { value: "pos_operator", label: t("reports.byOperator") },
             ]}
           />
         </label>
         {props.salesView === "trend" ? (
           <label>
-            Bucket
+            {t("reports.bucket")}
             <Select<SalesBucket>
-              ariaLabel="Bucket"
+              ariaLabel={t("reports.bucket")}
               value={props.salesBucket}
               onChange={props.onSalesBucket}
               options={[
-                { value: "day", label: "Daily" },
-                { value: "week", label: "Weekly" },
-                { value: "month", label: "Monthly" },
+                { value: "day", label: t("reports.daily") },
+                { value: "week", label: t("reports.weekly") },
+                { value: "month", label: t("reports.monthly") },
               ]}
             />
           </label>
@@ -430,26 +444,26 @@ function ViewSelectors(props: {
     return (
       <div className="staff-filters">
         <label>
-          Level
+          {t("reports.level")}
           <Select<ProductLevel>
-            ariaLabel="Level"
+            ariaLabel={t("reports.level")}
             value={props.productLevel}
             onChange={props.onProductLevel}
             options={[
-              { value: "product", label: "Product" },
-              { value: "variant", label: "Variant" },
+              { value: "product", label: t("orders.product") },
+              { value: "variant", label: t("reports.variant") },
             ]}
           />
         </label>
         <label>
-          View
+          {t("reports.view")}
           <Select<ProductView>
-            ariaLabel="Product view"
+            ariaLabel={t("reports.productView")}
             value={props.productView}
             onChange={props.onProductView}
             options={[
-              { value: "sales", label: "Best sellers" },
-              { value: "no_sales_with_current_stock", label: "No sales, in stock" },
+              { value: "sales", label: t("reports.bestSellers") },
+              { value: "no_sales_with_current_stock", label: t("reports.noSalesInStock") },
             ]}
           />
         </label>
@@ -459,17 +473,17 @@ function ViewSelectors(props: {
     return (
       <div className="staff-filters">
         <label>
-          View
+          {t("reports.view")}
           <Select<InventoryView>
-            ariaLabel="Inventory view"
+            ariaLabel={t("reports.inventoryView")}
             value={props.inventoryView}
             onChange={props.onInventoryView}
             options={[
-              { value: "balances", label: "Balances" },
-              { value: "movements", label: "Movements" },
-              { value: "receipts", label: "Receipts" },
-              { value: "transfers", label: "Transfers" },
-              { value: "adjustments", label: "Adjustments" },
+              { value: "balances", label: t("reports.balances") },
+              { value: "movements", label: t("reports.movements") },
+              { value: "receipts", label: t("reports.receipts") },
+              { value: "transfers", label: t("reports.transfers") },
+              { value: "adjustments", label: t("staff.adjustments") },
             ]}
           />
         </label>
@@ -479,15 +493,15 @@ function ViewSelectors(props: {
     return (
       <div className="staff-filters">
         <label>
-          View
+          {t("reports.view")}
           <Select<ReturnsView>
-            ariaLabel="Returns view"
+            ariaLabel={t("reports.returnsView")}
             value={props.returnsView}
             onChange={props.onReturnsView}
             options={[
-              { value: "summary", label: "Summary" },
-              { value: "products", label: "By product" },
-              { value: "variants", label: "By variant" },
+              { value: "summary", label: t("reports.tab.summary") },
+              { value: "products", label: t("reports.byProduct") },
+              { value: "variants", label: t("reports.byVariant") },
             ]}
           />
         </label>
@@ -516,52 +530,79 @@ function ReportBody({ payload, salesView }: { payload: Payload; salesView: Sales
 }
 
 function SummaryReport({ data }: { data: ReportSummaryResponse }) {
+  const { t, locale } = useI18n();
   return (
     <>
       {data.salesByCurrency.length === 0 ? (
-        <p className="staff-empty">No sales were recorded in this period.</p>
+        <p className="staff-empty">{t("reports.noSalesPeriod")}</p>
       ) : (
-        data.salesByCurrency.map((row) => (
-          <div className="staff-stats" key={row.currency}>
-            <div className="staff-stat staff-stat--accent">
-              <span>Net sales ({row.currency})</span>
-              <strong>{formatMoney(row.netSalesMinor, row.currency)}</strong>
+        data.salesByCurrency.map((row) => {
+          // Refunds for this currency let us show the "true" net the business kept after returns.
+          const refunds = data.returns.refundsByCurrency.find((r) => r.currency === row.currency);
+          const refundedMinor = refunds?.succeededRefundMinor ?? 0;
+          const returned = data.returns.byCurrency.find((r) => r.currency === row.currency);
+          return (
+            <div className="staff-stats" key={row.currency}>
+              <div className="staff-stat staff-stat--accent">
+                <span>{t("reports.netSalesCur", { currency: row.currency })}</span>
+                <strong>{formatMoney(row.netSalesMinor, row.currency, locale)}</strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("reports.grossSales")}</span>
+                <strong>{formatMoney(row.grossSalesMinor, row.currency, locale)}</strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("reports.discounts")}</span>
+                <strong>{formatMoney(row.discountsMinor, row.currency, locale)}</strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("reports.discountRate")}</span>
+                <strong>{fmtPercent(row.discountsMinor, row.grossSalesMinor, locale)}</strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("customers.orders")}</span>
+                <strong>{row.orderCount}</strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("reports.avgOrderValue")}</span>
+                <strong>
+                  {row.averageOrderValueMinor === null
+                    ? "—"
+                    : formatMoney(row.averageOrderValueMinor, row.currency, locale)}
+                </strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("reports.netAfterReturns")}</span>
+                <strong>
+                  {formatMoney(
+                    Math.max(0, row.netSalesMinor - refundedMinor),
+                    row.currency,
+                    locale,
+                  )}
+                </strong>
+              </div>
+              <div className="staff-stat">
+                <span>{t("reports.returnRate")}</span>
+                <strong>
+                  {fmtPercent(returned?.acceptedReturnedValueMinor ?? 0, row.netSalesMinor, locale)}
+                </strong>
+              </div>
             </div>
-            <div className="staff-stat">
-              <span>Gross sales</span>
-              <strong>{formatMoney(row.grossSalesMinor, row.currency)}</strong>
-            </div>
-            <div className="staff-stat">
-              <span>Discounts</span>
-              <strong>{formatMoney(row.discountsMinor, row.currency)}</strong>
-            </div>
-            <div className="staff-stat">
-              <span>Orders</span>
-              <strong>{row.orderCount}</strong>
-            </div>
-            <div className="staff-stat">
-              <span>Avg order value</span>
-              <strong>
-                {row.averageOrderValueMinor === null
-                  ? "—"
-                  : formatMoney(row.averageOrderValueMinor, row.currency)}
-              </strong>
-            </div>
-          </div>
-        ))
+          );
+        })
       )}
 
       <div className="staff-stats">
         <div className="staff-stat">
-          <span>Stock on hand</span>
+          <span>{t("reports.stockOnHand")}</span>
           <strong>{data.stock.totalOnHandQuantity}</strong>
         </div>
         <div className="staff-stat">
-          <span>Variants tracked</span>
+          <span>{t("reports.variantsTracked")}</span>
           <strong>{data.stock.variantCount}</strong>
         </div>
         <div className="staff-stat">
-          <span>Locations</span>
+          <span>{t("inventory.locations")}</span>
           <strong>{data.stock.locationCount}</strong>
         </div>
       </div>
@@ -569,17 +610,17 @@ function SummaryReport({ data }: { data: ReportSummaryResponse }) {
       {data.returns.byCurrency.length > 0 ? (
         <section className="staff-card">
           <div className="staff-card__head">
-            <h2>Returns & refunds</h2>
+            <h2>{t("reports.returnsRefunds")}</h2>
           </div>
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
                 <tr>
-                  <th>Currency</th>
-                  <th className="end">Returned value</th>
-                  <th className="end">Returns</th>
-                  <th className="end">Refunded</th>
-                  <th className="end">Pending refund</th>
+                  <th>{t("staff.col.currency")}</th>
+                  <th className="end">{t("reports.returnedValue")}</th>
+                  <th className="end">{t("orders.returnsHeading")}</th>
+                  <th className="end">{t("reports.refunded")}</th>
+                  <th className="end">{t("reports.pendingRefund")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -591,14 +632,14 @@ function SummaryReport({ data }: { data: ReportSummaryResponse }) {
                     <tr key={row.currency}>
                       <td>{row.currency}</td>
                       <td className="end">
-                        {formatMoney(row.acceptedReturnedValueMinor, row.currency)}
+                        {formatMoney(row.acceptedReturnedValueMinor, row.currency, locale)}
                       </td>
                       <td className="end">{row.returnCount}</td>
                       <td className="end">
-                        {formatMoney(refunds?.succeededRefundMinor ?? 0, row.currency)}
+                        {formatMoney(refunds?.succeededRefundMinor ?? 0, row.currency, locale)}
                       </td>
                       <td className="end">
-                        {formatMoney(refunds?.pendingRefundMinor ?? 0, row.currency)}
+                        {formatMoney(refunds?.pendingRefundMinor ?? 0, row.currency, locale)}
                       </td>
                     </tr>
                   );
@@ -609,63 +650,75 @@ function SummaryReport({ data }: { data: ReportSummaryResponse }) {
         </section>
       ) : null}
 
-      <p className="staff-empty">Stock as of {fmtDateTime(data.inventoryAsOf)}.</p>
+      <p className="staff-empty">
+        {t("reports.stockAsOf", { when: fmtDateTime(data.inventoryAsOf, locale) })}
+      </p>
     </>
   );
 }
 
-function salesDimension(item: SalesReportItem, view: SalesView): string {
+function salesDimension(item: SalesReportItem, view: SalesView, t: T, locale: string): string {
   switch (view) {
     case "trend":
-      return fmtDate(item.bucketStart);
+      return fmtDate(item.bucketStart, locale);
     case "channel":
-      return item.channel === "pos" ? "In-store (POS)" : item.channel === "online" ? "Online" : "—";
+      return item.channel === "pos"
+        ? t("reports.inStorePos")
+        : item.channel === "online"
+          ? t("reports.online")
+          : "—";
     case "brand":
       return item.brandName ?? item.brandId ?? "—";
     case "pos_branch":
-      return item.branchName ?? "All branches";
+      return item.branchName ?? t("reports.allBranches");
     case "pos_register":
       return item.registerName ?? "—";
     case "pos_operator":
-      return item.operatorName ?? "Unattributed";
+      return item.operatorName ?? t("reports.unattributed");
   }
 }
 
-const SALES_DIMENSION_LABEL: Record<SalesView, string> = {
-  trend: "Period",
-  channel: "Channel",
-  brand: "Brand",
-  pos_branch: "Branch",
-  pos_register: "Register",
-  pos_operator: "Operator",
+const SALES_DIMENSION_LABEL_KEY: Record<SalesView, string> = {
+  trend: "reports.period",
+  channel: "customers.channel",
+  brand: "reports.brand",
+  pos_branch: "reports.branch",
+  pos_register: "pos.register",
+  pos_operator: "reports.operator",
 };
 
 function SalesReport({ data, view }: { data: SalesReportResponse; view: SalesView }) {
-  if (data.items.length === 0) return <p className="staff-empty">No sales in this period.</p>;
+  const { t, locale } = useI18n();
+  if (data.items.length === 0) return <p className="staff-empty">{t("reports.noSalesShort")}</p>;
+  const dimensionLabel = t(SALES_DIMENSION_LABEL_KEY[data.view]);
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Sales · {SALES_DIMENSION_LABEL[data.view]}</h2>
+        <h2>
+          {t("reports.tab.sales")} · {dimensionLabel}
+        </h2>
       </div>
       <div className="staff-table-wrap">
         <table className="staff-table">
           <thead>
             <tr>
-              <th>{SALES_DIMENSION_LABEL[data.view]}</th>
-              <th className="end">Gross</th>
-              <th className="end">Discounts</th>
-              <th className="end">Net</th>
-              <th className="end">Orders</th>
+              <th>{dimensionLabel}</th>
+              <th className="end">{t("reports.gross")}</th>
+              <th className="end">{t("reports.discounts")}</th>
+              <th className="end">{t("reports.net")}</th>
+              <th className="end">{t("customers.orders")}</th>
             </tr>
           </thead>
           <tbody>
             {data.items.map((item, index) => (
-              <tr key={`${salesDimension(item, view)}-${index}`}>
-                <td>{salesDimension(item, view)}</td>
-                <td className="end">{formatMoney(item.grossSalesMinor, item.currency)}</td>
-                <td className="end muted">{formatMoney(item.discountsMinor, item.currency)}</td>
+              <tr key={`${salesDimension(item, view, t, locale)}-${index}`}>
+                <td>{salesDimension(item, view, t, locale)}</td>
+                <td className="end">{formatMoney(item.grossSalesMinor, item.currency, locale)}</td>
+                <td className="end muted">
+                  {formatMoney(item.discountsMinor, item.currency, locale)}
+                </td>
                 <td className="end">
-                  <strong>{formatMoney(item.netSalesMinor, item.currency)}</strong>
+                  <strong>{formatMoney(item.netSalesMinor, item.currency, locale)}</strong>
                 </td>
                 <td className="end">{item.orderCount}</td>
               </tr>
@@ -678,27 +731,31 @@ function SalesReport({ data, view }: { data: SalesReportResponse; view: SalesVie
 }
 
 function ProductsReport({ data }: { data: ProductsReportResponse }) {
-  if (data.items.length === 0)
-    return <p className="staff-empty">No products match this report for the selected period.</p>;
+  const { t, locale } = useI18n();
+  if (data.items.length === 0) return <p className="staff-empty">{t("reports.noProducts")}</p>;
   const noSales = data.view === "no_sales_with_current_stock";
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Products · {noSales ? "No sales, in stock" : "Best sellers"}</h2>
+        <h2>
+          {t("reports.tab.products")} ·{" "}
+          {noSales ? t("reports.noSalesInStock") : t("reports.bestSellers")}
+        </h2>
       </div>
       <div className="staff-table-wrap">
         <table className="staff-table">
           <thead>
             <tr>
-              <th>Product</th>
+              <th>{t("orders.product")}</th>
               {noSales ? (
-                <th className="end">On hand</th>
+                <th className="end">{t("inventory.onHand")}</th>
               ) : (
                 <>
-                  <th className="end">Units</th>
-                  <th className="end">Gross</th>
-                  <th className="end">Discounts</th>
-                  <th className="end">Net</th>
+                  <th className="end">{t("reports.units")}</th>
+                  <th className="end">{t("reports.gross")}</th>
+                  <th className="end">{t("reports.discounts")}</th>
+                  <th className="end">{t("reports.net")}</th>
+                  <th className="end">{t("reports.avgPrice")}</th>
                 </>
               )}
             </tr>
@@ -708,7 +765,7 @@ function ProductsReport({ data }: { data: ProductsReportResponse }) {
               <tr key={item.variantId ?? item.productId}>
                 <td>
                   <strong>{item.productName}</strong>
-                  {item.sku ? <small>SKU {item.sku}</small> : null}
+                  {item.sku ? <small>{t("cashier.sku", { sku: item.sku })}</small> : null}
                 </td>
                 {noSales ? (
                   <td className="end">
@@ -718,15 +775,36 @@ function ProductsReport({ data }: { data: ProductsReportResponse }) {
                   <>
                     <td className="end">{item.unitsSold ?? 0}</td>
                     <td className="end">
-                      {formatMoney(item.grossSalesMinor ?? 0, item.currency ?? "USD")}
+                      {formatMoney(
+                        item.grossSalesMinor ?? 0,
+                        item.currency ?? BUSINESS_CURRENCY,
+                        locale,
+                      )}
                     </td>
                     <td className="end muted">
-                      {formatMoney(item.allocatedDiscountsMinor ?? 0, item.currency ?? "USD")}
+                      {formatMoney(
+                        item.allocatedDiscountsMinor ?? 0,
+                        item.currency ?? BUSINESS_CURRENCY,
+                        locale,
+                      )}
                     </td>
                     <td className="end">
                       <strong>
-                        {formatMoney(item.netSalesMinor ?? 0, item.currency ?? "USD")}
+                        {formatMoney(
+                          item.netSalesMinor ?? 0,
+                          item.currency ?? BUSINESS_CURRENCY,
+                          locale,
+                        )}
                       </strong>
+                    </td>
+                    <td className="end muted">
+                      {item.unitsSold
+                        ? formatMoney(
+                            Math.round((item.netSalesMinor ?? 0) / item.unitsSold),
+                            item.currency ?? BUSINESS_CURRENCY,
+                            locale,
+                          )
+                        : "—"}
                     </td>
                   </>
                 )}
@@ -740,13 +818,15 @@ function ProductsReport({ data }: { data: ProductsReportResponse }) {
 }
 
 function InventoryReport({ data }: { data: InventoryReportResponse }) {
-  if (data.items.length === 0)
-    return <p className="staff-empty">No inventory rows for this view and period.</p>;
+  const { t, locale } = useI18n();
+  if (data.items.length === 0) return <p className="staff-empty">{t("reports.noInventory")}</p>;
   const view = data.view;
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Inventory · {view.charAt(0).toUpperCase() + view.slice(1)}</h2>
+        <h2>
+          {t("nav.inventory")} · {t(`reports.invView.${view}`)}
+        </h2>
       </div>
       <div className="staff-table-wrap">
         <table className="staff-table">
@@ -754,10 +834,10 @@ function InventoryReport({ data }: { data: InventoryReportResponse }) {
             <>
               <thead>
                 <tr>
-                  <th>Product</th>
-                  <th>Location</th>
-                  <th className="end">On hand</th>
-                  <th className="end">Version</th>
+                  <th>{t("orders.product")}</th>
+                  <th>{t("inventory.location")}</th>
+                  <th className="end">{t("inventory.onHand")}</th>
+                  <th className="end">{t("inventory.version")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -765,7 +845,7 @@ function InventoryReport({ data }: { data: InventoryReportResponse }) {
                   <tr key={`${item.variantId ?? ""}-${item.inventoryLocationId ?? ""}-${index}`}>
                     <td>
                       <strong>{item.productName ?? "—"}</strong>
-                      {item.sku ? <small>SKU {item.sku}</small> : null}
+                      {item.sku ? <small>{t("cashier.sku", { sku: item.sku })}</small> : null}
                     </td>
                     <td>{item.locationName ?? "—"}</td>
                     <td className="end">
@@ -780,21 +860,21 @@ function InventoryReport({ data }: { data: InventoryReportResponse }) {
             <>
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>Type</th>
-                  <th>Product</th>
-                  <th>Location</th>
-                  <th className="end">Change</th>
+                  <th>{t("activity.col.when")}</th>
+                  <th>{t("staff.type")}</th>
+                  <th>{t("orders.product")}</th>
+                  <th>{t("inventory.location")}</th>
+                  <th className="end">{t("reports.change")}</th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((item, index) => (
                   <tr key={`${item.operationId ?? ""}-${index}`}>
-                    <td>{fmtDateTime(item.occurredAt)}</td>
+                    <td>{fmtDateTime(item.occurredAt, locale)}</td>
                     <td>{item.operationType ?? "—"}</td>
                     <td>
                       <strong>{item.productName ?? item.sku ?? "—"}</strong>
-                      {item.sku ? <small>SKU {item.sku}</small> : null}
+                      {item.sku ? <small>{t("cashier.sku", { sku: item.sku })}</small> : null}
                     </td>
                     <td>{item.locationName ?? "—"}</td>
                     <td className="end">
@@ -812,18 +892,18 @@ function InventoryReport({ data }: { data: InventoryReportResponse }) {
             <>
               <thead>
                 <tr>
-                  <th>When</th>
-                  <th>Type</th>
-                  <th>Supplier</th>
-                  <th className="end">Lines</th>
-                  <th className="end">In</th>
-                  <th className="end">Out</th>
+                  <th>{t("activity.col.when")}</th>
+                  <th>{t("staff.type")}</th>
+                  <th>{t("activity.cat.supplier")}</th>
+                  <th className="end">{t("reports.lines")}</th>
+                  <th className="end">{t("reports.in")}</th>
+                  <th className="end">{t("reports.out")}</th>
                 </tr>
               </thead>
               <tbody>
                 {data.items.map((item, index) => (
                   <tr key={`${item.operationId ?? ""}-${index}`}>
-                    <td>{fmtDateTime(item.occurredAt)}</td>
+                    <td>{fmtDateTime(item.occurredAt, locale)}</td>
                     <td>{item.operationType ?? "—"}</td>
                     <td>{item.supplierName ?? "—"}</td>
                     <td className="end">{item.lineCount ?? 0}</td>
@@ -841,25 +921,26 @@ function InventoryReport({ data }: { data: InventoryReportResponse }) {
 }
 
 function ReturnsReport({ data }: { data: ReturnsReportResponse }) {
+  const { t, locale } = useI18n();
   if (data.view === "summary") {
     const summary = data.summary;
     if (!summary || summary.byCurrency.length === 0)
-      return <p className="staff-empty">No returns in this period.</p>;
+      return <p className="staff-empty">{t("reports.noReturns")}</p>;
     return (
       <>
         <section className="staff-card">
           <div className="staff-card__head">
-            <h2>Returns by currency</h2>
+            <h2>{t("reports.returnsByCurrency")}</h2>
           </div>
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
                 <tr>
-                  <th>Currency</th>
-                  <th className="end">Returned value</th>
-                  <th className="end">Returns</th>
-                  <th className="end">Refunded</th>
-                  <th className="end">Pending</th>
+                  <th>{t("staff.col.currency")}</th>
+                  <th className="end">{t("reports.returnedValue")}</th>
+                  <th className="end">{t("orders.returnsHeading")}</th>
+                  <th className="end">{t("reports.refunded")}</th>
+                  <th className="end">{t("reports.pendingCol")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -867,12 +948,14 @@ function ReturnsReport({ data }: { data: ReturnsReportResponse }) {
                   <tr key={row.currency}>
                     <td>{row.currency}</td>
                     <td className="end">
-                      {formatMoney(row.acceptedReturnedValueMinor, row.currency)}
+                      {formatMoney(row.acceptedReturnedValueMinor, row.currency, locale)}
                     </td>
                     <td className="end">{row.returnCount}</td>
-                    <td className="end">{formatMoney(row.succeededRefundMinor, row.currency)}</td>
+                    <td className="end">
+                      {formatMoney(row.succeededRefundMinor, row.currency, locale)}
+                    </td>
                     <td className="end muted">
-                      {formatMoney(row.pendingRefundMinor, row.currency)}
+                      {formatMoney(row.pendingRefundMinor, row.currency, locale)}
                     </td>
                   </tr>
                 ))}
@@ -883,14 +966,14 @@ function ReturnsReport({ data }: { data: ReturnsReportResponse }) {
         {summary.byDisposition.length > 0 ? (
           <section className="staff-card">
             <div className="staff-card__head">
-              <h2>By disposition</h2>
+              <h2>{t("reports.byDisposition")}</h2>
             </div>
             <div className="staff-table-wrap">
               <table className="staff-table">
                 <thead>
                   <tr>
-                    <th>Disposition</th>
-                    <th className="end">Units returned</th>
+                    <th>{t("reports.disposition")}</th>
+                    <th className="end">{t("reports.unitsReturned")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -910,19 +993,22 @@ function ReturnsReport({ data }: { data: ReturnsReportResponse }) {
   }
 
   const items = data.items ?? [];
-  if (items.length === 0) return <p className="staff-empty">No returns in this period.</p>;
+  if (items.length === 0) return <p className="staff-empty">{t("reports.noReturns")}</p>;
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Returns · {data.view === "variants" ? "By variant" : "By product"}</h2>
+        <h2>
+          {t("orders.returnsHeading")} ·{" "}
+          {data.view === "variants" ? t("reports.byVariant") : t("reports.byProduct")}
+        </h2>
       </div>
       <div className="staff-table-wrap">
         <table className="staff-table">
           <thead>
             <tr>
-              <th>Product</th>
-              <th className="end">Qty returned</th>
-              <th className="end">Value</th>
+              <th>{t("orders.product")}</th>
+              <th className="end">{t("reports.qtyReturned")}</th>
+              <th className="end">{t("reports.value")}</th>
             </tr>
           </thead>
           <tbody>
@@ -930,10 +1016,12 @@ function ReturnsReport({ data }: { data: ReturnsReportResponse }) {
               <tr key={`${item.variantId ?? item.productId}-${index}`}>
                 <td>
                   <strong>{item.productName}</strong>
-                  {item.sku ? <small>SKU {item.sku}</small> : null}
+                  {item.sku ? <small>{t("cashier.sku", { sku: item.sku })}</small> : null}
                 </td>
                 <td className="end">{item.returnedQuantity}</td>
-                <td className="end">{formatMoney(item.returnedValueMinor, item.currency)}</td>
+                <td className="end">
+                  {formatMoney(item.returnedValueMinor, item.currency, locale)}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -944,22 +1032,22 @@ function ReturnsReport({ data }: { data: ReturnsReportResponse }) {
 }
 
 function PromotionsReport({ data }: { data: PromotionsReportResponse }) {
-  if (data.items.length === 0)
-    return <p className="staff-empty">No promotions were redeemed in this period.</p>;
+  const { t, locale } = useI18n();
+  if (data.items.length === 0) return <p className="staff-empty">{t("reports.noPromotions")}</p>;
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Promotions</h2>
+        <h2>{t("reports.tab.promotions")}</h2>
       </div>
       <div className="staff-table-wrap">
         <table className="staff-table">
           <thead>
             <tr>
-              <th>Promotion</th>
-              <th>Code</th>
-              <th className="end">Redemptions</th>
-              <th className="end">Discount</th>
-              <th className="end">Net sales</th>
+              <th>{t("reports.promotion")}</th>
+              <th>{t("vouchers.code")}</th>
+              <th className="end">{t("reports.redemptions")}</th>
+              <th className="end">{t("vouchers.discount")}</th>
+              <th className="end">{t("reports.net")}</th>
             </tr>
           </thead>
           <tbody>
@@ -970,8 +1058,10 @@ function PromotionsReport({ data }: { data: PromotionsReportResponse }) {
                 </td>
                 <td className="muted">{item.codeSnapshot ?? "—"}</td>
                 <td className="end">{item.redemptionCount}</td>
-                <td className="end">{formatMoney(item.discountAmountMinor, item.currency)}</td>
-                <td className="end">{formatMoney(item.netSalesMinor, item.currency)}</td>
+                <td className="end">
+                  {formatMoney(item.discountAmountMinor, item.currency, locale)}
+                </td>
+                <td className="end">{formatMoney(item.netSalesMinor, item.currency, locale)}</td>
               </tr>
             ))}
           </tbody>
@@ -982,21 +1072,22 @@ function PromotionsReport({ data }: { data: PromotionsReportResponse }) {
 }
 
 function SuppliersReport({ data }: { data: SuppliersReportResponse }) {
+  const { t, locale } = useI18n();
   if (data.items.length === 0)
-    return <p className="staff-empty">No supplier receipts in this period.</p>;
+    return <p className="staff-empty">{t("reports.noSupplierReceipts")}</p>;
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Supplier receipts</h2>
+        <h2>{t("reports.supplierReceipts")}</h2>
       </div>
       <div className="staff-table-wrap">
         <table className="staff-table">
           <thead>
             <tr>
-              <th>Supplier</th>
-              <th className="end">Receipts</th>
-              <th className="end">Units received</th>
-              <th className="end">Last receipt</th>
+              <th>{t("nav.suppliers")}</th>
+              <th className="end">{t("reports.receiptsCol")}</th>
+              <th className="end">{t("reports.unitsReceived")}</th>
+              <th className="end">{t("reports.lastReceipt")}</th>
             </tr>
           </thead>
           <tbody>
@@ -1007,7 +1098,7 @@ function SuppliersReport({ data }: { data: SuppliersReportResponse }) {
                 </td>
                 <td className="end">{item.receiptCount}</td>
                 <td className="end">{item.unitsReceived}</td>
-                <td className="end muted">{fmtDate(item.lastReceiptAt)}</td>
+                <td className="end muted">{fmtDate(item.lastReceiptAt, locale)}</td>
               </tr>
             ))}
           </tbody>

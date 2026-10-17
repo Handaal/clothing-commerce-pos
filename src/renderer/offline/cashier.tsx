@@ -11,6 +11,7 @@ import { addVariant, cartTotal, removeLine, updateQuantity, type CartLine } from
 import type { SellableProduct, SellableVariant } from "../catalog/catalog";
 import { formatMoney } from "../money";
 import { PayModal, type SaleTender } from "../checkout/PayModal";
+import { useI18n } from "../shell/i18n";
 
 export function cachedProducts(items: readonly CachedCatalogItem[]): readonly SellableProduct[] {
   const products = new Map<string, SellableProduct>();
@@ -38,13 +39,16 @@ export function cachedProducts(items: readonly CachedCatalogItem[]): readonly Se
   return [...products.values()];
 }
 
+// Returns the i18n key for the cashier's current sync state. The component resolves it through `t`,
+// so the badge is localized; callers that need a stable slug (e.g. a `data-state` hook) can use the
+// key directly since keys never change with language.
 export function syncLabel(status: OfflineSyncStatus): string {
-  if (status.needsReconciliation > 0) return "Needs attention";
-  if (status.blocked > 0) return "Sync blocked";
-  if (status.synchronizing || status.leased > 0) return "Synchronizing";
-  if (status.pending + status.retryWait > 0) return "Pending sync";
-  if (status.synced > 0) return "All sales synchronized";
-  return status.networkOnline ? "Connected" : "Offline ready";
+  if (status.needsReconciliation > 0) return "cashier.sync.needsAttention";
+  if (status.blocked > 0) return "cashier.sync.blocked";
+  if (status.synchronizing || status.leased > 0) return "cashier.sync.synchronizing";
+  if (status.pending + status.retryWait > 0) return "cashier.sync.pending";
+  if (status.synced > 0) return "cashier.sync.allSynced";
+  return status.networkOnline ? "cashier.sync.connected" : "cashier.sync.offlineReady";
 }
 
 export function waitingSyncCount(status: OfflineSyncStatus): number {
@@ -72,6 +76,7 @@ export function OfflineCashier({
   onUseConnected,
   onSignOut,
 }: OfflineCashierProps) {
+  const { t, locale } = useI18n();
   const products = useMemo(() => cachedProducts(catalog), [catalog]);
   const availability = useMemo(
     () => new Map(inventory.map((item) => [item.variantId, item.projectedAvailable])),
@@ -126,11 +131,11 @@ export function OfflineCashier({
 
   function openPayment() {
     if (isRecovery) {
-      setError("Acknowledge the recovered sale before ringing a new one.");
+      setError(t("cashier.err.ackFirst"));
       return;
     }
     if (cart.length === 0) {
-      setError("Add at least one item before checkout.");
+      setError(t("cashier.err.addItem"));
       return;
     }
     setError(null);
@@ -161,9 +166,7 @@ export function OfflineCashier({
       await onRefresh();
       await refreshUnacknowledged();
     } catch (caught) {
-      setError(
-        caught instanceof Error ? caught.message : "The offline sale could not be accepted.",
-      );
+      setError(caught instanceof Error ? caught.message : t("cashier.err.notAccepted"));
     } finally {
       setSubmitting(false);
     }
@@ -180,7 +183,7 @@ export function OfflineCashier({
       setReceipt(null);
       await refreshUnacknowledged();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "The sale could not be acknowledged.");
+      setError(caught instanceof Error ? caught.message : t("cashier.err.notAcked"));
     } finally {
       setAcknowledging(false);
     }
@@ -196,21 +199,24 @@ export function OfflineCashier({
           <div className="success-mark" aria-hidden="true">
             ✓
           </div>
-          <p className="eyebrow">{isRecovery ? "Recovered accepted sale" : "Sale accepted"}</p>
-          <h1>Receipt {displayReceipt.localReceiptId}</h1>
+          <p className="eyebrow">
+            {isRecovery ? t("cashier.receipt.recovered") : t("cashier.receipt.accepted")}
+          </p>
+          <h1>{t("cashier.receipt.title", { id: displayReceipt.localReceiptId })}</h1>
           {isRecovery ? (
             <p className="receipt-status receipt-status--attention" role="alert">
-              This accepted cash sale was interrupted before it was acknowledged. Confirm it below —
-              do not ring it again.
-              {recovered.length > 1 ? ` ${recovered.length} sales await acknowledgement.` : ""}
+              {t("cashier.receipt.interrupted")}
+              {recovered.length > 1
+                ? ` ${t("cashier.receipt.awaiting", { count: recovered.length })}`
+                : ""}
             </p>
           ) : (
             <p className={`receipt-status${attention ? " receipt-status--attention" : ""}`}>
               {attention
-                ? "Accepted · Synchronization needs attention"
+                ? t("cashier.receipt.statusAttention")
                 : pending
-                  ? "Saved locally · Pending synchronization"
-                  : "Synchronized with Commerce"}
+                  ? t("cashier.receipt.statusPending")
+                  : t("cashier.receipt.statusSynced")}
             </p>
           )}
           <div className="receipt-lines">
@@ -219,34 +225,46 @@ export function OfflineCashier({
                 <div>
                   <strong>{line.productName}</strong>
                   <span>
-                    {line.variantName ?? line.optionSummary ?? line.sku} · SKU {line.sku}
+                    {line.variantName ?? line.optionSummary ?? line.sku} ·{" "}
+                    {t("cashier.sku", { sku: line.sku })}
                   </span>
                   <span>
-                    {line.quantity} × {formatMoney(line.unitPriceMinor, displayReceipt.currency)}
+                    {line.quantity} ×{" "}
+                    {formatMoney(line.unitPriceMinor, displayReceipt.currency, locale)}
                   </span>
                 </div>
-                <strong>{formatMoney(line.lineTotalMinor, displayReceipt.currency)}</strong>
+                <strong>{formatMoney(line.lineTotalMinor, displayReceipt.currency, locale)}</strong>
               </div>
             ))}
           </div>
           <div className="receipt-totals">
             <div>
-              <span>Total</span>
-              <strong>{formatMoney(displayReceipt.totalMinor, displayReceipt.currency)}</strong>
+              <span>{t("cashier.total")}</span>
+              <strong>
+                {formatMoney(displayReceipt.totalMinor, displayReceipt.currency, locale)}
+              </strong>
             </div>
             <div>
-              <span>Cash received</span>
+              <span>{t("cashier.cashReceived")}</span>
               <strong>
-                {formatMoney(displayReceipt.cashReceivedMinor, displayReceipt.currency)}
+                {formatMoney(displayReceipt.cashReceivedMinor, displayReceipt.currency, locale)}
               </strong>
             </div>
             <div className="receipt-change">
-              <span>Change</span>
-              <strong>{formatMoney(displayReceipt.changeMinor, displayReceipt.currency)}</strong>
+              <span>{t("cashier.change")}</span>
+              <strong>
+                {formatMoney(displayReceipt.changeMinor, displayReceipt.currency, locale)}
+              </strong>
             </div>
             <div>
-              <span>Sync state</span>
-              <strong>{attention ? "Attention" : pending ? "Pending" : "Synced"}</strong>
+              <span>{t("cashier.syncState")}</span>
+              <strong>
+                {attention
+                  ? t("cashier.state.attention")
+                  : pending
+                    ? t("cashier.state.pending")
+                    : t("cashier.state.synced")}
+              </strong>
             </div>
           </div>
           {error ? (
@@ -260,10 +278,10 @@ export function OfflineCashier({
             onClick={() => void acknowledgeDisplayed()}
           >
             {acknowledging
-              ? "Acknowledging…"
+              ? t("cashier.acknowledging")
               : isRecovery
-                ? "Acknowledge recovered sale"
-                : "New offline sale"}
+                ? t("cashier.ackRecovered")
+                : t("cashier.newSale")}
           </button>
         </section>
       </main>
@@ -274,63 +292,57 @@ export function OfflineCashier({
     <main className="pos-shell">
       <header className="topbar">
         <div>
-          <p className="eyebrow">Offline cashier</p>
-          <h1>Commerce POS</h1>
+          <p className="eyebrow">{t("cashier.offlineCashier")}</p>
+          <h1>{t("app.name")}</h1>
         </div>
         <div className="operator-actions">
-          <div className="connection-badge" data-state={syncLabel(syncStatus).toLowerCase()}>
-            <strong>{syncLabel(syncStatus)}</strong>
-            <span>{waitingSyncCount(syncStatus)} waiting</span>
+          <div className="connection-badge" data-state={syncLabel(syncStatus)}>
+            <strong>{t(syncLabel(syncStatus))}</strong>
+            <span>{t("cashier.waiting", { count: waitingSyncCount(syncStatus) })}</span>
           </div>
           {syncStatus.networkOnline ? (
             <button className="button button--quiet" onClick={onUseConnected}>
-              Use connected
+              {t("cashier.useConnected")}
             </button>
           ) : null}
           <button className="button button--quiet" onClick={() => void onSignOut()}>
-            Sign out
+            {t("nav.signOut")}
           </button>
         </div>
       </header>
       <div className="sync-strip">
         <div>
           <button className="button button--quiet" disabled>
-            Returns and refunds unavailable offline
+            {t("cashier.returnsOffline")}
           </button>
-          <p>
-            Connection is required to process a return/refund. Returns cannot be submitted offline.
-          </p>
+          <p>{t("cashier.returnsOfflineHint")}</p>
         </div>
-        <span>
-          Prices are from the installed offline grant. Stock is projected local availability, not
-          live server stock.
-        </span>
+        <span>{t("cashier.offlineGrantHint")}</span>
         <button
           className="button button--quiet"
           disabled={!syncStatus.networkOnline || syncStatus.synchronizing}
           onClick={() => void bridge.requestSync().then(onRefresh)}
         >
-          {syncStatus.synchronizing ? "Synchronizing…" : "Sync now"}
+          {syncStatus.synchronizing ? t("cashier.synchronizing") : t("cashier.syncNow")}
         </button>
       </div>
       {syncStatus.needsReconciliation + syncStatus.blocked > 0 ? (
         <div className="attention-strip" role="status">
-          {syncStatus.needsReconciliation + syncStatus.blocked} accepted sale(s) need management
-          attention.
+          {t("cashier.needAttention", {
+            count: syncStatus.needsReconciliation + syncStatus.blocked,
+          })}
         </div>
       ) : null}
       <div className="workspace">
         <section className="catalog-panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Installed catalog</p>
-              <h2>Products</h2>
+              <p className="eyebrow">{t("cashier.installedCatalog")}</p>
+              <h2>{t("cashier.products")}</h2>
             </div>
             <span className="currency-pill">{currency}</span>
           </div>
-          {products.length === 0 ? (
-            <p className="inline-state">No cached products are available.</p>
-          ) : null}
+          {products.length === 0 ? <p className="inline-state">{t("cashier.noCached")}</p> : null}
           <div className="product-grid">
             {products.map((product) => (
               <button
@@ -339,9 +351,7 @@ export function OfflineCashier({
                 onClick={() => setSelectedProductId(product.productId)}
               >
                 <span>{product.productName}</span>
-                <small>
-                  {product.variants.length} variant{product.variants.length === 1 ? "" : "s"}
-                </small>
+                <small>{t("cashier.variantCount", { count: product.variants.length })}</small>
               </button>
             ))}
           </div>
@@ -353,18 +363,19 @@ export function OfflineCashier({
                 return (
                   <div className="variant-row" key={variant.variantId}>
                     <div>
-                      <strong>{variant.variantName ?? "Standard"}</strong>
+                      <strong>{variant.variantName ?? t("cashier.standard")}</strong>
                       <span>
-                        SKU {variant.sku} · {available} projected available
+                        {t("cashier.sku", { sku: variant.sku })} ·{" "}
+                        {t("cashier.projectedAvailable", { count: available })}
                       </span>
                     </div>
-                    <strong>{formatMoney(variant.unitPriceMinor, currency)}</strong>
+                    <strong>{formatMoney(variant.unitPriceMinor, currency, locale)}</strong>
                     <button
                       className="button"
                       disabled={available <= 0}
                       onClick={() => setCart((current) => addVariant(current, variant))}
                     >
-                      Add
+                      {t("cashier.add")}
                     </button>
                   </div>
                 );
@@ -375,26 +386,30 @@ export function OfflineCashier({
         <aside className="checkout-panel">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">Local cash sale</p>
-              <h2>Cart</h2>
+              <p className="eyebrow">{t("cashier.localCashSale")}</p>
+              <h2>{t("cashier.cart")}</h2>
             </div>
-            <span>{cart.length} lines</span>
+            <span>{t("cashier.lines", { count: cart.length })}</span>
           </div>
           {cart.length === 0 ? (
-            <p className="inline-state">Your cart is empty.</p>
+            <p className="inline-state">{t("cashier.cartEmpty")}</p>
           ) : (
             <div className="cart-lines">
               {cart.map((line) => (
                 <div className="cart-line" key={line.variantId}>
                   <div className="cart-line__description">
                     <strong>{line.label}</strong>
-                    <span>SKU {line.sku}</span>
-                    <span>{formatMoney(line.displayedUnitPriceMinor, currency)} each</span>
+                    <span>{t("cashier.sku", { sku: line.sku })}</span>
+                    <span>
+                      {t("cashier.each", {
+                        price: formatMoney(line.displayedUnitPriceMinor, currency, locale),
+                      })}
+                    </span>
                   </div>
                   <label>
-                    Qty
+                    {t("cashier.qty")}
                     <input
-                      aria-label={`Quantity for ${line.label}`}
+                      aria-label={t("cashier.qtyFor", { label: line.label })}
                       type="number"
                       min="1"
                       step="1"
@@ -408,22 +423,22 @@ export function OfflineCashier({
                     />
                   </label>
                   <strong>
-                    {formatMoney(line.quantity * line.displayedUnitPriceMinor, currency)}
+                    {formatMoney(line.quantity * line.displayedUnitPriceMinor, currency, locale)}
                   </strong>
                   <button
                     className="remove-button"
                     disabled={submitting}
                     onClick={() => setCart((current) => removeLine(current, line.variantId))}
                   >
-                    Remove
+                    {t("cashier.remove")}
                   </button>
                 </div>
               ))}
             </div>
           )}
           <div className="total-row">
-            <span>Total</span>
-            <strong>{formatMoney(total, currency)}</strong>
+            <span>{t("cashier.total")}</span>
+            <strong>{formatMoney(total, currency, locale)}</strong>
           </div>
           {error ? (
             <div className="notice notice--error" role="alert">
@@ -435,7 +450,7 @@ export function OfflineCashier({
             disabled={cart.length === 0 || submitting}
             onClick={openPayment}
           >
-            {submitting ? "Saving sale…" : "Take payment"}
+            {submitting ? t("cashier.savingSale") : t("cashier.takePayment")}
           </button>
           {payOpen ? (
             <PayModal
@@ -446,9 +461,7 @@ export function OfflineCashier({
               onCancel={() => setPayOpen(false)}
             />
           ) : null}
-          <p className="authority-note">
-            The customer sale completes when the local receipt is saved.
-          </p>
+          <p className="authority-note">{t("cashier.authorityNote")}</p>
         </aside>
       </div>
     </main>

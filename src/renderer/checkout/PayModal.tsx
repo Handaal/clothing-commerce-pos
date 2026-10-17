@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
+import { useI18n } from "../shell/i18n";
 import { useModalA11y } from "../shell/useModalA11y";
 
 export type TenderMethod = "cash" | "card" | "instapay" | "wallet";
@@ -25,11 +26,11 @@ function isValidPhone(value: string): boolean {
 }
 
 const METHODS: readonly TenderMethod[] = ["cash", "card", "instapay", "wallet"];
-const METHOD_LABELS: Record<TenderMethod, string> = {
-  cash: "Cash",
-  card: "Card",
-  instapay: "Instapay",
-  wallet: "Wallet",
+const METHOD_LABEL_KEYS: Record<TenderMethod, string> = {
+  cash: "pay.method.cash",
+  card: "pay.method.card",
+  instapay: "pay.method.instapay",
+  wallet: "pay.method.wallet",
 };
 
 interface Row {
@@ -66,7 +67,8 @@ export function PayModal({
   const [customerPhone, setCustomerPhone] = useState("");
   const [matchedName, setMatchedName] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
-  const symbol = currencySymbol(currency);
+  const { t, locale } = useI18n();
+  const symbol = currencySymbol(currency, locale);
 
   const phoneValid = isValidPhone(customerPhone);
   const nameValid = customerName.trim().length >= 1 && customerName.trim().length <= 200;
@@ -154,12 +156,17 @@ export function PayModal({
 
   const dialogRef = useModalA11y<HTMLDivElement>(onCancel);
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label="Take payment">
+    <div
+      className="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("pay.dialogLabel")}
+    >
       <div className="modal-card pay-modal" ref={dialogRef}>
-        <p className="eyebrow">Payment</p>
+        <p className="eyebrow">{t("pay.title")}</p>
         <div className="pay-due">
-          <span>Amount due</span>
-          <strong>{formatMoney(netMinor, currency)}</strong>
+          <span>{t("pay.amountDue")}</span>
+          <strong>{formatMoney(netMinor, currency, locale)}</strong>
         </div>
 
         <div className="pay-rows">
@@ -176,7 +183,7 @@ export function PayModal({
                       disabled={disabled || submitting}
                       onClick={() => setMethod(index, method)}
                     >
-                      {METHOD_LABELS[method]}
+                      {t(METHOD_LABEL_KEYS[method])}
                     </button>
                   );
                 })}
@@ -195,7 +202,7 @@ export function PayModal({
                 <button
                   type="button"
                   className="pay-remove"
-                  aria-label="Remove tender"
+                  aria-label={t("pay.removeTender")}
                   disabled={submitting}
                   onClick={() => removeRow(index)}
                 >
@@ -213,13 +220,13 @@ export function PayModal({
             disabled={submitting}
             onClick={addRow}
           >
-            + Split payment
+            {t("pay.split")}
           </button>
         ) : null}
 
         {cashIndex >= 0 ? (
           <label className="cash-field">
-            Cash received <span>{symbol}</span>
+            {t("pay.cashReceived")} <span>{symbol}</span>
             <input
               inputMode="decimal"
               placeholder="0.00"
@@ -231,38 +238,37 @@ export function PayModal({
         ) : null}
 
         <div className="pay-customer">
-          <p className="eyebrow">Customer (optional)</p>
+          <p className="eyebrow">{t("pay.customerOptional")}</p>
           <div className="pay-customer__fields">
             <input
-              aria-label="Customer phone"
+              aria-label={t("pay.customerPhone")}
               inputMode="tel"
-              placeholder="Phone (e.g. +20100…)"
+              placeholder={t("pay.phonePlaceholder")}
               value={customerPhone}
               disabled={submitting}
               onChange={(event) => setCustomerPhone(event.target.value)}
             />
             <input
-              aria-label="Customer name"
-              placeholder="Name"
+              aria-label={t("pay.customerName")}
+              placeholder={t("pay.namePlaceholder")}
               value={customerName}
               disabled={submitting}
               onChange={(event) => setCustomerName(event.target.value)}
             />
           </div>
           {lookingUp ? (
-            <span className="pay-customer__status">Checking for an existing customer…</span>
+            <span className="pay-customer__status">{t("pay.checking")}</span>
           ) : matchedName ? (
             <span className="pay-customer__status pay-customer__status--match">
-              Existing customer: {matchedName}
+              {t("pay.existing", { name: matchedName })}
             </span>
           ) : customerPartial ? (
             <span className="pay-customer__status pay-customer__status--hint">
-              Enter a name and a valid phone to attach a customer, or leave blank for a walk-in
-              sale.
+              {t("pay.partialHint")}
             </span>
           ) : phoneValid && customerName.trim() === "" ? (
             <span className="pay-customer__status pay-customer__status--hint">
-              New customer — add a name.
+              {t("pay.newCustomer")}
             </span>
           ) : null}
         </div>
@@ -270,14 +276,14 @@ export function PayModal({
         <div className="pay-summary">
           {remaining !== 0 ? (
             <div className={`pay-remaining${remaining < 0 ? " pay-remaining--over" : ""}`}>
-              <span>{remaining > 0 ? "Remaining" : "Over by"}</span>
-              <strong>{formatMoney(Math.abs(remaining), currency)}</strong>
+              <span>{remaining > 0 ? t("pay.remaining") : t("pay.overBy")}</span>
+              <strong>{formatMoney(Math.abs(remaining), currency, locale)}</strong>
             </div>
           ) : null}
           {cashIndex >= 0 && change > 0 ? (
             <div className="pay-change">
-              <span>Change</span>
-              <strong>{formatMoney(change, currency)}</strong>
+              <span>{t("pay.change")}</span>
+              <strong>{formatMoney(change, currency, locale)}</strong>
             </div>
           ) : null}
         </div>
@@ -289,7 +295,7 @@ export function PayModal({
             disabled={submitting}
             onClick={onCancel}
           >
-            Cancel
+            {t("pay.cancel")}
           </button>
           <button
             type="button"
@@ -297,7 +303,7 @@ export function PayModal({
             disabled={!canConfirm}
             onClick={confirm}
           >
-            {submitting ? "Completing sale…" : "Complete sale"}
+            {submitting ? t("pay.completing") : t("pay.complete")}
           </button>
         </div>
       </div>

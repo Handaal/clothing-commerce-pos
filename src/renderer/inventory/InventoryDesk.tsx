@@ -6,7 +6,9 @@ import type {
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
+import { AddProductModal } from "./AddProductModal";
 import { Icons } from "../shell/icons";
+import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonTable } from "../shell/Skeleton";
 import { useToast } from "../shell/Toast";
@@ -48,6 +50,7 @@ type TransferDraft = {
 type Draft = ReceiveDraft | AdjustDraft | TransferDraft;
 
 export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
+  const { t } = useI18n();
   const [locations, setLocations] = useState<InventoryLocation[]>([]);
   const [locationId, setLocationId] = useState<string | null>(null);
   const [list, setList] = useState<InventoryListResponse | null>(null);
@@ -57,6 +60,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [addingProduct, setAddingProduct] = useState(false);
 
   const locationName = useCallback(
     (id: string) => locations.find((loc) => loc.id === id)?.displayName ?? id,
@@ -133,7 +137,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
     if (draft.kind === "receive") {
       const quantity = Number(draft.quantity);
       if (!Number.isInteger(quantity) || quantity <= 0) {
-        toast.error("Enter a whole quantity greater than zero.");
+        toast.error(t("inventory.err.qtyPositive"));
         return;
       }
       void run(
@@ -148,12 +152,15 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
               : {}),
             ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
           }),
-        `Received ${quantity} into ${locationName(draft.inventoryLocationId)}.`,
+        t("inventory.ok.received", {
+          quantity,
+          location: locationName(draft.inventoryLocationId),
+        }),
       );
     } else if (draft.kind === "adjust") {
       const countedQuantity = Number(draft.countedQuantity);
       if (!Number.isInteger(countedQuantity) || countedQuantity < 0) {
-        toast.error("Enter a counted quantity of zero or more.");
+        toast.error(t("inventory.err.countNonNeg"));
         return;
       }
       void run(
@@ -166,16 +173,16 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             expectedVersion: draft.expectedVersion,
             ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
           }),
-        `Count set to ${countedQuantity} for ${draft.sku}.`,
+        t("inventory.ok.counted", { count: countedQuantity, sku: draft.sku }),
       );
     } else {
       const quantity = Number(draft.quantity);
       if (!Number.isInteger(quantity) || quantity <= 0) {
-        toast.error("Enter a whole quantity greater than zero.");
+        toast.error(t("inventory.err.qtyPositive"));
         return;
       }
       if (draft.destinationInventoryLocationId === draft.sourceInventoryLocationId) {
-        toast.error("Choose a different destination location.");
+        toast.error(t("inventory.err.differentDest"));
         return;
       }
       void run(
@@ -188,7 +195,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             quantity,
             ...(draft.note.trim() ? { note: draft.note.trim() } : {}),
           }),
-        `Transferred ${quantity} of ${draft.sku}.`,
+        t("inventory.ok.transferred", { quantity, sku: draft.sku }),
       );
     }
   };
@@ -215,14 +222,14 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Stock</p>
-          <h1>Inventory</h1>
+          <p className="eyebrow">{t("inventory.stock")}</p>
+          <h1>{t("nav.inventory")}</h1>
         </div>
         <div className="staff-filters">
           <label>
-            Location
+            {t("inventory.location")}
             <Select
-              ariaLabel="Location"
+              ariaLabel={t("inventory.location")}
               value={locationId ?? ""}
               onChange={(value) => setLocationId(value)}
               disabled={locations.length === 0}
@@ -230,7 +237,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             />
           </label>
           <label>
-            Search product or SKU
+            {t("inventory.searchLabel")}
             <input value={query} onChange={(event) => setQuery(event.target.value)} />
           </label>
           <button
@@ -238,7 +245,11 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             onClick={() => void loadLevels()}
             disabled={busy}
           >
-            Refresh
+            {t("orders.refresh")}
+          </button>
+          <button className="button" onClick={() => setAddingProduct(true)} disabled={busy}>
+            <Icons.receive />
+            {t("inventory.newProduct")}
           </button>
         </div>
       </header>
@@ -247,38 +258,42 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
         <div className="notice notice--error" role="alert">
           <span>{error}</span>
           <button className="button button--quiet" onClick={() => void loadLevels()}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       ) : null}
 
       <div className="staff-stats">
         <div className="staff-stat">
-          <span>Tracked SKUs</span>
+          <span>{t("inventory.trackedSkus")}</span>
           <strong>{list ? list.items.length : "—"}</strong>
         </div>
         <div className="staff-stat staff-stat--accent">
-          <span>Units on hand{normalizedQuery ? " (filtered)" : ""}</span>
+          <span>
+            {normalizedQuery ? t("inventory.unitsOnHandFiltered") : t("inventory.unitsOnHand")}
+          </span>
           <strong>{totalOnHand}</strong>
         </div>
         <div className="staff-stat">
-          <span>Locations</span>
+          <span>{t("inventory.locations")}</span>
           <strong>{locations.length}</strong>
         </div>
       </div>
 
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Stock levels · {locationId ? locationName(locationId) : "—"}</h2>
+          <h2>
+            {t("inventory.stockLevels")} · {locationId ? locationName(locationId) : "—"}
+          </h2>
         </div>
         <div className="staff-table-wrap">
           <table className="staff-table">
             <thead>
               <tr>
-                <th>Product</th>
-                <th className="end">On hand</th>
-                <th className="end">Version</th>
-                <th className="end">Actions</th>
+                <th>{t("orders.product")}</th>
+                <th className="end">{t("inventory.onHand")}</th>
+                <th className="end">{t("inventory.version")}</th>
+                <th className="end">{t("staff.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -286,7 +301,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                 <tr key={row.variantId}>
                   <td>
                     <strong>{row.productName}</strong>
-                    <small>SKU {row.sku}</small>
+                    <small>{t("cashier.sku", { sku: row.sku })}</small>
                   </td>
                   <td className="end">
                     <strong>{row.onHand}</strong>
@@ -311,7 +326,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                         }
                       >
                         <Icons.receive />
-                        Receive
+                        {t("inventory.receive")}
                       </button>
                       <button
                         className="row-action"
@@ -330,7 +345,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                         }
                       >
                         <Icons.adjust />
-                        Adjust
+                        {t("staff.adjust")}
                       </button>
                       <button
                         className="row-action"
@@ -351,7 +366,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                         }
                       >
                         <Icons.transfer />
-                        Transfer
+                        {t("inventory.transfer")}
                       </button>
                     </span>
                   </td>
@@ -360,12 +375,10 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             </tbody>
           </table>
         </div>
-        {loading ? <SkeletonTable rows={6} cols={4} label="Loading stock" /> : null}
+        {loading ? <SkeletonTable rows={6} cols={4} label={t("inventory.loading")} /> : null}
         {!loading && visibleRows.length === 0 ? (
           <p className="staff-empty">
-            {normalizedQuery === ""
-              ? "No stock tracked at this location yet."
-              : `No item matches “${query}”.`}
+            {normalizedQuery === "" ? t("inventory.noStock") : t("inventory.noMatch", { query })}
           </p>
         ) : null}
         {list?.pageInfo.hasMore ? (
@@ -375,38 +388,54 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
               onClick={() => void loadMore()}
               disabled={busy}
             >
-              Load more
+              {t("inventory.loadMore")}
             </button>
           </div>
         ) : null}
       </section>
 
+      {addingProduct ? (
+        <AddProductModal
+          client={client}
+          locations={locations}
+          defaultLocationId={locationId}
+          onClose={() => setAddingProduct(false)}
+          onCreated={(productName) => {
+            setAddingProduct(false);
+            toast.success(t("inventory.ok.productCreated", { name: productName }));
+            void loadLevels();
+          }}
+        />
+      ) : null}
+
       {draft ? (
         <Modal
           title={
             draft.kind === "receive"
-              ? `Receive stock · ${draft.sku}`
+              ? t("inventory.receiveTitle", { sku: draft.sku })
               : draft.kind === "adjust"
-                ? `Adjust count · ${draft.sku}`
-                : `Transfer stock · ${draft.sku}`
+                ? t("inventory.adjustTitle", { sku: draft.sku })
+                : t("inventory.transferTitle", { sku: draft.sku })
           }
           onClose={() => setDraft(null)}
           onSave={submitDraft}
           busy={busy}
           saveLabel={
             draft.kind === "receive"
-              ? "Receive"
+              ? t("inventory.receive")
               : draft.kind === "adjust"
-                ? "Set count"
-                : "Transfer"
+                ? t("inventory.setCount")
+                : t("inventory.transfer")
           }
         >
           <p className="muted">{draft.productName}</p>
           {draft.kind === "receive" ? (
             <>
-              <p className="muted">Into {locationName(draft.inventoryLocationId)}</p>
+              <p className="muted">
+                {t("inventory.into", { location: locationName(draft.inventoryLocationId) })}
+              </p>
               <label className="field">
-                Quantity received
+                {t("inventory.quantityReceived")}
                 <input
                   inputMode="numeric"
                   value={draft.quantity}
@@ -415,14 +444,14 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                 />
               </label>
               <label className="field">
-                Supplier reference (optional)
+                {t("inventory.supplierRef")}
                 <input
                   value={draft.supplierReference}
                   onChange={(e) => setDraft({ ...draft, supplierReference: e.target.value })}
                 />
               </label>
               <label className="field">
-                Note (optional)
+                {t("inventory.note")}
                 <input
                   value={draft.note}
                   onChange={(e) => setDraft({ ...draft, note: e.target.value })}
@@ -432,11 +461,13 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
           ) : draft.kind === "adjust" ? (
             <>
               <p className="muted">
-                At {locationName(draft.inventoryLocationId)} · counting against version{" "}
-                {draft.expectedVersion}
+                {t("inventory.atVersion", {
+                  location: locationName(draft.inventoryLocationId),
+                  version: draft.expectedVersion,
+                })}
               </p>
               <label className="field">
-                Counted quantity (new on-hand)
+                {t("inventory.countedQuantity")}
                 <input
                   inputMode="numeric"
                   value={draft.countedQuantity}
@@ -444,7 +475,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                 />
               </label>
               <label className="field">
-                Note (optional)
+                {t("inventory.note")}
                 <input
                   value={draft.note}
                   onChange={(e) => setDraft({ ...draft, note: e.target.value })}
@@ -453,12 +484,14 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             </>
           ) : (
             <>
-              <p className="muted">From {locationName(draft.sourceInventoryLocationId)}</p>
+              <p className="muted">
+                {t("inventory.from", { location: locationName(draft.sourceInventoryLocationId) })}
+              </p>
               <label className="field">
-                Destination
+                {t("inventory.destination")}
                 <Select
-                  ariaLabel="Destination"
-                  placeholder="Choose destination"
+                  ariaLabel={t("inventory.destination")}
+                  placeholder={t("inventory.chooseDestination")}
                   value={draft.destinationInventoryLocationId}
                   onChange={(value) =>
                     setDraft({ ...draft, destinationInventoryLocationId: value })
@@ -469,7 +502,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                 />
               </label>
               <label className="field">
-                Quantity to move
+                {t("inventory.quantityToMove")}
                 <input
                   inputMode="numeric"
                   value={draft.quantity}
@@ -478,7 +511,7 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                 />
               </label>
               <label className="field">
-                Note (optional)
+                {t("inventory.note")}
                 <input
                   value={draft.note}
                   onChange={(e) => setDraft({ ...draft, note: e.target.value })}
@@ -507,6 +540,7 @@ function Modal({
   busy: boolean;
   saveLabel: string;
 }) {
+  const { t } = useI18n();
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="staff-modal__scrim" role="dialog" aria-modal="true" onClick={onClose}>
@@ -515,7 +549,7 @@ function Modal({
         <div className="staff-modal__body">{children}</div>
         <div className="staff-modal__actions">
           <button className="button button--quiet" onClick={onClose} disabled={busy}>
-            Cancel
+            {t("pay.cancel")}
           </button>
           <button className="button" onClick={onSave} disabled={busy}>
             {saveLabel}

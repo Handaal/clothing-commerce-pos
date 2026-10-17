@@ -19,12 +19,12 @@ import { useModalA11y } from "../shell/useModalA11y";
 
 type Tab = "business" | "branches" | "registers" | "returns" | "appearance";
 
-const TABS: readonly { id: Tab; label: string }[] = [
-  { id: "business", label: "Business" },
-  { id: "branches", label: "Branches" },
-  { id: "registers", label: "Registers" },
-  { id: "returns", label: "Returns & refunds" },
-  { id: "appearance", label: "Appearance" },
+const TABS: readonly { id: Tab; labelKey: string }[] = [
+  { id: "business", labelKey: "settings.tab.business" },
+  { id: "branches", labelKey: "settings.tab.branches" },
+  { id: "registers", labelKey: "settings.tab.registers" },
+  { id: "returns", labelKey: "settings.tab.returns" },
+  { id: "appearance", labelKey: "settings.tab.appearance" },
 ];
 
 type LifecycleStatus = Branch["status"];
@@ -36,18 +36,19 @@ export function SettingsDesk({
   client: TenantCommerceClient;
   currency: string;
 }) {
+  const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("business");
 
   return (
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Configuration</p>
-          <h1>Settings</h1>
+          <p className="eyebrow">{t("settings.configuration")}</p>
+          <h1>{t("nav.settings")}</h1>
         </div>
       </header>
 
-      <nav className="report-tabs" aria-label="Settings area">
+      <nav className="report-tabs" aria-label={t("settings.area")}>
         {TABS.map((item) => (
           <button
             key={item.id}
@@ -55,7 +56,7 @@ export function SettingsDesk({
             aria-pressed={tab === item.id}
             onClick={() => setTab(item.id)}
           >
-            {item.label}
+            {t(item.labelKey)}
           </button>
         ))}
       </nav>
@@ -109,6 +110,7 @@ const blankToNull = (value: string): string | null => {
 };
 
 function BusinessTab({ client }: { client: TenantCommerceClient }) {
+  const { t } = useI18n();
   const [settings, setSettings] = useState<BusinessSettings | null>(null);
   const [draft, setDraft] = useState<BusinessDraft | null>(null);
   const [loading, setLoading] = useState(true);
@@ -146,11 +148,11 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
   const save = async () => {
     if (!draft) return;
     if (draft.displayName.trim() === "") {
-      toast.error("A business display name is required.");
+      toast.error(t("settings.err.bizName"));
       return;
     }
     if (draft.defaultCurrency.trim().length !== 3) {
-      toast.error("Default currency must be a 3-letter code (e.g. EGP).");
+      toast.error(t("settings.err.defaultCurrency"));
       return;
     }
     setBusy(true);
@@ -169,7 +171,7 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
       });
       setSettings(result);
       setDraft(toBusinessDraft(result));
-      toast.success("Business settings saved.");
+      toast.success(t("settings.ok.bizSaved"));
     } catch (err) {
       toast.error(classifyCommerceError(err).message);
     } finally {
@@ -177,13 +179,13 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
     }
   };
 
-  if (loading) return <SkeletonLines lines={6} label="Loading business settings" />;
+  if (loading) return <SkeletonLines lines={6} label={t("settings.loadingBiz")} />;
   if (error)
     return (
       <div className="notice notice--error" role="alert">
         <span>{error}</span>
         <button className="button button--quiet" onClick={() => void load()}>
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -193,32 +195,32 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
     <>
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Identity</h2>
+          <h2>{t("settings.identity")}</h2>
         </div>
         <div className="settings-grid">
           <label className="field">
-            Display name
+            {t("settings.displayName")}
             <input
               value={draft.displayName}
               onChange={(event) => update({ displayName: event.target.value })}
             />
           </label>
           <label className="field">
-            Legal name
+            {t("settings.legalName")}
             <input
               value={draft.legalName}
               onChange={(event) => update({ legalName: event.target.value })}
             />
           </label>
           <label className="field">
-            Tax identifier
+            {t("settings.taxIdentifier")}
             <input
               value={draft.taxIdentifier}
               onChange={(event) => update({ taxIdentifier: event.target.value })}
             />
           </label>
           <label className="field">
-            Contact email
+            {t("settings.contactEmail")}
             <input
               type="email"
               value={draft.contactEmail}
@@ -226,14 +228,14 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
             />
           </label>
           <label className="field">
-            Contact phone
+            {t("settings.contactPhone")}
             <input
               value={draft.contactPhone}
               onChange={(event) => update({ contactPhone: event.target.value })}
             />
           </label>
           <label className="field">
-            Country code
+            {t("settings.countryCode")}
             <input
               value={draft.countryCode}
               placeholder="EG"
@@ -241,7 +243,7 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
             />
           </label>
           <label className="field">
-            Default timezone
+            {t("settings.defaultTimezone")}
             <input
               value={draft.defaultTimezone}
               placeholder="Africa/Cairo"
@@ -249,7 +251,7 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
             />
           </label>
           <label className="field">
-            Default currency
+            {t("settings.defaultCurrency")}
             <input
               value={draft.defaultCurrency}
               maxLength={3}
@@ -264,40 +266,37 @@ function BusinessTab({ client }: { client: TenantCommerceClient }) {
             disabled={!dirty || busy}
             onClick={() => setDraft(toBusinessDraft(settings))}
           >
-            Discard
+            {t("settings.discard")}
           </button>
           <button className="button" disabled={!dirty || busy} onClick={() => void save()}>
-            {busy ? "Saving…" : "Save changes"}
+            {busy ? t("settings.saving") : t("settings.saveChanges")}
           </button>
         </div>
       </section>
 
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Account</h2>
+          <h2>{t("settings.account")}</h2>
         </div>
         <div className="staff-stats">
           <div className="staff-stat">
-            <span>Slug</span>
+            <span>{t("settings.slug")}</span>
             <strong>{settings.slug}</strong>
           </div>
           <div className="staff-stat">
-            <span>Status</span>
+            <span>{t("orders.statusLabel")}</span>
             <strong>{settings.status}</strong>
           </div>
           <div className="staff-stat">
-            <span>Onboarding</span>
+            <span>{t("settings.onboarding")}</span>
             <strong>{settings.onboardingState}</strong>
           </div>
           <div className="staff-stat">
-            <span>Default locale</span>
+            <span>{t("settings.defaultLocale")}</span>
             <strong>{settings.defaultLocale}</strong>
           </div>
         </div>
-        <p className="staff-empty">
-          Slug, status, onboarding, and locale are managed by the platform and cannot be edited
-          here.
-        </p>
+        <p className="staff-empty">{t("settings.platformManaged")}</p>
       </section>
     </>
   );
@@ -327,6 +326,7 @@ function toReturnsDraft(settings: ReturnSettings): ReturnsDraft {
 }
 
 function ReturnsTab({ client, currency }: { client: TenantCommerceClient; currency: string }) {
+  const { t, locale } = useI18n();
   const [settings, setSettings] = useState<ReturnSettings | null>(null);
   const [draft, setDraft] = useState<ReturnsDraft | null>(null);
   const [loading, setLoading] = useState(true);
@@ -368,7 +368,7 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
     if (draft.windowDays.trim() !== "") {
       const parsed = Number(draft.windowDays);
       if (!Number.isInteger(parsed) || parsed < 0) {
-        toast.error("Return window must be a whole number of days, or blank for no limit.");
+        toast.error(t("settings.err.window"));
         return;
       }
       windowDays = parsed;
@@ -378,7 +378,7 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
     if (draft.maxManualRefund.trim() !== "") {
       const parsed = parseMajorToMinor(draft.maxManualRefund);
       if (parsed === null) {
-        toast.error("Enter the refund cap as an amount like 500 or 500.00, or leave it blank.");
+        toast.error(t("settings.err.refundCap"));
         return;
       }
       maxManualRefundMinor = parsed;
@@ -400,7 +400,7 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
       });
       setSettings(result);
       setDraft(toReturnsDraft(result));
-      toast.success("Return settings saved.");
+      toast.success(t("settings.ok.returnsSaved"));
     } catch (err) {
       toast.error(classifyCommerceError(err).message);
     } finally {
@@ -408,13 +408,13 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
     }
   };
 
-  if (loading) return <SkeletonLines lines={5} label="Loading return settings" />;
+  if (loading) return <SkeletonLines lines={5} label={t("settings.loadingReturns")} />;
   if (error)
     return (
       <div className="notice notice--error" role="alert">
         <span>{error}</span>
         <button className="button button--quiet" onClick={() => void load()}>
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -424,7 +424,7 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
     <>
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Return policy</h2>
+          <h2>{t("settings.returnPolicy")}</h2>
         </div>
         <div className="settings-grid">
           <label className="field settings-check">
@@ -433,14 +433,14 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
               checked={draft.enabled}
               onChange={(event) => update({ enabled: event.target.checked })}
             />
-            Allow returns
+            {t("settings.allowReturns")}
           </label>
           <label className="field">
-            Return window (days)
+            {t("settings.returnWindow")}
             <input
               inputMode="numeric"
               value={draft.windowDays}
-              placeholder="No limit"
+              placeholder={t("settings.noLimit")}
               disabled={!draft.enabled}
               onChange={(event) => update({ windowDays: event.target.value })}
             />
@@ -451,23 +451,23 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
               checked={draft.manualRefundsEnabled}
               onChange={(event) => update({ manualRefundsEnabled: event.target.checked })}
             />
-            Allow manual refunds
+            {t("settings.allowManualRefunds")}
           </label>
           <label className="field">
-            Manual refund cap ({currencySymbol(currency)})
+            {t("settings.manualRefundCap", { sym: currencySymbol(currency, locale) })}
             <input
               inputMode="decimal"
               value={draft.maxManualRefund}
-              placeholder="No cap"
+              placeholder={t("settings.noCap")}
               disabled={!draft.manualRefundsEnabled}
               onChange={(event) => update({ maxManualRefund: event.target.value })}
             />
           </label>
           <label className="field settings-grid__wide">
-            Allowed return reasons (comma-separated)
+            {t("settings.allowedReasons")}
             <input
               value={draft.allowedReasons}
-              placeholder="Damaged, Wrong size, Changed mind"
+              placeholder={t("settings.reasonsPlaceholder")}
               onChange={(event) => update({ allowedReasons: event.target.value })}
             />
           </label>
@@ -478,10 +478,10 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
             disabled={!dirty || busy}
             onClick={() => setDraft(toReturnsDraft(settings))}
           >
-            Discard
+            {t("settings.discard")}
           </button>
           <button className="button" disabled={!dirty || busy} onClick={() => void save()}>
-            {busy ? "Saving…" : "Save changes"}
+            {busy ? t("settings.saving") : t("settings.saveChanges")}
           </button>
         </div>
       </section>
@@ -530,6 +530,7 @@ function toBranchDraft(branch: Branch): BranchDraft {
 }
 
 function BranchesTab({ client }: { client: TenantCommerceClient }) {
+  const { t } = useI18n();
   const [branches, setBranches] = useState<readonly Branch[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -568,7 +569,7 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
   const save = async () => {
     if (!editing || !draft) return;
     if (draft.displayName.trim() === "") {
-      toast.error("A branch display name is required.");
+      toast.error(t("settings.err.branchName"));
       return;
     }
     setBusy(true);
@@ -593,7 +594,7 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
       });
       setEditing(null);
       setDraft(null);
-      toast.success(`Saved ${draft.displayName.trim()}.`);
+      toast.success(t("settings.ok.saved", { name: draft.displayName.trim() }));
       await load();
     } catch (err) {
       toast.error(classifyCommerceError(err).message);
@@ -602,13 +603,13 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
     }
   };
 
-  if (loading) return <SkeletonTable rows={4} cols={4} label="Loading branches" />;
+  if (loading) return <SkeletonTable rows={4} cols={4} label={t("settings.loadingBranches")} />;
   if (error)
     return (
       <div className="notice notice--error" role="alert">
         <span>{error}</span>
         <button className="button button--quiet" onClick={() => void load()}>
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -617,16 +618,16 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
     <>
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Branches</h2>
+          <h2>{t("settings.tab.branches")}</h2>
         </div>
         <div className="staff-table-wrap">
           <table className="staff-table">
             <thead>
               <tr>
-                <th>Branch</th>
-                <th>Status</th>
-                <th>Fulfillment</th>
-                <th className="end">Actions</th>
+                <th>{t("settings.branch")}</th>
+                <th>{t("orders.statusLabel")}</th>
+                <th>{t("settings.fulfillment")}</th>
+                <th className="end">{t("staff.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -634,16 +635,16 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
                 <tr key={branch.id}>
                   <td>
                     <strong>{branch.displayName}</strong>
-                    <small>Code {branch.code}</small>
+                    <small>{t("settings.code", { code: branch.code })}</small>
                   </td>
                   <td>{branch.status}</td>
                   <td className="muted">
-                    {branch.isFulfillmentEnabled ? "Ships" : "—"}
-                    {branch.isClickAndCollectEnabled ? " · Click & collect" : ""}
+                    {branch.isFulfillmentEnabled ? t("settings.ships") : "—"}
+                    {branch.isClickAndCollectEnabled ? ` · ${t("settings.clickCollect")}` : ""}
                   </td>
                   <td className="end">
                     <button className="link" disabled={busy} onClick={() => open(branch)}>
-                      Edit
+                      {t("staff.edit")}
                     </button>
                   </td>
                 </tr>
@@ -651,12 +652,12 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
             </tbody>
           </table>
         </div>
-        {branches.length === 0 ? <p className="staff-empty">No branches yet.</p> : null}
+        {branches.length === 0 ? <p className="staff-empty">{t("settings.noBranches")}</p> : null}
       </section>
 
       {editing && draft ? (
         <Modal
-          title={`Edit branch · ${editing.code}`}
+          title={t("settings.editBranch", { code: editing.code })}
           onClose={() => {
             setEditing(null);
             setDraft(null);
@@ -666,14 +667,14 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
         >
           <div className="settings-grid">
             <label className="field">
-              Display name
+              {t("settings.displayName")}
               <input
                 value={draft.displayName}
                 onChange={(event) => update({ displayName: event.target.value })}
               />
             </label>
             <label className="field">
-              Timezone
+              {t("settings.timezone")}
               <input
                 value={draft.timezone}
                 placeholder="Africa/Cairo"
@@ -681,15 +682,15 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
               />
             </label>
             <label className="field">
-              Status
+              {t("orders.statusLabel")}
               <Select<LifecycleStatus>
-                ariaLabel="Branch status"
+                ariaLabel={t("settings.branchStatus")}
                 value={draft.status}
                 onChange={(status) => update({ status })}
                 options={[
-                  { value: "active", label: "Active" },
-                  { value: "inactive", label: "Inactive" },
-                  { value: "archived", label: "Archived" },
+                  { value: "active", label: t("suppliers.active") },
+                  { value: "inactive", label: t("suppliers.inactive") },
+                  { value: "archived", label: t("settings.archived") },
                 ]}
               />
             </label>
@@ -699,7 +700,7 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
                 checked={draft.isFulfillmentEnabled}
                 onChange={(event) => update({ isFulfillmentEnabled: event.target.checked })}
               />
-              Fulfillment enabled
+              {t("settings.fulfillmentEnabled")}
             </label>
             <label className="field settings-check">
               <input
@@ -707,52 +708,52 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
                 checked={draft.isClickAndCollectEnabled}
                 onChange={(event) => update({ isClickAndCollectEnabled: event.target.checked })}
               />
-              Click & collect
+              {t("settings.clickCollect")}
             </label>
             <label className="field settings-grid__wide">
-              Receipt footer
+              {t("settings.receiptFooter")}
               <input
                 value={draft.receiptFooter}
                 onChange={(event) => update({ receiptFooter: event.target.value })}
               />
             </label>
             <label className="field">
-              Address line 1
+              {t("settings.addressLine1")}
               <input
                 value={draft.addressLine1}
                 onChange={(event) => update({ addressLine1: event.target.value })}
               />
             </label>
             <label className="field">
-              Address line 2
+              {t("settings.addressLine2")}
               <input
                 value={draft.addressLine2}
                 onChange={(event) => update({ addressLine2: event.target.value })}
               />
             </label>
             <label className="field">
-              City
+              {t("settings.city")}
               <input
                 value={draft.city}
                 onChange={(event) => update({ city: event.target.value })}
               />
             </label>
             <label className="field">
-              Region
+              {t("settings.region")}
               <input
                 value={draft.region}
                 onChange={(event) => update({ region: event.target.value })}
               />
             </label>
             <label className="field">
-              Postal code
+              {t("settings.postalCode")}
               <input
                 value={draft.postalCode}
                 onChange={(event) => update({ postalCode: event.target.value })}
               />
             </label>
             <label className="field">
-              Country code
+              {t("settings.countryCode")}
               <input
                 value={draft.countryCode}
                 placeholder="EG"
@@ -760,7 +761,7 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
               />
             </label>
             <label className="field">
-              Contact email
+              {t("settings.contactEmail")}
               <input
                 type="email"
                 value={draft.contactEmail}
@@ -768,7 +769,7 @@ function BranchesTab({ client }: { client: TenantCommerceClient }) {
               />
             </label>
             <label className="field">
-              Contact phone
+              {t("settings.contactPhone")}
               <input
                 value={draft.contactPhone}
                 onChange={(event) => update({ contactPhone: event.target.value })}
@@ -790,6 +791,7 @@ interface RegisterDraft {
 }
 
 function RegistersTab({ client }: { client: TenantCommerceClient }) {
+  const { t } = useI18n();
   const [registers, setRegisters] = useState<readonly Register[]>([]);
   const [branchNames, setBranchNames] = useState<ReadonlyMap<string, string>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -837,11 +839,11 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
   const save = async () => {
     if (!editing || !draft) return;
     if (draft.displayName.trim() === "") {
-      toast.error("A register display name is required.");
+      toast.error(t("settings.err.registerName"));
       return;
     }
     if (draft.sellingCurrency.trim().length !== 3) {
-      toast.error("Selling currency must be a 3-letter code (e.g. EGP).");
+      toast.error(t("settings.err.sellingCurrency"));
       return;
     }
     setBusy(true);
@@ -855,7 +857,7 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
       });
       setEditing(null);
       setDraft(null);
-      toast.success(`Saved ${draft.displayName.trim()}.`);
+      toast.success(t("settings.ok.saved", { name: draft.displayName.trim() }));
       await load();
     } catch (err) {
       toast.error(classifyCommerceError(err).message);
@@ -864,13 +866,13 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
     }
   };
 
-  if (loading) return <SkeletonTable rows={4} cols={5} label="Loading registers" />;
+  if (loading) return <SkeletonTable rows={4} cols={5} label={t("settings.loadingRegisters")} />;
   if (error)
     return (
       <div className="notice notice--error" role="alert">
         <span>{error}</span>
         <button className="button button--quiet" onClick={() => void load()}>
-          Retry
+          {t("common.retry")}
         </button>
       </div>
     );
@@ -879,17 +881,17 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
     <>
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Registers</h2>
+          <h2>{t("settings.tab.registers")}</h2>
         </div>
         <div className="staff-table-wrap">
           <table className="staff-table">
             <thead>
               <tr>
-                <th>Register</th>
-                <th>Branch</th>
-                <th>Currency</th>
-                <th>Status</th>
-                <th className="end">Actions</th>
+                <th>{t("settings.register")}</th>
+                <th>{t("settings.branch")}</th>
+                <th>{t("staff.col.currency")}</th>
+                <th>{t("orders.statusLabel")}</th>
+                <th className="end">{t("staff.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -897,14 +899,14 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
                 <tr key={register.id}>
                   <td>
                     <strong>{register.displayName}</strong>
-                    <small>Code {register.code}</small>
+                    <small>{t("settings.code", { code: register.code })}</small>
                   </td>
                   <td>{branchNames.get(register.branchId) ?? "—"}</td>
                   <td className="muted">{register.sellingCurrency}</td>
                   <td>{register.status}</td>
                   <td className="end">
                     <button className="link" disabled={busy} onClick={() => open(register)}>
-                      Edit
+                      {t("staff.edit")}
                     </button>
                   </td>
                 </tr>
@@ -912,12 +914,12 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
             </tbody>
           </table>
         </div>
-        {registers.length === 0 ? <p className="staff-empty">No registers yet.</p> : null}
+        {registers.length === 0 ? <p className="staff-empty">{t("settings.noRegisters")}</p> : null}
       </section>
 
       {editing && draft ? (
         <Modal
-          title={`Edit register · ${editing.code}`}
+          title={t("settings.editRegister", { code: editing.code })}
           onClose={() => {
             setEditing(null);
             setDraft(null);
@@ -927,14 +929,14 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
         >
           <div className="settings-grid">
             <label className="field">
-              Display name
+              {t("settings.displayName")}
               <input
                 value={draft.displayName}
                 onChange={(event) => update({ displayName: event.target.value })}
               />
             </label>
             <label className="field">
-              Selling currency
+              {t("settings.sellingCurrency")}
               <input
                 value={draft.sellingCurrency}
                 maxLength={3}
@@ -943,15 +945,15 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
               />
             </label>
             <label className="field">
-              Status
+              {t("orders.statusLabel")}
               <Select<LifecycleStatus>
-                ariaLabel="Register status"
+                ariaLabel={t("settings.registerStatus")}
                 value={draft.status}
                 onChange={(status) => update({ status })}
                 options={[
-                  { value: "active", label: "Active" },
-                  { value: "inactive", label: "Inactive" },
-                  { value: "archived", label: "Archived" },
+                  { value: "active", label: t("suppliers.active") },
+                  { value: "inactive", label: t("suppliers.inactive") },
+                  { value: "archived", label: t("settings.archived") },
                 ]}
               />
             </label>
@@ -968,30 +970,30 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
 // providers), not tenant configuration — so they apply immediately with no server round-trip.
 function AppearanceTab() {
   const { theme, setTheme, palette, setPalette } = useTheme();
-  const { lang, setLang } = useI18n();
+  const { lang, setLang, t } = useI18n();
 
   return (
     <section className="staff-card">
       <div className="staff-card__head">
-        <h2>Appearance</h2>
+        <h2>{t("settings.tab.appearance")}</h2>
       </div>
       <div className="settings-grid">
         <label className="field">
-          Theme
+          {t("settings.theme")}
           <Select<typeof theme>
-            ariaLabel="Theme"
+            ariaLabel={t("settings.theme")}
             value={theme}
             onChange={setTheme}
             options={[
-              { value: "light", label: "Light" },
-              { value: "dark", label: "Dark" },
+              { value: "light", label: t("settings.light") },
+              { value: "dark", label: t("settings.dark") },
             ]}
           />
         </label>
         <label className="field">
-          Language
+          {t("settings.language")}
           <Select<typeof lang>
-            ariaLabel="Language"
+            ariaLabel={t("settings.language")}
             value={lang}
             onChange={setLang}
             options={[
@@ -1003,8 +1005,8 @@ function AppearanceTab() {
       </div>
 
       <div className="field settings-grid__wide" style={{ marginTop: "1rem" }}>
-        <span>Color palette</span>
-        <div className="palette-picker" role="radiogroup" aria-label="Color palette">
+        <span>{t("settings.colorPalette")}</span>
+        <div className="palette-picker" role="radiogroup" aria-label={t("settings.colorPalette")}>
           {PALETTE_LIST.map((item) => (
             <button
               key={item.id}
@@ -1025,9 +1027,7 @@ function AppearanceTab() {
         </div>
       </div>
 
-      <p className="staff-empty">
-        These preferences are saved on this device and apply immediately.
-      </p>
+      <p className="staff-empty">{t("settings.prefsNote")}</p>
     </section>
   );
 }
@@ -1047,6 +1047,7 @@ function Modal({
   onSave: () => void;
   busy: boolean;
 }) {
+  const { t } = useI18n();
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="staff-modal__scrim" role="dialog" aria-modal="true" onClick={onClose}>
@@ -1059,10 +1060,10 @@ function Modal({
         <div className="staff-modal__body">{children}</div>
         <div className="staff-modal__actions">
           <button className="button button--quiet" onClick={onClose} disabled={busy}>
-            Cancel
+            {t("pay.cancel")}
           </button>
           <button className="button" onClick={onSave} disabled={busy}>
-            {busy ? "Saving…" : "Save changes"}
+            {busy ? t("settings.saving") : t("settings.saveChanges")}
           </button>
         </div>
       </div>
