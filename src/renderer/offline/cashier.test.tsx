@@ -1,10 +1,17 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { LocalReceipt, OfflineBridge, OfflineSyncStatus } from "../../shared/offline";
+import { I18nProvider } from "../shell/i18n";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./cashier";
+
+// OfflineCashier reads language/locale from the i18n context; the test-setup pins it to English.
+function render(ui: ReactElement, options?: Parameters<typeof rtlRender>[1]) {
+  return rtlRender(ui, { wrapper: I18nProvider, ...options });
+}
 
 afterEach(cleanup);
 
@@ -159,9 +166,12 @@ describe("offline cashier", () => {
   });
 
   it("prioritizes reconciliation and blocked statuses for cashier attention", () => {
-    expect(syncLabel({ ...status, needsReconciliation: 1 })).toBe("Needs attention");
-    expect(syncLabel({ ...status, pending: 0, blocked: 1 })).toBe("Sync blocked");
-    expect(syncLabel({ ...status, pending: 0, synchronizing: true })).toBe("Synchronizing");
+    // syncLabel returns a stable i18n key; the component resolves it through `t`.
+    expect(syncLabel({ ...status, needsReconciliation: 1 })).toBe("cashier.sync.needsAttention");
+    expect(syncLabel({ ...status, pending: 0, blocked: 1 })).toBe("cashier.sync.blocked");
+    expect(syncLabel({ ...status, pending: 0, synchronizing: true })).toBe(
+      "cashier.sync.synchronizing",
+    );
     expect(waitingSyncCount({ ...status, pending: 2, leased: 1, retryWait: 3 })).toBe(6);
   });
 });

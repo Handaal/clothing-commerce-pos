@@ -3,6 +3,8 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
+import { formatDate } from "../format";
+import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonLines } from "../shell/Skeleton";
 import { useToast } from "../shell/Toast";
@@ -35,12 +37,6 @@ const blankForm = (): FormState => ({
   economicsLocked: false,
 });
 
-const fmtDate = (iso: string | null): string => {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString(undefined, { dateStyle: "medium" });
-};
-
 // A promotion is only shown here when it is voucher-shaped: a single code, activated by code.
 function voucherCode(detail: PromotionDetail): string | null {
   if (detail.activationType !== "code" || detail.codes.length === 0) return null;
@@ -54,6 +50,7 @@ export function VouchersDesk({
   client: TenantCommerceClient;
   currency: string;
 }) {
+  const { t, locale } = useI18n();
   const [vouchers, setVouchers] = useState<PromotionDetail[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -62,7 +59,7 @@ export function VouchersDesk({
   const [form, setForm] = useState<FormState | null>(null);
   const [detail, setDetail] = useState<PromotionDetail | null>(null);
 
-  const sym = currencySymbol(currency);
+  const sym = currencySymbol(currency, locale);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -141,15 +138,13 @@ export function VouchersDesk({
     if (!form) return;
     const benefit = benefitFields(form);
     if (!benefit) {
-      toast.error(
-        form.type === "percent" ? "Enter a percentage between 1 and 100." : "Enter a valid amount.",
-      );
+      toast.error(form.type === "percent" ? t("vouchers.err.percent") : t("vouchers.err.amount"));
       return;
     }
     const minSubtotalMinor =
       form.minSubtotal.trim() === "" ? null : parseMajorToMinor(form.minSubtotal);
     if (minSubtotalMinor === null && form.minSubtotal.trim() !== "") {
-      toast.error("Minimum subtotal is not a valid amount.");
+      toast.error(t("vouchers.err.minSubtotal"));
       return;
     }
     const endsAt = form.expiresAt ? `${form.expiresAt}T23:59:59.000Z` : null;
@@ -171,7 +166,7 @@ export function VouchersDesk({
             minSubtotalMinor,
             endsAt,
           }),
-        `Voucher ${form.code} updated.`,
+        t("vouchers.ok.updated", { code: form.code }),
       ).then(
         () => setForm(null),
         () => undefined,
@@ -181,12 +176,12 @@ export function VouchersDesk({
 
     const code = form.code.trim().toUpperCase();
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(code)) {
-      toast.error("Enter a code using letters, numbers, dashes or underscores.");
+      toast.error(t("vouchers.err.code"));
       return;
     }
     const maxUses = form.maxUses.trim() === "" ? null : Number(form.maxUses);
     if (maxUses !== null && (!Number.isInteger(maxUses) || maxUses <= 0)) {
-      toast.error("Max uses must be a whole number greater than zero.");
+      toast.error(t("vouchers.err.maxUses"));
       return;
     }
     void run(
@@ -203,7 +198,7 @@ export function VouchersDesk({
           status: form.active ? "active" : "inactive",
           codes: [{ code }],
         }),
-      `Voucher ${code} created.`,
+      t("vouchers.ok.created", { code }),
     ).then(
       () => setForm(null),
       () => undefined,
@@ -218,13 +213,15 @@ export function VouchersDesk({
           status: v.status === "active" ? "inactive" : "active",
           idempotencyKey: crypto.randomUUID(),
         }),
-      `Voucher ${voucherCode(v)} ${v.status === "active" ? "deactivated" : "activated"}.`,
+      v.status === "active"
+        ? t("vouchers.ok.deactivated", { code: voucherCode(v) ?? "" })
+        : t("vouchers.ok.activated", { code: voucherCode(v) ?? "" }),
     ).catch(() => undefined);
 
   const describe = (v: PromotionDetail) =>
     v.benefitType === "percentage"
       ? `${(v.benefitPercentBp ?? 0) / 100}%`
-      : formatMoney(v.benefitAmountMinor ?? 0, v.benefitCurrency ?? currency);
+      : formatMoney(v.benefitAmountMinor ?? 0, v.benefitCurrency ?? currency, locale);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -232,15 +229,15 @@ export function VouchersDesk({
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Promotions</p>
-          <h1>Vouchers</h1>
+          <p className="eyebrow">{t("vouchers.promotions")}</p>
+          <h1>{t("nav.vouchers")}</h1>
         </div>
         <div className="staff-filters">
           <button className="button button--quiet" onClick={() => void load()} disabled={busy}>
-            Refresh
+            {t("orders.refresh")}
           </button>
           <button className="button" onClick={openNew} disabled={busy}>
-            New voucher
+            {t("vouchers.new")}
           </button>
         </div>
       </header>
@@ -249,17 +246,15 @@ export function VouchersDesk({
         <div className="notice notice--error" role="alert">
           <span>{error}</span>
           <button className="button button--quiet" onClick={() => void load()}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       ) : null}
 
       {loading ? (
-        <SkeletonLines lines={5} label="Loading vouchers" />
+        <SkeletonLines lines={5} label={t("vouchers.loading")} />
       ) : vouchers.length === 0 ? (
-        <p className="staff-empty">
-          No vouchers yet. Create one to offer a discount code at checkout.
-        </p>
+        <p className="staff-empty">{t("vouchers.none")}</p>
       ) : (
         <div className="voucher-grid">
           {vouchers.map((v) => {
@@ -272,27 +267,33 @@ export function VouchersDesk({
                 <div className="voucher-card__head">
                   <div>
                     <strong className="voucher-code">{code}</strong>
-                    <span className="voucher-benefit">{describe(v)} off</span>
+                    <span className="voucher-benefit">
+                      {t("vouchers.off", { value: describe(v) })}
+                    </span>
                   </div>
                   <div className="voucher-badges">
                     {v.status === "active" ? (
-                      <span className="pill pill--good">Active</span>
+                      <span className="pill pill--good">{t("vouchers.active")}</span>
                     ) : (
-                      <span className="pill pill--bad">Inactive</span>
+                      <span className="pill pill--bad">{t("vouchers.inactive")}</span>
                     )}
-                    {expired ? <span className="pill pill--warn">Expired</span> : null}
-                    {exhausted ? <span className="pill pill--warn">Exhausted</span> : null}
+                    {expired ? (
+                      <span className="pill pill--warn">{t("vouchers.expired")}</span>
+                    ) : null}
+                    {exhausted ? (
+                      <span className="pill pill--warn">{t("vouchers.exhausted")}</span>
+                    ) : null}
                   </div>
                 </div>
                 <dl className="voucher-meta">
                   {v.minSubtotalMinor ? (
                     <div>
-                      <dt>Min subtotal</dt>
-                      <dd>{formatMoney(v.minSubtotalMinor, currency)}</dd>
+                      <dt>{t("vouchers.minSubtotal")}</dt>
+                      <dd>{formatMoney(v.minSubtotalMinor, currency, locale)}</dd>
                     </div>
                   ) : null}
                   <div>
-                    <dt>Used</dt>
+                    <dt>{t("vouchers.used")}</dt>
                     <dd>
                       {v.redemptionCount}
                       {v.globalRedemptionLimit != null ? ` / ${v.globalRedemptionLimit}` : ""}
@@ -300,20 +301,20 @@ export function VouchersDesk({
                   </div>
                   {v.endsAt ? (
                     <div>
-                      <dt>Expires</dt>
-                      <dd>{fmtDate(v.endsAt)}</dd>
+                      <dt>{t("vouchers.expires")}</dt>
+                      <dd>{formatDate(v.endsAt, locale)}</dd>
                     </div>
                   ) : null}
                 </dl>
                 <div className="voucher-card__actions">
                   <button className="link" disabled={busy} onClick={() => setDetail(v)}>
-                    Details
+                    {t("vouchers.details")}
                   </button>
                   <button className="link" disabled={busy} onClick={() => openEdit(v)}>
-                    Edit
+                    {t("staff.edit")}
                   </button>
                   <button className="link" disabled={busy} onClick={() => toggle(v)}>
-                    {v.status === "active" ? "Deactivate" : "Activate"}
+                    {v.status === "active" ? t("vouchers.deactivate") : t("vouchers.activate")}
                   </button>
                 </div>
               </article>
@@ -324,14 +325,16 @@ export function VouchersDesk({
 
       {form ? (
         <Modal
-          title={form.promotionId ? `Edit voucher · ${form.code}` : "New voucher"}
+          title={
+            form.promotionId ? t("vouchers.editTitle", { code: form.code }) : t("vouchers.new")
+          }
           onClose={() => setForm(null)}
           onSave={save}
           busy={busy}
-          saveLabel={form.promotionId ? "Save" : "Create"}
+          saveLabel={form.promotionId ? t("staff.save") : t("vouchers.create")}
         >
           <label className="field">
-            Code
+            {t("vouchers.code")}
             <input
               autoFocus
               value={form.code}
@@ -342,20 +345,20 @@ export function VouchersDesk({
           </label>
           <div className="voucher-form-row">
             <label className="field">
-              Type
+              {t("staff.type")}
               <Select<VoucherType>
-                ariaLabel="Voucher type"
+                ariaLabel={t("vouchers.typeLabel")}
                 value={form.type}
                 disabled={form.economicsLocked}
                 onChange={(type) => setForm({ ...form, type })}
                 options={[
-                  { value: "percent", label: "Percentage" },
-                  { value: "fixed", label: "Fixed amount" },
+                  { value: "percent", label: t("vouchers.percentage") },
+                  { value: "fixed", label: t("vouchers.fixedAmount") },
                 ]}
               />
             </label>
             <label className="field">
-              {form.type === "percent" ? "Percent (%)" : `Amount (${sym})`}
+              {form.type === "percent" ? t("vouchers.percent") : t("staff.amountSym", { sym })}
               <input
                 inputMode="decimal"
                 value={form.value}
@@ -364,14 +367,10 @@ export function VouchersDesk({
               />
             </label>
           </div>
-          {form.economicsLocked ? (
-            <p className="muted">
-              This voucher has been redeemed, so its discount can no longer change.
-            </p>
-          ) : null}
+          {form.economicsLocked ? <p className="muted">{t("vouchers.economicsLocked")}</p> : null}
           <div className="voucher-form-row">
             <label className="field">
-              Min subtotal ({sym})
+              {t("vouchers.minSubtotalSym", { sym })}
               <input
                 inputMode="decimal"
                 value={form.minSubtotal}
@@ -380,7 +379,7 @@ export function VouchersDesk({
               />
             </label>
             <label className="field">
-              Max uses
+              {t("vouchers.maxUses")}
               <input
                 inputMode="numeric"
                 value={form.maxUses}
@@ -391,7 +390,7 @@ export function VouchersDesk({
             </label>
           </div>
           <label className="field">
-            Expires on
+            {t("vouchers.expiresOn")}
             <input
               type="date"
               value={form.expiresAt}
@@ -405,7 +404,7 @@ export function VouchersDesk({
                 checked={form.active}
                 onChange={(e) => setForm({ ...form, active: e.target.checked })}
               />
-              Active immediately
+              {t("vouchers.activeImmediately")}
             </label>
           ) : null}
         </Modal>
@@ -413,10 +412,10 @@ export function VouchersDesk({
 
       {detail ? (
         <Modal
-          title={`${voucherCode(detail)} · Details`}
+          title={t("vouchers.detailsTitle", { code: voucherCode(detail) ?? "" })}
           onClose={() => setDetail(null)}
           busy={false}
-          saveLabel="Close"
+          saveLabel={t("vouchers.close")}
           onSave={() => setDetail(null)}
         >
           <div className="voucher-stats">
@@ -425,51 +424,48 @@ export function VouchersDesk({
                 {detail.redemptionCount}
                 {detail.globalRedemptionLimit != null ? ` / ${detail.globalRedemptionLimit}` : ""}
               </strong>
-              <span>Used</span>
+              <span>{t("vouchers.used")}</span>
             </div>
             <div className="voucher-stat">
               <strong>
                 {detail.remainingRedemptions != null ? detail.remainingRedemptions : "∞"}
               </strong>
-              <span>Remaining</span>
+              <span>{t("vouchers.remaining")}</span>
             </div>
             <div className="voucher-stat voucher-stat--accent">
               <strong>{describe(detail)}</strong>
-              <span>Discount</span>
+              <span>{t("vouchers.discount")}</span>
             </div>
           </div>
           <dl className="order-kv">
             <div>
-              <dt>Status</dt>
+              <dt>{t("orders.statusLabel")}</dt>
               <dd>
                 <span className={`pill ${detail.status === "active" ? "pill--good" : "pill--bad"}`}>
-                  {detail.status}
+                  {detail.status === "active" ? t("vouchers.active") : t("vouchers.inactive")}
                 </span>
               </dd>
             </div>
             {detail.minSubtotalMinor ? (
               <div>
-                <dt>Minimum subtotal</dt>
-                <dd>{formatMoney(detail.minSubtotalMinor, currency)}</dd>
+                <dt>{t("vouchers.minimumSubtotal")}</dt>
+                <dd>{formatMoney(detail.minSubtotalMinor, currency, locale)}</dd>
               </div>
             ) : null}
             <div>
-              <dt>Starts</dt>
-              <dd>{fmtDate(detail.startsAt)}</dd>
+              <dt>{t("vouchers.starts")}</dt>
+              <dd>{formatDate(detail.startsAt, locale)}</dd>
             </div>
             <div>
-              <dt>Expires</dt>
-              <dd>{fmtDate(detail.endsAt)}</dd>
+              <dt>{t("vouchers.expires")}</dt>
+              <dd>{formatDate(detail.endsAt, locale)}</dd>
             </div>
             <div>
-              <dt>Channel</dt>
-              <dd>{detail.channel ?? "All channels"}</dd>
+              <dt>{t("customers.channel")}</dt>
+              <dd>{detail.channel ?? t("vouchers.allChannels")}</dd>
             </div>
           </dl>
-          <p className="muted">
-            Per-order redemption history is not exposed by the promotions API; usage totals are
-            shown above.
-          </p>
+          <p className="muted">{t("vouchers.historyNote")}</p>
         </Modal>
       ) : null}
     </main>
@@ -491,6 +487,7 @@ function Modal({
   busy: boolean;
   saveLabel: string;
 }) {
+  const { t } = useI18n();
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="staff-modal__scrim" role="dialog" aria-modal="true" onClick={onClose}>
@@ -499,7 +496,7 @@ function Modal({
         <div className="staff-modal__body">{children}</div>
         <div className="staff-modal__actions">
           <button className="button button--quiet" onClick={onClose} disabled={busy}>
-            Cancel
+            {t("pay.cancel")}
           </button>
           <button className="button" onClick={onSave} disabled={busy}>
             {saveLabel}

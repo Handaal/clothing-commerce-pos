@@ -11,11 +11,16 @@ import type {
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
+import { AddStaffModal } from "./AddStaffModal";
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
+import { formatDateTime } from "../format";
+import { useI18n, type TVars } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonTable } from "../shell/Skeleton";
 import { useToast } from "../shell/Toast";
 import { useModalA11y } from "../shell/useModalA11y";
+
+type T = (key: string, vars?: TVars) => string;
 
 // ── date helpers (local calendar dates, YYYY-MM-DD) ──────────────────────────
 const isoDate = (d: Date): string =>
@@ -25,12 +30,6 @@ const daysAgoISO = (n: number): string => {
   const d = new Date();
   d.setDate(d.getDate() - n);
   return isoDate(d);
-};
-const fmtDateTime = (iso: string): string => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 };
 // ISO ↔ <input type="datetime-local"> (local wall-clock, no seconds).
 const toLocalInput = (iso: string | null): string => {
@@ -45,11 +44,11 @@ const fromLocalInput = (local: string): string | null => {
   const d = new Date(local);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 };
-const fmtMinutes = (min: number | null): string => {
+const fmtMinutes = (min: number | null, t: T): string => {
   if (min == null) return "—";
   const h = Math.floor(min / 60);
   const m = min % 60;
-  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  return h > 0 ? t("staff.hoursMinutes", { h, m }) : t("staff.minutes", { m });
 };
 
 type EntryEdit = {
@@ -84,6 +83,7 @@ export function StaffAttendance({
   currency: string;
   branchId: string | null;
 }) {
+  const { t, locale } = useI18n();
   const [from, setFrom] = useState(daysAgoISO(30));
   const [to, setTo] = useState(todayISO());
   const [payroll, setPayroll] = useState<PayrollReportResponse>({
@@ -113,8 +113,14 @@ export function StaffAttendance({
   const [adjEdit, setAdjEdit] = useState<AdjEdit | null>(null);
   const [compEdit, setCompEdit] = useState<CompEdit | null>(null);
   const [settingsEdit, setSettingsEdit] = useState<SettingsEdit | null>(null);
+  const [addingStaff, setAddingStaff] = useState(false);
+  // Bumped after adding a staff member to re-run the roster load.
+  const [staffNonce, setStaffNonce] = useState(0);
 
-  const money = useCallback((minor: number) => formatMoney(minor, currency), [currency]);
+  const money = useCallback(
+    (minor: number) => formatMoney(minor, currency, locale),
+    [currency, locale],
+  );
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -152,7 +158,7 @@ export function StaffAttendance({
     return () => {
       active = false;
     };
-  }, [client]);
+  }, [client, staffNonce]);
 
   const roleByMember = useMemo(() => {
     const m = new Map<string, string>();
@@ -161,13 +167,13 @@ export function StaffAttendance({
   }, [staff]);
   const nameByMember = useMemo(() => {
     const m = new Map<string, string>();
-    for (const s of staff) m.set(s.membershipId, s.displayName ?? s.email ?? "Member");
+    for (const s of staff) m.set(s.membershipId, s.displayName ?? s.email ?? t("staff.member"));
     for (const r of payroll.items)
       if (r.memberDisplayName && !m.has(r.membershipId)) m.set(r.membershipId, r.memberDisplayName);
     return m;
-  }, [staff, payroll.items]);
+  }, [staff, payroll.items, t]);
   const displayName = (membershipId: string, fallback?: string | null): string =>
-    nameByMember.get(membershipId) ?? fallback ?? "Member";
+    nameByMember.get(membershipId) ?? fallback ?? t("staff.member");
 
   // Members currently clocked in (derived from the recent entry log).
   const openMembers = useMemo(
@@ -198,7 +204,7 @@ export function StaffAttendance({
     if (!entryEdit) return;
     const clockIn = fromLocalInput(entryEdit.clockIn);
     if (!clockIn) {
-      toast.error("A valid clock-in time is required.");
+      toast.error(t("staff.err.clockIn"));
       return;
     }
     const clockOut = entryEdit.clockOut ? fromLocalInput(entryEdit.clockOut) : null;
@@ -214,14 +220,14 @@ export function StaffAttendance({
         });
       }
       setEntryEdit(null);
-    }, "Attendance entry saved.");
+    }, t("staff.ok.entrySaved"));
   };
 
   const saveAdjustment = () => {
     if (!adjEdit) return;
     const amountMinor = parseMajorToMinor(adjEdit.amount);
     if (amountMinor === null) {
-      toast.error("Enter a valid amount.");
+      toast.error(t("staff.err.amount"));
       return;
     }
     void run(async () => {
@@ -233,7 +239,7 @@ export function StaffAttendance({
         effectiveDate: adjEdit.date || undefined,
       });
       setAdjEdit(null);
-    }, "Adjustment added.");
+    }, t("staff.ok.adjAdded"));
   };
 
   const saveCompensation = () => {
@@ -242,7 +248,7 @@ export function StaffAttendance({
     const overtime = parseMajorToMinor(compEdit.overtime);
     const normalHours = Number(compEdit.normalHours);
     if (base === null || overtime === null || !Number.isFinite(normalHours) || normalHours < 0) {
-      toast.error("Enter valid salary, overtime rate and normal hours.");
+      toast.error(t("staff.err.comp"));
       return;
     }
     void run(async () => {
@@ -254,7 +260,7 @@ export function StaffAttendance({
         currency,
       });
       setCompEdit(null);
-    }, "Compensation updated.");
+    }, t("staff.ok.compUpdated"));
   };
 
   const saveSettings = () => {
@@ -262,29 +268,29 @@ export function StaffAttendance({
     const normalHours = Number(settingsEdit.normalHours);
     const shift = Number(settingsEdit.shiftDurationHours);
     if (!Number.isFinite(normalHours) || normalHours < 0 || !Number.isFinite(shift) || shift <= 0) {
-      toast.error("Enter valid payroll settings.");
+      toast.error(t("staff.err.settings"));
       return;
     }
     void run(async () => {
       await client.updatePayrollSettings({ normalHours, shiftDurationHours: shift });
       setSettingsEdit(null);
-    }, "Payroll settings saved.");
+    }, t("staff.ok.settingsSaved"));
   };
 
   const exportCsv = () => {
     const header = [
-      "Employee",
-      "Role",
-      "Worked hours",
-      "Worked days",
-      "Normal hours",
-      "Overtime hours",
-      "Base",
-      "Overtime",
-      "Bonus",
-      "Deductions",
-      "Net pay",
-      "Currency",
+      t("staff.col.employee"),
+      t("staff.col.role"),
+      t("staff.col.workedHours"),
+      t("staff.col.workedDays"),
+      t("staff.col.normalHours"),
+      t("staff.col.overtimeHours"),
+      t("staff.col.base"),
+      t("staff.col.overtime"),
+      t("staff.col.bonus"),
+      t("staff.col.deductions"),
+      t("staff.col.netPay"),
+      t("staff.col.currency"),
     ];
     const lines = payroll.items.map((r) => [
       displayName(r.membershipId, r.memberDisplayName),
@@ -311,31 +317,31 @@ export function StaffAttendance({
     URL.revokeObjectURL(url);
   };
 
-  const sym = currencySymbol(currency);
+  const sym = currencySymbol(currency, locale);
 
   return (
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Workforce</p>
-          <h1>Attendance &amp; payroll</h1>
+          <p className="eyebrow">{t("staff.workforce")}</p>
+          <h1>{t("staff.title")}</h1>
         </div>
         <div className="staff-filters">
           <button className="button button--quiet" onClick={() => quick(0)}>
-            Today
+            {t("staff.today")}
           </button>
           <button className="button button--quiet" onClick={() => quick(7)}>
-            Week
+            {t("staff.week")}
           </button>
           <button className="button button--quiet" onClick={() => quick(30)}>
-            Month
+            {t("staff.month")}
           </button>
           <label>
-            From
+            {t("activity.from")}
             <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
           </label>
           <label>
-            To
+            {t("activity.to")}
             <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
           </label>
           <button
@@ -343,10 +349,13 @@ export function StaffAttendance({
             onClick={exportCsv}
             disabled={payroll.items.length === 0}
           >
-            Export CSV
+            {t("activity.exportCsv")}
           </button>
           <button className="button button--quiet" onClick={() => window.print()}>
-            Print
+            {t("staff.print")}
+          </button>
+          <button className="button" onClick={() => setAddingStaff(true)}>
+            {t("staff.add.add")}
           </button>
           <button
             className="button button--quiet"
@@ -357,7 +366,7 @@ export function StaffAttendance({
               })
             }
           >
-            Payroll settings
+            {t("staff.payrollSettings")}
           </button>
         </div>
       </header>
@@ -366,26 +375,26 @@ export function StaffAttendance({
         <div className="notice notice--error" role="alert">
           <span>{error}</span>
           <button className="button button--quiet" onClick={() => void reload()}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       ) : null}
 
       <div className="staff-stats">
         <div className="staff-stat">
-          <span>Total hours</span>
+          <span>{t("staff.totalHours")}</span>
           <strong>{totalHours.toFixed(1)}</strong>
         </div>
         <div className="staff-stat">
-          <span>Clocked in now</span>
+          <span>{t("staff.clockedInNow")}</span>
           <strong>{openMembers.size}</strong>
         </div>
         <div className="staff-stat">
-          <span>People</span>
+          <span>{t("customers.people")}</span>
           <strong>{payroll.items.length}</strong>
         </div>
         <div className="staff-stat staff-stat--accent">
-          <span>Net payroll</span>
+          <span>{t("staff.netPayroll")}</span>
           <strong>{money(payroll.totals.netPayMinor)}</strong>
         </div>
       </div>
@@ -393,25 +402,25 @@ export function StaffAttendance({
       {/* Payroll */}
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Payroll</h2>
+          <h2>{t("staff.payroll")}</h2>
           <span>
-            Net total: <strong>{money(payroll.totals.netPayMinor)}</strong>
+            {t("staff.netTotal")}: <strong>{money(payroll.totals.netPayMinor)}</strong>
           </span>
         </div>
         <div className="staff-table-wrap">
           <table className="staff-table">
             <thead>
               <tr>
-                <th>Employee</th>
-                <th className="end">Worked (hrs)</th>
-                <th className="end">Days</th>
-                <th className="end">Base</th>
-                <th className="end">Overtime</th>
-                <th className="end">Bonus</th>
-                <th className="end">Deductions</th>
-                <th className="end">Net pay</th>
-                <th className="end">Status</th>
-                <th className="end">Actions</th>
+                <th>{t("staff.col.employee")}</th>
+                <th className="end">{t("staff.workedHrs")}</th>
+                <th className="end">{t("staff.days")}</th>
+                <th className="end">{t("staff.col.base")}</th>
+                <th className="end">{t("staff.col.overtime")}</th>
+                <th className="end">{t("staff.col.bonus")}</th>
+                <th className="end">{t("staff.col.deductions")}</th>
+                <th className="end">{t("staff.col.netPay")}</th>
+                <th className="end">{t("orders.statusLabel")}</th>
+                <th className="end">{t("staff.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -442,9 +451,9 @@ export function StaffAttendance({
                   </td>
                   <td className="end">
                     {openMembers.has(r.membershipId) ? (
-                      <span className="pill pill--good">In</span>
+                      <span className="pill pill--good">{t("staff.in")}</span>
                     ) : (
-                      <span className="pill">Out</span>
+                      <span className="pill">{t("staff.out")}</span>
                     )}
                   </td>
                   <td className="end">
@@ -463,7 +472,7 @@ export function StaffAttendance({
                           })
                         }
                       >
-                        Adjust
+                        {t("staff.adjust")}
                       </button>
                       <button
                         className="link"
@@ -478,7 +487,7 @@ export function StaffAttendance({
                           })
                         }
                       >
-                        Pay
+                        {t("staff.pay")}
                       </button>
                     </span>
                   </td>
@@ -488,7 +497,7 @@ export function StaffAttendance({
           </table>
         </div>
         {!loading && payroll.items.length === 0 ? (
-          <p className="staff-empty">No payroll rows for this period.</p>
+          <p className="staff-empty">{t("staff.noPayroll")}</p>
         ) : null}
       </section>
 
@@ -496,18 +505,18 @@ export function StaffAttendance({
       {adjustments.length > 0 ? (
         <section className="staff-card">
           <div className="staff-card__head">
-            <h2>Adjustments</h2>
+            <h2>{t("staff.adjustments")}</h2>
           </div>
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
                 <tr>
-                  <th>Employee</th>
-                  <th>Type</th>
-                  <th>Date</th>
-                  <th>Reason</th>
-                  <th className="end">Amount</th>
-                  <th className="end">Actions</th>
+                  <th>{t("staff.col.employee")}</th>
+                  <th>{t("staff.type")}</th>
+                  <th>{t("customers.date")}</th>
+                  <th>{t("staff.reason")}</th>
+                  <th className="end">{t("orders.amount")}</th>
+                  <th className="end">{t("staff.actions")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -520,7 +529,7 @@ export function StaffAttendance({
                       <span
                         className={`pill ${a.type === "deduction" ? "pill--bad" : "pill--good"}`}
                       >
-                        {a.type}
+                        {t(`staff.adjType.${a.type}`)}
                       </span>
                     </td>
                     <td className="muted">{a.effectiveDate}</td>
@@ -534,10 +543,10 @@ export function StaffAttendance({
                         className="link bad"
                         disabled={busy}
                         onClick={() =>
-                          void run(() => client.removeAdjustment(a.id), "Adjustment removed.")
+                          void run(() => client.removeAdjustment(a.id), t("staff.ok.adjRemoved"))
                         }
                       >
-                        Remove
+                        {t("cashier.remove")}
                       </button>
                     </td>
                   </tr>
@@ -551,7 +560,7 @@ export function StaffAttendance({
       {/* Attendance log (recent, editable) */}
       <section className="staff-card">
         <div className="staff-card__head">
-          <h2>Attendance log</h2>
+          <h2>{t("staff.attendanceLog")}</h2>
           <button
             className="button"
             disabled={busy || staff.length === 0}
@@ -563,18 +572,18 @@ export function StaffAttendance({
               })
             }
           >
-            Add entry
+            {t("staff.addEntry")}
           </button>
         </div>
         <div className="staff-table-wrap">
           <table className="staff-table">
             <thead>
               <tr>
-                <th>Employee</th>
-                <th>Clock in</th>
-                <th>Clock out</th>
-                <th className="end">Hours</th>
-                <th className="end">Actions</th>
+                <th>{t("staff.col.employee")}</th>
+                <th>{t("staff.clockIn")}</th>
+                <th>{t("staff.clockOut")}</th>
+                <th className="end">{t("staff.hours")}</th>
+                <th className="end">{t("staff.actions")}</th>
               </tr>
             </thead>
             <tbody>
@@ -583,12 +592,12 @@ export function StaffAttendance({
                   <td>
                     <strong>{displayName(e.membershipId, e.memberDisplayName)}</strong>
                   </td>
-                  <td className="muted">{fmtDateTime(e.clockIn)}</td>
+                  <td className="muted">{formatDateTime(e.clockIn, locale)}</td>
                   <td className="muted">
                     {e.clockOut ? (
-                      fmtDateTime(e.clockOut)
+                      formatDateTime(e.clockOut, locale)
                     ) : (
-                      <span className="pill pill--good">Still in</span>
+                      <span className="pill pill--good">{t("staff.stillIn")}</span>
                     )}
                   </td>
                   <td className="end">
@@ -608,16 +617,19 @@ export function StaffAttendance({
                           })
                         }
                       >
-                        Edit
+                        {t("staff.edit")}
                       </button>
                       <button
                         className="link bad"
                         disabled={busy}
                         onClick={() =>
-                          void run(() => client.removeAttendanceEntry(e.id), "Entry removed.")
+                          void run(
+                            () => client.removeAttendanceEntry(e.id),
+                            t("staff.ok.entryRemoved"),
+                          )
                         }
                       >
-                        Delete
+                        {t("staff.delete")}
                       </button>
                     </span>
                   </td>
@@ -627,7 +639,7 @@ export function StaffAttendance({
           </table>
         </div>
         {!loading && entries.length === 0 ? (
-          <p className="staff-empty">No attendance entries yet.</p>
+          <p className="staff-empty">{t("staff.noEntries")}</p>
         ) : null}
       </section>
 
@@ -635,16 +647,16 @@ export function StaffAttendance({
       {leaves.length > 0 ? (
         <section className="staff-card">
           <div className="staff-card__head">
-            <h2>Leave log</h2>
+            <h2>{t("staff.leaveLog")}</h2>
           </div>
           <div className="staff-table-wrap">
             <table className="staff-table">
               <thead>
                 <tr>
-                  <th>Employee</th>
-                  <th>Left</th>
-                  <th>Returned</th>
-                  <th className="end">Duration</th>
+                  <th>{t("staff.col.employee")}</th>
+                  <th>{t("staff.left")}</th>
+                  <th>{t("staff.returned")}</th>
+                  <th className="end">{t("staff.duration")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -653,15 +665,15 @@ export function StaffAttendance({
                     <td>
                       <strong>{displayName(l.membershipId, l.memberDisplayName)}</strong>
                     </td>
-                    <td className="muted">{fmtDateTime(l.leftAt)}</td>
+                    <td className="muted">{formatDateTime(l.leftAt, locale)}</td>
                     <td className="muted">
                       {l.returnedAt ? (
-                        fmtDateTime(l.returnedAt)
+                        formatDateTime(l.returnedAt, locale)
                       ) : (
-                        <span className="pill pill--warn">Out</span>
+                        <span className="pill pill--warn">{t("staff.out")}</span>
                       )}
                     </td>
-                    <td className="end">{fmtMinutes(l.minutes)}</td>
+                    <td className="end">{fmtMinutes(l.minutes, t)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -670,21 +682,21 @@ export function StaffAttendance({
         </section>
       ) : null}
 
-      {loading ? <SkeletonTable rows={6} cols={5} label="Loading attendance" /> : null}
+      {loading ? <SkeletonTable rows={6} cols={5} label={t("staff.loading")} /> : null}
 
       {/* ── Modals ── */}
       {entryEdit ? (
         <Modal
-          title={entryEdit.id ? "Edit entry" : "Add entry"}
+          title={entryEdit.id ? t("staff.editEntry") : t("staff.addEntry")}
           onClose={() => setEntryEdit(null)}
           onSave={saveEntry}
           busy={busy}
         >
           {!entryEdit.id ? (
             <label className="field">
-              Employee
+              {t("staff.col.employee")}
               <Select
-                ariaLabel="Employee"
+                ariaLabel={t("staff.col.employee")}
                 value={entryEdit.membershipId}
                 onChange={(membershipId) => setEntryEdit({ ...entryEdit, membershipId })}
                 options={staff.map((s) => ({
@@ -695,7 +707,7 @@ export function StaffAttendance({
             </label>
           ) : null}
           <label className="field">
-            Clock in
+            {t("staff.clockIn")}
             <input
               type="datetime-local"
               value={entryEdit.clockIn}
@@ -703,7 +715,7 @@ export function StaffAttendance({
             />
           </label>
           <label className="field">
-            Clock out (blank = still in)
+            {t("staff.clockOutBlank")}
             <input
               type="datetime-local"
               value={entryEdit.clockOut}
@@ -715,25 +727,25 @@ export function StaffAttendance({
 
       {adjEdit ? (
         <Modal
-          title={`Adjustment · ${adjEdit.name}`}
+          title={t("staff.adjustmentFor", { name: adjEdit.name })}
           onClose={() => setAdjEdit(null)}
           onSave={saveAdjustment}
           busy={busy}
         >
           <label className="field">
-            Type
+            {t("staff.type")}
             <Select<"bonus" | "deduction">
-              ariaLabel="Adjustment type"
+              ariaLabel={t("staff.adjTypeLabel")}
               value={adjEdit.type}
               onChange={(type) => setAdjEdit({ ...adjEdit, type })}
               options={[
-                { value: "deduction", label: "Deduction" },
-                { value: "bonus", label: "Bonus" },
+                { value: "deduction", label: t("staff.adjType.deduction") },
+                { value: "bonus", label: t("staff.adjType.bonus") },
               ]}
             />
           </label>
           <label className="field">
-            Amount ({sym})
+            {t("staff.amountSym", { sym })}
             <input
               inputMode="decimal"
               value={adjEdit.amount}
@@ -742,7 +754,7 @@ export function StaffAttendance({
             />
           </label>
           <label className="field">
-            Date
+            {t("customers.date")}
             <input
               type="date"
               value={adjEdit.date}
@@ -750,7 +762,7 @@ export function StaffAttendance({
             />
           </label>
           <label className="field">
-            Reason
+            {t("staff.reason")}
             <input
               value={adjEdit.reason}
               onChange={(e) => setAdjEdit({ ...adjEdit, reason: e.target.value })}
@@ -761,13 +773,13 @@ export function StaffAttendance({
 
       {compEdit ? (
         <Modal
-          title={`Compensation · ${compEdit.name}`}
+          title={t("staff.compensationFor", { name: compEdit.name })}
           onClose={() => setCompEdit(null)}
           onSave={saveCompensation}
           busy={busy}
         >
           <label className="field">
-            Monthly base salary ({sym})
+            {t("staff.baseSalary", { sym })}
             <input
               inputMode="decimal"
               value={compEdit.base}
@@ -775,7 +787,7 @@ export function StaffAttendance({
             />
           </label>
           <label className="field">
-            Overtime rate per hour ({sym})
+            {t("staff.overtimeRate", { sym })}
             <input
               inputMode="decimal"
               value={compEdit.overtime}
@@ -783,7 +795,7 @@ export function StaffAttendance({
             />
           </label>
           <label className="field">
-            Normal hours (period threshold)
+            {t("staff.normalHoursThreshold")}
             <input
               inputMode="decimal"
               value={compEdit.normalHours}
@@ -795,13 +807,13 @@ export function StaffAttendance({
 
       {settingsEdit ? (
         <Modal
-          title="Payroll settings"
+          title={t("staff.payrollSettings")}
           onClose={() => setSettingsEdit(null)}
           onSave={saveSettings}
           busy={busy}
         >
           <label className="field">
-            Default normal hours
+            {t("staff.defaultNormalHours")}
             <input
               inputMode="decimal"
               value={settingsEdit.normalHours}
@@ -809,7 +821,7 @@ export function StaffAttendance({
             />
           </label>
           <label className="field">
-            Shift duration hours (one worked day)
+            {t("staff.shiftDuration")}
             <input
               inputMode="decimal"
               value={settingsEdit.shiftDurationHours}
@@ -819,6 +831,19 @@ export function StaffAttendance({
             />
           </label>
         </Modal>
+      ) : null}
+
+      {addingStaff ? (
+        <AddStaffModal
+          client={client}
+          onClose={() => setAddingStaff(false)}
+          onCreated={(name) => {
+            setAddingStaff(false);
+            toast.success(t("staff.add.created", { name }));
+            setStaffNonce((n) => n + 1);
+            void reload();
+          }}
+        />
       ) : null}
     </main>
   );
@@ -837,6 +862,7 @@ function Modal({
   onSave: () => void;
   busy: boolean;
 }) {
+  const { t } = useI18n();
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
   return (
     <div className="staff-modal__scrim" role="dialog" aria-modal="true" onClick={onClose}>
@@ -845,10 +871,10 @@ function Modal({
         <div className="staff-modal__body">{children}</div>
         <div className="staff-modal__actions">
           <button className="button button--quiet" onClick={onClose} disabled={busy}>
-            Cancel
+            {t("pay.cancel")}
           </button>
           <button className="button" onClick={onSave} disabled={busy}>
-            Save
+            {t("staff.save")}
           </button>
         </div>
       </div>

@@ -51,5 +51,8 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: "dist",
     },
+    test: {
+      setupFiles: ["./src/test-setup.ts"],
+    },
   };
 });

@@ -7,7 +7,7 @@ import {
   type ActivityEvent,
   type ActivitySeverity,
 } from "../../shared/activity";
-import { useT } from "../shell/i18n";
+import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonTable } from "../shell/Skeleton";
 
@@ -28,28 +28,28 @@ function daysAgo(days: number): string {
   return toDateInput(date);
 }
 
-function formatInstant(iso: string): string {
+function formatInstant(iso: string, locale: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString();
+  return date.toLocaleString(locale);
 }
 
-const CATEGORY_LABELS: Record<ActivityCategory, string> = {
-  interaction: "Interaction",
-  navigation: "Navigation",
-  session: "Session",
-  sale: "Sale",
-  return: "Return",
-  inventory: "Inventory",
-  supplier: "Supplier",
-  offline: "Offline",
-  system: "System",
+const CATEGORY_LABEL_KEYS: Record<ActivityCategory, string> = {
+  interaction: "activity.cat.interaction",
+  navigation: "activity.cat.navigation",
+  session: "activity.cat.session",
+  sale: "activity.cat.sale",
+  return: "activity.cat.return",
+  inventory: "activity.cat.inventory",
+  supplier: "activity.cat.supplier",
+  offline: "activity.cat.offline",
+  system: "activity.cat.system",
 };
 
-const SEVERITY_LABELS: Record<ActivitySeverity, string> = {
-  info: "Info",
-  warning: "Warning",
-  alert: "Alert",
+const SEVERITY_LABEL_KEYS: Record<ActivitySeverity, string> = {
+  info: "activity.sev.info",
+  warning: "activity.sev.warning",
+  alert: "activity.sev.alert",
 };
 
 const SEVERITY_PILL: Record<ActivitySeverity, string> = {
@@ -71,7 +71,7 @@ export function ActivityDesk({
 }: {
   bridge?: ActivityBridge;
 }) {
-  const t = useT();
+  const { t, locale } = useI18n();
   const [events, setEvents] = useState<readonly ActivityEvent[]>([]);
   const [from, setFrom] = useState(daysAgo(7));
   const [to, setTo] = useState(toDateInput(new Date()));
@@ -88,7 +88,7 @@ export function ActivityDesk({
 
   const load = useCallback(async () => {
     if (!bridge) {
-      setError("Activity log is unavailable on this device.");
+      setError(t("activity.unavailable"));
       setLoading(false);
       return;
     }
@@ -104,11 +104,11 @@ export function ActivityDesk({
       });
       setEvents(result.items);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Could not load the activity log.");
+      setError(caught instanceof Error ? caught.message : t("activity.loadFailed"));
     } finally {
       setLoading(false);
     }
-  }, [bridge, from, to, severity, category, search]);
+  }, [bridge, from, to, severity, category, search, t]);
 
   // Reload whenever a structured filter changes. Free-text search is applied explicitly (button/Enter)
   // so it does not fire on every keystroke.
@@ -120,15 +120,23 @@ export function ActivityDesk({
 
   const exportCsv = () => {
     if (events.length === 0) return;
-    const header = ["When", "User", "Section", "Category", "Action", "Description", "Severity"];
+    const header = [
+      t("activity.col.when"),
+      t("activity.col.user"),
+      t("activity.col.section"),
+      t("activity.col.category"),
+      t("activity.col.action"),
+      t("activity.col.description"),
+      t("activity.col.severity"),
+    ];
     const rows = events.map((event) => [
-      formatInstant(event.occurredAt),
+      formatInstant(event.occurredAt, locale),
       event.actorName ?? "—",
       sectionLabel(event.section),
-      CATEGORY_LABELS[event.category] ?? event.category,
+      t(CATEGORY_LABEL_KEYS[event.category]) ?? event.category,
       event.action,
       event.description,
-      SEVERITY_LABELS[event.severity] ?? event.severity,
+      t(SEVERITY_LABEL_KEYS[event.severity]) ?? event.severity,
     ]);
     const csv = [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
     const blob = new Blob([`${UTF8_BOM}${csv}`], { type: "text/csv;charset=utf-8;" });
@@ -150,12 +158,12 @@ export function ActivityDesk({
     <main className="staff-shell">
       <header className="staff-topbar">
         <div>
-          <p className="eyebrow">Audit</p>
+          <p className="eyebrow">{t("activity.audit")}</p>
           <h1>{t("nav.activity")}</h1>
         </div>
         <div className="staff-filters">
           <label>
-            From
+            {t("activity.from")}
             <input
               type="date"
               value={from}
@@ -164,7 +172,7 @@ export function ActivityDesk({
             />
           </label>
           <label>
-            To
+            {t("activity.to")}
             <input
               type="date"
               value={to}
@@ -173,36 +181,39 @@ export function ActivityDesk({
             />
           </label>
           <label>
-            Severity
+            {t("activity.col.severity")}
             <Select<"" | ActivitySeverity>
-              ariaLabel="Severity"
+              ariaLabel={t("activity.col.severity")}
               value={severity}
               onChange={setSeverity}
               options={[
-                { value: "", label: "All" },
-                { value: "info", label: "Info" },
-                { value: "warning", label: "Warning" },
-                { value: "alert", label: "Alert" },
+                { value: "", label: t("activity.all") },
+                { value: "info", label: t("activity.sev.info") },
+                { value: "warning", label: t("activity.sev.warning") },
+                { value: "alert", label: t("activity.sev.alert") },
               ]}
             />
           </label>
           <label>
-            Category
+            {t("activity.col.category")}
             <Select<"" | ActivityCategory>
-              ariaLabel="Category"
+              ariaLabel={t("activity.col.category")}
               value={category}
               onChange={setCategory}
               options={[
-                { value: "", label: "All" },
-                ...ACTIVITY_CATEGORIES.map((value) => ({ value, label: CATEGORY_LABELS[value] })),
+                { value: "", label: t("activity.all") },
+                ...ACTIVITY_CATEGORIES.map((value) => ({
+                  value,
+                  label: t(CATEGORY_LABEL_KEYS[value]),
+                })),
               ]}
             />
           </label>
           <label>
-            Search
+            {t("activity.search")}
             <input
               value={search}
-              placeholder="Description, user, action…"
+              placeholder={t("activity.searchPlaceholder")}
               onChange={(event) => setSearch(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void load();
@@ -210,14 +221,14 @@ export function ActivityDesk({
             />
           </label>
           <button className="button button--quiet" onClick={() => void load()} disabled={loading}>
-            Apply
+            {t("activity.apply")}
           </button>
           <button
             className="button button--quiet"
             onClick={exportCsv}
             disabled={events.length === 0}
           >
-            Export CSV
+            {t("activity.exportCsv")}
           </button>
         </div>
       </header>
@@ -226,22 +237,22 @@ export function ActivityDesk({
         <div className="notice notice--error" role="alert">
           <span>{error}</span>
           <button className="button button--quiet" onClick={() => void load()}>
-            Retry
+            {t("common.retry")}
           </button>
         </div>
       ) : null}
 
       <div className="staff-stats">
         <div className="staff-stat">
-          <span>Events</span>
+          <span>{t("activity.events")}</span>
           <strong>{summary.total}</strong>
         </div>
         <div className="staff-stat">
-          <span>Warnings</span>
+          <span>{t("activity.warnings")}</span>
           <strong>{summary.warnings}</strong>
         </div>
         <div className="staff-stat staff-stat--accent">
-          <span>Alerts</span>
+          <span>{t("activity.alerts")}</span>
           <strong>{summary.alerts}</strong>
         </div>
       </div>
@@ -249,35 +260,35 @@ export function ActivityDesk({
       <section className="staff-card">
         <div className="staff-card__head">
           <h2>
-            Activity · {from} → {to}
+            {t("nav.activity")} · {from} → {to}
           </h2>
         </div>
         <div className="staff-table-wrap">
           <table className="staff-table">
             <thead>
               <tr>
-                <th>When</th>
-                <th>User</th>
-                <th>Section</th>
-                <th>Action</th>
-                <th>Description</th>
-                <th className="end">Severity</th>
+                <th>{t("activity.col.when")}</th>
+                <th>{t("activity.col.user")}</th>
+                <th>{t("activity.col.section")}</th>
+                <th>{t("activity.col.action")}</th>
+                <th>{t("activity.col.description")}</th>
+                <th className="end">{t("activity.col.severity")}</th>
               </tr>
             </thead>
             <tbody>
               {events.map((event) => (
                 <tr key={event.eventId}>
-                  <td className="muted">{formatInstant(event.occurredAt)}</td>
+                  <td className="muted">{formatInstant(event.occurredAt, locale)}</td>
                   <td>{event.actorName ?? "—"}</td>
                   <td className="muted">{sectionLabel(event.section)}</td>
                   <td>
-                    <strong>{CATEGORY_LABELS[event.category] ?? event.category}</strong>
+                    <strong>{t(CATEGORY_LABEL_KEYS[event.category]) ?? event.category}</strong>
                     <small>{event.action}</small>
                   </td>
                   <td>{event.description}</td>
                   <td className="end">
                     <span className={SEVERITY_PILL[event.severity] ?? "pill"}>
-                      {SEVERITY_LABELS[event.severity] ?? event.severity}
+                      {t(SEVERITY_LABEL_KEYS[event.severity]) ?? event.severity}
                     </span>
                   </td>
                 </tr>
@@ -285,9 +296,9 @@ export function ActivityDesk({
             </tbody>
           </table>
         </div>
-        {loading ? <SkeletonTable rows={6} cols={4} label="Loading activity" /> : null}
+        {loading ? <SkeletonTable rows={6} cols={4} label={t("activity.loading")} /> : null}
         {!loading && events.length === 0 ? (
-          <p className="staff-empty">No activity recorded for this range.</p>
+          <p className="staff-empty">{t("activity.noneRange")}</p>
         ) : null}
       </section>
     </main>
