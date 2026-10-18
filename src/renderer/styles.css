@@ -292,6 +292,12 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }
+/* Checkboxes and radios take the active colour of the chosen palette/theme (not the browser's
+   default blue), so a ticked box reads as the same brand accent as primary buttons and active tabs. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--primary);
+}
 
 /* ---------- Interaction polish (shared) ---------- */
 .button,
