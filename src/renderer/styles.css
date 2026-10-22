@@ -688,6 +688,94 @@ h3 {
   padding: 3rem;
   background: var(--bg);
 }
+.pin-login {
+  display: flex;
+  width: min(22rem, 100%);
+  flex-direction: column;
+  gap: 1rem;
+}
+.pin-login__back {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font: inherit;
+}
+.pin-login__back:hover {
+  color: var(--text);
+}
+.pin-login__title {
+  margin: 0;
+  font-size: 1.6rem;
+}
+.pin-login__hint {
+  margin: 0;
+  color: var(--text-faint);
+}
+.pin-login__input {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 1.1rem;
+}
+.pin-login__input:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--ring);
+}
+.pin-login__display {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 3.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 2rem;
+  letter-spacing: 0.4em;
+  /* trailing letter-spacing pushes the glyph cluster off-centre; nudge it back */
+  text-indent: 0.4em;
+}
+.pin-login__display--error {
+  border-color: var(--bad);
+}
+.pin-login__placeholder {
+  color: var(--text-faint);
+  font-size: 1rem;
+  letter-spacing: normal;
+  text-indent: 0;
+}
+.pin-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.6rem;
+}
+.pin-key {
+  padding: 1rem 0;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 1.5rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.08s var(--ease), background 0.15s var(--ease);
+}
+.pin-key:hover {
+  background: var(--surface-raised);
+}
+.pin-key:active {
+  transform: scale(0.96);
+}
+.pin-key:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
 .state-shell,
 .receipt-shell {
   display: grid;

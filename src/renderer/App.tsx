@@ -1,4 +1,4 @@
-import { SignIn, useAuth, useClerk, useUser } from "@clerk/react";
+import { useAuth, useClerk, useUser } from "@clerk/react";
 import type {
   CommerceClient,
   CreatePosSaleResponse,
@@ -57,6 +57,7 @@ import { ReportsDesk } from "./reports/ReportsDesk";
 import { SettingsDesk } from "./settings/SettingsDesk";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
+import { StaffPinSignIn } from "./auth/StaffPinSignIn";
 import { AppShell } from "./shell/AppShell";
 import { useI18n } from "./shell/i18n";
 import { PlaceholderSection } from "./shell/PlaceholderSection";
@@ -109,7 +110,7 @@ export function App() {
         getToken: async () => (await getToken()) ?? null,
         signOut: () => clerk.signOut(),
       }}
-      signedOutContent={<SignIn routing="hash" />}
+      signedOutContent={<StaffPinSignIn />}
     />
   );
 }
