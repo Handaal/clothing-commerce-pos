@@ -107,7 +107,9 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
   // Id-based category data for the edit modal: the full collection list to choose from, and each
   // product's current collection ids so the save only rewrites membership that actually changed.
   const [categoryList, setCategoryList] = useState<{ id: string; name: string }[]>([]);
-  const [categoryIdsByProduct, setCategoryIdsByProduct] = useState<Map<string, string[]>>(new Map());
+  const [categoryIdsByProduct, setCategoryIdsByProduct] = useState<Map<string, string[]>>(
+    new Map(),
+  );
   const [brandFilter, setBrandFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
   // Which row's action menu is open (one at a time), keyed by variantId, plus the fixed-position anchor
@@ -726,8 +728,9 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                                   sku: row.sku,
                                   sourceInventoryLocationId: row.inventoryLocationId,
                                   destinationInventoryLocationId:
-                                    transferTargets.find((loc) => loc.id !== row.inventoryLocationId)
-                                      ?.id ?? "",
+                                    transferTargets.find(
+                                      (loc) => loc.id !== row.inventoryLocationId,
+                                    )?.id ?? "",
                                   quantity: "",
                                   note: "",
                                 });

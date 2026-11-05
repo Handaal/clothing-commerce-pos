@@ -205,7 +205,10 @@ export function LocalLogin({
               setError(false);
               if (key === "C") setPin("");
               else if (key === "⌫") setPin((current) => current.slice(0, -1));
-              else setPin((current) => (current.length < POS_PIN_MAX_LENGTH ? current + key : current));
+              else
+                setPin((current) =>
+                  current.length < POS_PIN_MAX_LENGTH ? current + key : current,
+                );
             }}
           >
             {key}

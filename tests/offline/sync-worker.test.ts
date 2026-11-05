@@ -79,7 +79,10 @@ describe("offline synchronization worker", () => {
       expect(request.signature.credentialId).toBe(item.credentialId);
       return ingestionResponse(accepted.localSaleId);
     });
-    const worker = new OfflineSyncWorker(harness.outbox, { deliver, deliverPayment: unexpectedPayment });
+    const worker = new OfflineSyncWorker(harness.outbox, {
+      deliver,
+      deliverPayment: unexpectedPayment,
+    });
     await worker.runOnce();
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(harness.outbox.getStatusCounts()).toMatchObject({ pending: 0, synced: 1 });
@@ -106,7 +109,10 @@ describe("offline synchronization worker", () => {
     acceptOne(transient);
     const transientWorker = new OfflineSyncWorker(
       transient.outbox,
-      { deliver: async () => Promise.reject(new ApiNetworkError("offline")), deliverPayment: unexpectedPayment },
+      {
+        deliver: async () => Promise.reject(new ApiNetworkError("offline")),
+        deliverPayment: unexpectedPayment,
+      },
       { now: () => current },
     );
     await transientWorker.runOnce();
@@ -201,7 +207,11 @@ describe("offline synchronization worker", () => {
     const deliver = vi.fn<OfflineDeliveryClient["deliver"]>(async () =>
       ingestionResponse(accepted.localSaleId),
     );
-    const restarted = new OfflineSyncWorker(harness.outbox, { deliver, deliverPayment: unexpectedPayment }, { now: () => current });
+    const restarted = new OfflineSyncWorker(
+      harness.outbox,
+      { deliver, deliverPayment: unexpectedPayment },
+      { now: () => current },
+    );
     await restarted.runOnce();
     expect(deliver).not.toHaveBeenCalled();
     expect(harness.outbox.getStatusCounts()).toMatchObject({ leased: 1, synced: 0 });

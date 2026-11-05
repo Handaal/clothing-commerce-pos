@@ -91,7 +91,9 @@ describe("PosUsersManager offline-PIN provisioning", () => {
   });
 
   it("provisions the offline PIN when a new PIN is set on edit", async () => {
-    const client = makeClient({ listPosLogins: vi.fn().mockResolvedValue({ items: [EXISTING_USER] }) });
+    const client = makeClient({
+      listPosLogins: vi.fn().mockResolvedValue({ items: [EXISTING_USER] }),
+    });
     const { container } = renderManager(client);
 
     // Row renders an Edit button first; open it, type a new PIN, save.
@@ -108,7 +110,9 @@ describe("PosUsersManager offline-PIN provisioning", () => {
   });
 
   it("does not touch the offline PIN when editing without changing the PIN", async () => {
-    const client = makeClient({ listPosLogins: vi.fn().mockResolvedValue({ items: [EXISTING_USER] }) });
+    const client = makeClient({
+      listPosLogins: vi.fn().mockResolvedValue({ items: [EXISTING_USER] }),
+    });
     const { container } = renderManager(client);
 
     await waitFor(() => expect(container.querySelector(".staff-table button")).not.toBeNull());
@@ -124,7 +128,9 @@ describe("PosUsersManager offline-PIN provisioning", () => {
     const client = makeClient({
       setStaffOfflinePin: vi
         .fn()
-        .mockRejectedValue(new ApiHttpError("offline pin unavailable", 503, "SERVICE_UNAVAILABLE", null)),
+        .mockRejectedValue(
+          new ApiHttpError("offline pin unavailable", 503, "SERVICE_UNAVAILABLE", null),
+        ),
     });
     const { container } = renderManager(client);
 

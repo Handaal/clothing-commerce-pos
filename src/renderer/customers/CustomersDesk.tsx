@@ -305,7 +305,11 @@ function CustomerDetail({
           </p>
         </div>
         {owes ? (
-          <button type="button" className="button button--complete" onClick={() => setPayOpen(true)}>
+          <button
+            type="button"
+            className="button button--complete"
+            onClick={() => setPayOpen(true)}
+          >
             {t("customers.recordPayment")}
           </button>
         ) : null}
@@ -327,9 +331,7 @@ function CustomerDetail({
           </div>
         ) : (
           <div className="voucher-stat">
-            <strong>
-              {customer.lastOrderAt ? formatDate(customer.lastOrderAt, locale) : "—"}
-            </strong>
+            <strong>{customer.lastOrderAt ? formatDate(customer.lastOrderAt, locale) : "—"}</strong>
             <span>{t("customers.lastOrder")}</span>
           </div>
         )}
@@ -486,7 +488,12 @@ function RecordPaymentModal({
   };
 
   return (
-    <div className="modal-overlay" role="dialog" aria-modal="true" aria-label={t("customers.recordPayment")}>
+    <div
+      className="modal-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("customers.recordPayment")}
+    >
       <div className="modal-card">
         <p className="eyebrow">{t("customers.recordPayment")}</p>
         <h2>{customerName}</h2>

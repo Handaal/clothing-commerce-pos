@@ -71,7 +71,9 @@ export class PosSessionStore {
     this.loaded = true;
     if (!this.secureStorage.isEncryptionAvailable() || !existsSync(this.filePath)) return;
     try {
-      const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as Partial<ProtectedSessionFile>;
+      const parsed = JSON.parse(
+        readFileSync(this.filePath, "utf8"),
+      ) as Partial<ProtectedSessionFile>;
       if (parsed.version !== 1 || typeof parsed.encryptedSessionBase64 !== "string") return;
       const decrypted = this.secureStorage.decryptString(
         Buffer.from(parsed.encryptedSessionBase64, "base64"),

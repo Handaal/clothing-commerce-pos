@@ -144,8 +144,7 @@ export function PayModal({
     let active = true;
     setLookingUp(true);
     const handle = window.setTimeout(() => {
-      void lookupCustomerRef
-        .current!(normalizePhone(customerPhone))
+      void lookupCustomerRef.current!(normalizePhone(customerPhone))
         .then((match) => {
           if (!active) return;
           setMatchedName(match?.name ?? null);
@@ -171,8 +170,7 @@ export function PayModal({
     }
     let active = true;
     const handle = window.setTimeout(() => {
-      void searchCustomersRef
-        .current!(term)
+      void searchCustomersRef.current!(term)
         .then((matches) => active && setSuggestions(matches.slice(0, 6)))
         .catch(() => active && setSuggestions([]));
     }, 300);

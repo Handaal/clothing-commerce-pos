@@ -48,7 +48,11 @@ function newKey(): string {
 // the first role that grants any POS permission (else the first assignable role), scoped tenant-wide where
 // a tenant-mode scope exists (else the first scope). The POS role + section grants shape the sidebar.
 function pickRole(roles: readonly AssignableStaffRole[]): AssignableStaffRole | null {
-  return roles.find((role) => role.permissionKeys.some((key) => key.startsWith("pos."))) ?? roles[0] ?? null;
+  return (
+    roles.find((role) => role.permissionKeys.some((key) => key.startsWith("pos."))) ??
+    roles[0] ??
+    null
+  );
 }
 
 function pickScope(scopes: readonly AssignableStaffScope[]): AssignableStaffScope | null {
@@ -120,7 +124,8 @@ export function PosUsersManager({
   const mapError = useCallback(
     (caught: unknown): string => {
       if (caught instanceof ApiHttpError) {
-        if (caught.code === "USERNAME_TAKEN" || caught.status === 409) return t("login.usernameTaken");
+        if (caught.code === "USERNAME_TAKEN" || caught.status === 409)
+          return t("login.usernameTaken");
         if (caught.status === 400) return t("posUsers.invalidPin");
         if (caught.status === 403) return t("posUsers.lastAdmin");
       }

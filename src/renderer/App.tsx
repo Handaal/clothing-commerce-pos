@@ -1330,56 +1330,56 @@ export function PosApplication({
             ) : (
               <div className="cart-lines">
                 {cart.map((line) => (
-                <div className="cart-line" key={line.variantId}>
-                  <div className="cart-line__description">
-                    <strong>{line.label}</strong>
-                    <span>{t("cashier.sku", { sku: line.sku })}</span>
-                    <span>
-                      {t("cashier.each", {
-                        price: formatMoney(
-                          line.displayedUnitPriceMinor,
-                          register.sellingCurrency,
-                          locale,
-                        ),
-                      })}
-                    </span>
-                  </div>
-                  <label>
-                    {t("cashier.qty")}
-                    <input
-                      aria-label={t("cashier.qtyFor", { label: line.label })}
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={line.quantity}
+                  <div className="cart-line" key={line.variantId}>
+                    <div className="cart-line__description">
+                      <strong>{line.label}</strong>
+                      <span>{t("cashier.sku", { sku: line.sku })}</span>
+                      <span>
+                        {t("cashier.each", {
+                          price: formatMoney(
+                            line.displayedUnitPriceMinor,
+                            register.sellingCurrency,
+                            locale,
+                          ),
+                        })}
+                      </span>
+                    </div>
+                    <label>
+                      {t("cashier.qty")}
+                      <input
+                        aria-label={t("cashier.qtyFor", { label: line.label })}
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={line.quantity}
+                        disabled={submitting}
+                        // Prevent the scroll wheel from silently changing the quantity while the
+                        // cashier scrolls the page.
+                        onWheel={(event) => event.currentTarget.blur()}
+                        onChange={(event) =>
+                          changeCart((current) =>
+                            updateQuantity(current, line.variantId, Number(event.target.value)),
+                          )
+                        }
+                      />
+                    </label>
+                    <strong>
+                      {formatMoney(
+                        line.quantity * line.displayedUnitPriceMinor,
+                        register.sellingCurrency,
+                        locale,
+                      )}
+                    </strong>
+                    <button
+                      className="remove-button"
+                      aria-label={t("pos.removeLine", { label: line.label })}
                       disabled={submitting}
-                      // Prevent the scroll wheel from silently changing the quantity while the
-                      // cashier scrolls the page.
-                      onWheel={(event) => event.currentTarget.blur()}
-                      onChange={(event) =>
-                        changeCart((current) =>
-                          updateQuantity(current, line.variantId, Number(event.target.value)),
-                        )
-                      }
-                    />
-                  </label>
-                  <strong>
-                    {formatMoney(
-                      line.quantity * line.displayedUnitPriceMinor,
-                      register.sellingCurrency,
-                      locale,
-                    )}
-                  </strong>
-                  <button
-                    className="remove-button"
-                    aria-label={t("pos.removeLine", { label: line.label })}
-                    disabled={submitting}
-                    onClick={() => changeCart((current) => removeLine(current, line.variantId))}
-                  >
-                    {t("cashier.remove")}
-                  </button>
-                </div>
-              ))}
+                      onClick={() => changeCart((current) => removeLine(current, line.variantId))}
+                    >
+                      {t("cashier.remove")}
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
           </div>
