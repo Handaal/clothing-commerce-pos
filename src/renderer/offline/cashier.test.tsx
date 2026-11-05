@@ -4,7 +4,12 @@ import { cleanup, fireEvent, render as rtlRender, screen, waitFor } from "@testi
 import type { ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { LocalReceipt, OfflineBridge, OfflineSyncStatus } from "../../shared/offline";
+import type {
+  LocalReceipt,
+  OfflineBridge,
+  OfflineReadiness,
+  OfflineSyncStatus,
+} from "../../shared/offline";
 import { I18nProvider } from "../shell/i18n";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./cashier";
 
@@ -28,6 +33,20 @@ const status: OfflineSyncStatus = {
   lastError: null,
 };
 
+// A ready grant with far-future windows so the runway note renders without being "low" in tests.
+const readiness: Extract<OfflineReadiness, { ready: true }> = {
+  ready: true,
+  deviceId: "device-1",
+  registerId: "register-1",
+  inventoryLocationId: "location-1",
+  currency: "USD",
+  acceptedUntil: "2099-01-01T00:00:00.000Z",
+  catalogValidUntil: "2099-01-01T00:00:00.000Z",
+  offlineLoginAvailable: true,
+  offlineInstallmentsAvailable: false,
+  offlineCreditRemainingMinor: 0,
+};
+
 const receipt: LocalReceipt = {
   localSaleId: "local-sale-1",
   localReceiptId: "A123-000001",
@@ -38,6 +57,10 @@ const receipt: LocalReceipt = {
   totalMinor: 2_599,
   cashReceivedMinor: 3_000,
   changeMinor: 401,
+  customerId: null,
+  customerName: null,
+  amountPaidMinor: 2_599,
+  outstandingMinor: 0,
   lines: [
     {
       lineNumber: 1,
@@ -58,6 +81,8 @@ function bridge(): OfflineBridge {
     getReadiness: vi.fn(),
     getCachedCatalog: vi.fn(),
     getProjectedInventory: vi.fn(),
+    getOfflineCustomers: vi.fn(async () => []),
+    recordCustomerPayment: vi.fn(),
     acceptCashSale: vi.fn(async () => ({
       lifecycle: "accepted_pending_sync" as const,
       localSaleId: receipt.localSaleId,
@@ -68,6 +93,8 @@ function bridge(): OfflineBridge {
       totalMinor: receipt.totalMinor,
       cashReceivedMinor: receipt.cashReceivedMinor,
       changeMinor: receipt.changeMinor,
+      amountPaidMinor: receipt.totalMinor,
+      outstandingMinor: 0,
     })),
     getLocalReceipt: vi.fn(async () => receipt),
     getUnacknowledgedSales: vi.fn(async () => []),
@@ -79,6 +106,7 @@ function bridge(): OfflineBridge {
     getSyncStatus: vi.fn(),
     requestSync: vi.fn(async () => status),
     bootstrap: vi.fn(),
+    verifyStaffPin: vi.fn(async () => ({ ok: false as const, reason: "UNAVAILABLE" as const })),
   };
 }
 
@@ -88,12 +116,14 @@ describe("offline cashier", () => {
     render(
       <OfflineCashier
         bridge={offline}
-        currency="USD"
+        readiness={readiness}
         catalog={[
           {
             productId: "product-1",
             productName: "Foundation Tee",
             brandId: "brand-1",
+            brandName: "Foundation",
+            categories: ["Tees"],
             variantId: "variant-1",
             sku: "TEE-BLK-M",
             optionSummary: "Black / M",
@@ -143,7 +173,7 @@ describe("offline cashier", () => {
     render(
       <OfflineCashier
         bridge={offline}
-        currency="USD"
+        readiness={readiness}
         catalog={[]}
         inventory={[]}
         syncStatus={status}

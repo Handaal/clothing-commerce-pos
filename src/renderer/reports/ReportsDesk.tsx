@@ -20,6 +20,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
 import { BUSINESS_CURRENCY, formatMoney } from "../money";
+import { DateRangeFilter } from "../shell/DateRangeFilter";
 import { useI18n, type TVars } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonLines } from "../shell/Skeleton";
@@ -302,24 +303,12 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
           <h1>{t("nav.reports")}</h1>
         </div>
         <div className="staff-filters">
-          <label>
-            {t("activity.from")}
-            <input
-              type="date"
-              value={startDate}
-              max={endDate}
-              onChange={(event) => setStartDate(event.target.value)}
-            />
-          </label>
-          <label>
-            {t("activity.to")}
-            <input
-              type="date"
-              value={endDate}
-              min={startDate}
-              onChange={(event) => setEndDate(event.target.value)}
-            />
-          </label>
+          <DateRangeFilter
+            from={startDate}
+            to={endDate}
+            onFromChange={setStartDate}
+            onToChange={setEndDate}
+          />
           {exportDataset ? (
             <button
               className="button button--quiet"

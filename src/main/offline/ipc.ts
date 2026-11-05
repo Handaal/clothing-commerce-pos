@@ -3,7 +3,9 @@ import { ipcMain, type IpcMainInvokeEvent } from "electron";
 import {
   OFFLINE_IPC_CHANNELS,
   type OfflineBootstrapInput,
+  type OfflineCustomerPaymentInput,
   type OfflineSaleInput,
+  type OfflineStaffPinInput,
   type OfflineTender,
 } from "../../shared/offline";
 import { isAllowedRendererNavigation } from "../renderer-origin";
@@ -63,11 +65,29 @@ export function parseOfflineSaleInput(value: unknown): OfflineSaleInput {
   const tenders = hasTenders
     ? (input.tenders as unknown[]).slice(0, 4).map(parseOfflineTender)
     : undefined;
+  if (
+    input.customerId !== undefined &&
+    (typeof input.customerId !== "string" ||
+      input.customerId.trim().length === 0 ||
+      input.customerId.length > 200)
+  ) {
+    throw new TypeError("Offline customer id is invalid.");
+  }
+  if (
+    input.amountPaidMinor !== undefined &&
+    (!Number.isSafeInteger(input.amountPaidMinor) || Number(input.amountPaidMinor) < 0)
+  ) {
+    throw new TypeError("Offline amount paid is invalid.");
+  }
   return {
     cashReceivedMinor: Number.isSafeInteger(input.cashReceivedMinor)
       ? Number(input.cashReceivedMinor)
       : 0,
     ...(tenders ? { tenders } : {}),
+    ...(input.customerId !== undefined ? { customerId: input.customerId as string } : {}),
+    ...(input.amountPaidMinor !== undefined
+      ? { amountPaidMinor: Number(input.amountPaidMinor) }
+      : {}),
     lines: input.lines.map((raw) => {
       if (!raw || typeof raw !== "object") throw new TypeError("Offline sale line is invalid.");
       const line = raw as Record<string, unknown>;
@@ -82,6 +102,20 @@ export function parseOfflineSaleInput(value: unknown): OfflineSaleInput {
   };
 }
 
+export function parseOfflineCustomerPaymentInput(value: unknown): OfflineCustomerPaymentInput {
+  if (!value || typeof value !== "object") {
+    throw new TypeError("Offline payment input is invalid.");
+  }
+  const input = value as Record<string, unknown>;
+  if (!Number.isSafeInteger(input.amountMinor) || Number(input.amountMinor) <= 0) {
+    throw new TypeError("Offline payment amount is invalid.");
+  }
+  return {
+    customerId: requireString(input.customerId, "customerId"),
+    amountMinor: Number(input.amountMinor),
+  };
+}
+
 export function parseOfflineBootstrapInput(value: unknown): OfflineBootstrapInput {
   if (!value || typeof value !== "object")
     throw new TypeError("Offline bootstrap input is invalid.");
@@ -91,6 +125,20 @@ export function parseOfflineBootstrapInput(value: unknown): OfflineBootstrapInpu
     registerId: requireString(input.registerId, "registerId"),
     displayName: requireString(input.displayName, "displayName"),
     accessToken: requireString(input.accessToken, "accessToken", 16_384),
+  };
+}
+
+export function parseOfflineStaffPinInput(value: unknown): OfflineStaffPinInput {
+  if (!value || typeof value !== "object") {
+    throw new TypeError("Offline staff PIN input is invalid.");
+  }
+  const input = value as Record<string, unknown>;
+  if (typeof input.pin !== "string" || input.pin.length === 0 || input.pin.length > 64) {
+    throw new TypeError("PIN is invalid.");
+  }
+  return {
+    username: requireString(input.username, "username"),
+    pin: input.pin,
   };
 }
 
@@ -107,6 +155,10 @@ export function registerOfflineIpc(runtime: OfflineRuntime, rendererUrl: string)
   handle(OFFLINE_IPC_CHANNELS.readiness, () => runtime.getReadiness());
   handle(OFFLINE_IPC_CHANNELS.catalog, () => runtime.getCachedCatalog());
   handle(OFFLINE_IPC_CHANNELS.inventory, () => runtime.getProjectedInventory());
+  handle(OFFLINE_IPC_CHANNELS.customers, () => runtime.getOfflineCustomers());
+  handle(OFFLINE_IPC_CHANNELS.recordPayment, (_event, input: unknown) =>
+    runtime.recordCustomerPayment(parseOfflineCustomerPaymentInput(input)),
+  );
   handle(OFFLINE_IPC_CHANNELS.acceptCash, (_event, input: unknown) =>
     runtime.acceptCashSale(parseOfflineSaleInput(input)),
   );
@@ -122,5 +174,8 @@ export function registerOfflineIpc(runtime: OfflineRuntime, rendererUrl: string)
   handle(OFFLINE_IPC_CHANNELS.requestSync, () => runtime.requestSync());
   handle(OFFLINE_IPC_CHANNELS.bootstrap, (_event, input: unknown) =>
     runtime.bootstrap(parseOfflineBootstrapInput(input)),
+  );
+  handle(OFFLINE_IPC_CHANNELS.verifyPin, (_event, input: unknown) =>
+    runtime.verifyStaffPin(parseOfflineStaffPinInput(input)),
   );
 }

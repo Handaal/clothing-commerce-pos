@@ -10,6 +10,16 @@ const FOCUSABLE =
 export function useModalA11y<T extends HTMLElement>(onClose: () => void) {
   const ref = useRef<T>(null);
 
+  // Keep the latest onClose in a ref so the setup effect can run exactly once (on open) without
+  // listing onClose as a dependency. Callers overwhelmingly pass an inline arrow, whose identity
+  // changes on every parent render; if the effect depended on it, every unrelated re-render (e.g.
+  // the 2s offline poll in App) would tear down and re-run this effect, pulling focus back to the
+  // dialog's first focusable element mid-typing and making fields appear to "go dead".
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
@@ -26,7 +36,7 @@ export function useModalA11y<T extends HTMLElement>(onClose: () => void) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -52,7 +62,9 @@ export function useModalA11y<T extends HTMLElement>(onClose: () => void) {
       node.removeEventListener("keydown", onKeyDown);
       previouslyFocused?.focus?.();
     };
-  }, [onClose]);
+    // Run once per open: the dialog ref is stable for the dialog's lifetime and onClose is read via
+    // onCloseRef, so re-running on every render (and stealing focus) is both unnecessary and harmful.
+  }, []);
 
   return ref;
 }

@@ -15,6 +15,7 @@ import { Fragment, useCallback, useEffect, useMemo, useState, type ReactNode } f
 import { logActivity } from "../activity/log";
 import { classifyCommerceError } from "../commerce/errors";
 import { formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
+import { DatePicker } from "../shell/DatePicker";
 import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonLines } from "../shell/Skeleton";
@@ -1009,12 +1010,10 @@ export function SuppliersDesk({ client }: { client: TenantCommerceClient }) {
           <div className="suppliers-field-row">
             <label className="field">
               {t("suppliers.dueDate")}
-              <input
-                type="date"
+              <DatePicker
                 value={reminderDraft.dueDate}
-                onChange={(event) =>
-                  setReminderDraft({ ...reminderDraft, dueDate: event.target.value })
-                }
+                ariaLabel={t("suppliers.dueDate")}
+                onChange={(dueDate) => setReminderDraft({ ...reminderDraft, dueDate })}
               />
             </label>
             <label className="field">

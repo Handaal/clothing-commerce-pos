@@ -21,6 +21,7 @@ describe("offline grant authority boundary", () => {
         "catalogGrantSeconds",
         "enabled",
         "maxCumulativeExposureMinor",
+        "maxOfflineCreditExposureMinor",
         "maxPendingOfflineSales",
         "maxQuantityPerLine",
         "maxSaleAmountMinor",

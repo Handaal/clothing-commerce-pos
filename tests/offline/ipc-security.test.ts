@@ -20,12 +20,15 @@ describe("offline IPC and process boundary", () => {
       "offline:bootstrap",
       "offline:get-cached-catalog",
       "offline:get-local-receipt",
+      "offline:get-offline-customers",
       "offline:get-pending-sync-summary",
       "offline:get-projected-inventory",
       "offline:get-readiness",
       "offline:get-sync-status",
       "offline:get-unacknowledged-sales",
+      "offline:record-customer-payment",
       "offline:request-sync",
+      "offline:verify-staff-pin",
     ]);
     const preload = readFileSync(path.join(process.cwd(), "src", "preload", "preload.ts"), "utf8");
     expect(preload).not.toMatch(/executeSql|execute\s*\(|filesystem|database.*path|private.*key/i);

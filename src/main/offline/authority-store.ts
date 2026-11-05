@@ -190,8 +190,8 @@ export class OfflineAuthorityStore {
             register_id, branch_id, inventory_location_id, operator_membership_id, currency,
             issued_at, operator_expires_at, catalog_valid_until, accepted_until,
             max_sale_amount_minor, max_cumulative_exposure_minor, max_quantity_per_line,
-            max_pending_offline_sales, payload_json, installed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            max_pending_offline_sales, max_offline_credit_exposure_minor, payload_json, installed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           bootstrap.grantId,
@@ -213,6 +213,7 @@ export class OfflineAuthorityStore {
           bootstrap.policy.maxCumulativeExposureMinor,
           bootstrap.policy.maxQuantityPerLine,
           bootstrap.policy.maxPendingOfflineSales,
+          bootstrap.policy.maxOfflineCreditExposureMinor,
           payload,
           observedAt,
         );
@@ -303,6 +304,9 @@ export class OfflineAuthorityStore {
       }
       this.testSeam?.afterStage?.("catalog");
       this.testSeam?.afterStage?.("inventory");
+      this.installStaffRoster(bootstrap.snapshotId, bootstrap);
+      this.installCustomers(bootstrap.snapshotId, bootstrap);
+      this.installClassification(bootstrap.snapshotId, bootstrap);
       this.database.connection
         .prepare("UPDATE catalog_snapshot SET state = 'complete' WHERE snapshot_id = ?")
         .run(bootstrap.snapshotId);
@@ -335,6 +339,183 @@ export class OfflineAuthorityStore {
         .run(observedAt, bootstrap.issuedAt);
       return Number(released.changes);
     });
+  }
+
+  /**
+   * Install the authorized-staff roster delivered with the bootstrap, keyed to this snapshot so it
+   * retires atomically with the catalog it was issued against. Forward-compatible: a bootstrap that
+   * carries no `staffRoster` (an older server, or offline login not provisioned) installs nothing and
+   * offline login simply stays unavailable. Each entry carries only a server-computed PIN verifier.
+   * Runs inside the caller's bootstrap transaction, so an invalid entry rolls the whole install back.
+   */
+  private installStaffRoster(snapshotId: string, bootstrap: OfflineBootstrapResponse): void {
+    const raw = (bootstrap as unknown as { staffRoster?: unknown }).staffRoster;
+    if (raw === undefined || raw === null) return;
+    if (!Array.isArray(raw)) throw new Error("The offline staff roster is not a list.");
+    const insert = this.database.connection.prepare(
+      `INSERT INTO staff_roster(
+        snapshot_id, membership_id, username, display_name, pin_kdf, pin_salt_base64,
+        pin_hash_base64, scrypt_n, scrypt_r, scrypt_p, key_length
+      ) VALUES (?, ?, ?, ?, 'scrypt', ?, ?, ?, ?, ?, ?)`,
+    );
+    const usernames = new Set<string>();
+    const memberships = new Set<string>();
+    for (const value of raw) {
+      const entry = this.validateStaffRosterEntry(value);
+      if (memberships.has(entry.membershipId)) {
+        throw new Error("Duplicate membership in offline staff roster.");
+      }
+      if (usernames.has(entry.username)) {
+        throw new Error("Duplicate username in offline staff roster.");
+      }
+      memberships.add(entry.membershipId);
+      usernames.add(entry.username);
+      insert.run(
+        snapshotId,
+        entry.membershipId,
+        entry.username,
+        entry.displayName,
+        entry.saltBase64,
+        entry.hashBase64,
+        entry.n,
+        entry.r,
+        entry.p,
+        entry.keyLength,
+      );
+    }
+  }
+
+  /**
+   * Install the customer snapshot delivered with the bootstrap, keyed to this snapshot so it retires
+   * atomically with the catalog. Forward-compatible: a bootstrap that carries no `customers` (an older
+   * server, or offline installments not provisioned) installs nothing and offline installments simply
+   * stay unavailable. Runs inside the caller's transaction, so a bad entry rolls the whole install back.
+   */
+  private installCustomers(snapshotId: string, bootstrap: OfflineBootstrapResponse): void {
+    const raw = (bootstrap as unknown as { customers?: unknown }).customers;
+    if (raw === undefined || raw === null) return;
+    if (!Array.isArray(raw)) throw new Error("The offline customer snapshot is not a list.");
+    const insert = this.database.connection.prepare(
+      `INSERT INTO catalog_customer(
+        snapshot_id, customer_id, name, phone, snapshot_outstanding_minor
+      ) VALUES (?, ?, ?, ?, ?)`,
+    );
+    const ids = new Set<string>();
+    for (const value of raw) {
+      const entry = this.validateCustomerEntry(value);
+      if (ids.has(entry.customerId)) {
+        throw new Error("Duplicate customer in offline snapshot.");
+      }
+      ids.add(entry.customerId);
+      insert.run(snapshotId, entry.customerId, entry.name, entry.phone, entry.outstandingMinor);
+    }
+  }
+
+  /**
+   * Install the server-authoritative display classification (brand name + category names) that the
+   * offline bootstrap now carries per catalog product, keyed to this snapshot so it retires atomically
+   * with the catalog. Backward compatible: a product from an older server simply has no brandName /
+   * categories and installs as unclassified. Runs inside the caller's transaction. This is display
+   * metadata only — it never participates in the offline sale path.
+   */
+  private installClassification(snapshotId: string, bootstrap: OfflineBootstrapResponse): void {
+    const insert = this.database.connection.prepare(
+      `INSERT OR IGNORE INTO catalog_classification(
+        snapshot_id, product_id, brand_name, categories_json
+      ) VALUES (?, ?, ?, ?)`,
+    );
+    for (const product of bootstrap.catalog) {
+      const raw = product as unknown as {
+        brandName?: unknown;
+        categories?: unknown;
+      };
+      const brandName =
+        typeof raw.brandName === "string" && raw.brandName.length > 0 ? raw.brandName : null;
+      // The contract carries categories as [{ id, name }]; the offline cache stores names for the
+      // register's category-first browse (ids are available in the snapshot if needed later).
+      const categories = Array.isArray(raw.categories)
+        ? raw.categories
+            .map((c) => (c && typeof c === "object" ? (c as { name?: unknown }).name : undefined))
+            .filter((name): name is string => typeof name === "string" && name.length > 0)
+        : [];
+      insert.run(snapshotId, product.productId, brandName, JSON.stringify(categories));
+    }
+  }
+
+  private validateCustomerEntry(value: unknown): {
+    customerId: string;
+    name: string;
+    phone: string;
+    outstandingMinor: number;
+  } {
+    if (!value || typeof value !== "object")
+      throw new Error("A customer snapshot entry is invalid.");
+    const entry = value as Record<string, unknown>;
+    const string = (candidate: unknown, field: string): string => {
+      if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > 400) {
+        throw new Error(`Customer snapshot ${field} is invalid.`);
+      }
+      return candidate;
+    };
+    const customerId = string(entry.customerId, "customerId");
+    const name = string(entry.name, "name");
+    const phone = string(entry.phone, "phone");
+    if (!Number.isSafeInteger(entry.outstandingMinor) || Number(entry.outstandingMinor) < 0) {
+      throw new Error("Customer snapshot outstandingMinor is invalid.");
+    }
+    return { customerId, name, phone, outstandingMinor: Number(entry.outstandingMinor) };
+  }
+
+  private validateStaffRosterEntry(value: unknown): {
+    membershipId: string;
+    username: string;
+    displayName: string;
+    saltBase64: string;
+    hashBase64: string;
+    n: number;
+    r: number;
+    p: number;
+    keyLength: number;
+  } {
+    if (!value || typeof value !== "object") throw new Error("A staff roster entry is invalid.");
+    const entry = value as Record<string, unknown>;
+    const pin = entry.pinVerifier;
+    if (!pin || typeof pin !== "object") throw new Error("A staff roster PIN verifier is invalid.");
+    const verifier = pin as Record<string, unknown>;
+    const string = (candidate: unknown, field: string): string => {
+      if (
+        typeof candidate !== "string" ||
+        candidate.trim().length === 0 ||
+        candidate.length > 400
+      ) {
+        throw new Error(`Staff roster ${field} is invalid.`);
+      }
+      return candidate;
+    };
+    const base64 = (candidate: unknown, field: string): string => {
+      const text = string(candidate, field);
+      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text))
+        throw new Error(`Staff roster ${field} is invalid.`);
+      return text;
+    };
+    const positiveInt = (candidate: unknown, field: string, minimum: number): number => {
+      if (!Number.isSafeInteger(candidate) || Number(candidate) < minimum) {
+        throw new Error(`Staff roster ${field} is invalid.`);
+      }
+      return Number(candidate);
+    };
+    if (verifier.algorithm !== "scrypt") throw new Error("Unsupported staff roster PIN algorithm.");
+    return {
+      membershipId: string(entry.membershipId, "membershipId"),
+      username: string(entry.username, "username").trim().toLowerCase(),
+      displayName: string(entry.displayName, "displayName"),
+      saltBase64: base64(verifier.saltBase64, "pin salt"),
+      hashBase64: base64(verifier.hashBase64, "pin hash"),
+      n: positiveInt(verifier.n, "scrypt n", 2),
+      r: positiveInt(verifier.r, "scrypt r", 1),
+      p: positiveInt(verifier.p, "scrypt p", 1),
+      keyLength: positiveInt(verifier.keyLength, "key length", 16),
+    };
   }
 
   private getDeviceRow(): DeviceRow {
@@ -376,6 +557,7 @@ export class OfflineAuthorityStore {
       ["maxCumulativeExposureMinor", bootstrap.policy.maxCumulativeExposureMinor],
       ["maxQuantityPerLine", bootstrap.policy.maxQuantityPerLine],
       ["maxPendingOfflineSales", bootstrap.policy.maxPendingOfflineSales],
+      ["maxOfflineCreditExposureMinor", bootstrap.policy.maxOfflineCreditExposureMinor ?? 0],
     ] as const) {
       requireSafeNonNegative(value, field);
     }

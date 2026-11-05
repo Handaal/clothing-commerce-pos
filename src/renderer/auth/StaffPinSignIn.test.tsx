@@ -13,7 +13,11 @@ const clerk = vi.hoisted(() => ({
 }));
 
 vi.mock("@clerk/react/legacy", () => ({
-  useSignIn: () => ({ isLoaded: clerk.isLoaded, signIn: { create: clerk.create }, setActive: clerk.setActive }),
+  useSignIn: () => ({
+    isLoaded: clerk.isLoaded,
+    signIn: { create: clerk.create },
+    setActive: clerk.setActive,
+  }),
 }));
 
 import { StaffPinSignIn } from "./StaffPinSignIn";
@@ -54,7 +58,9 @@ describe("StaffPinSignIn", () => {
 
     fireEvent.keyDown(window, { key: "Enter" });
 
-    await waitFor(() => expect(clerk.create).toHaveBeenCalledWith({ identifier: "dana", password: "1234" }));
+    await waitFor(() =>
+      expect(clerk.create).toHaveBeenCalledWith({ identifier: "dana", password: "1234" }),
+    );
     expect(clerk.setActive).toHaveBeenCalledWith({ session: "sess_1" });
   });
 
