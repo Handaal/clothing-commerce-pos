@@ -4,14 +4,17 @@ import type {
   CachedCatalogItem,
   LocalReceipt,
   OfflineBridge,
+  OfflineCustomer,
+  OfflineReadiness,
   OfflineSyncStatus,
   ProjectedInventoryItem,
 } from "../../shared/offline";
 import { addVariant, cartTotal, removeLine, updateQuantity, type CartLine } from "../cart/cart";
-import type { SellableProduct, SellableVariant } from "../catalog/catalog";
-import { formatMoney } from "../money";
+import { groupByCategory, type SellableProduct, type SellableVariant } from "../catalog/catalog";
+import { currencySymbol, formatMoney, parseMajorToMinor } from "../money";
 import { PayModal, type SaleTender } from "../checkout/PayModal";
 import { useI18n } from "../shell/i18n";
+import { OfflineRunwayNote } from "./OfflineRunwayNote";
 
 export function cachedProducts(items: readonly CachedCatalogItem[]): readonly SellableProduct[] {
   const products = new Map<string, SellableProduct>();
@@ -32,6 +35,9 @@ export function cachedProducts(items: readonly CachedCatalogItem[]): readonly Se
         productId: item.productId,
         productName: item.productName,
         styleCode: null,
+        brandId: item.brandId,
+        brandName: item.brandName,
+        categories: item.categories,
         variants: [variant],
       });
     }
@@ -57,7 +63,9 @@ export function waitingSyncCount(status: OfflineSyncStatus): number {
 
 interface OfflineCashierProps {
   readonly bridge: OfflineBridge;
-  readonly currency: string;
+  // The active, ready grant. Carries the currency and the accept/catalog windows the runway note
+  // derives its countdown from, so a PIN-only operator sees the same runway the connected shell does.
+  readonly readiness: Extract<OfflineReadiness, { ready: true }>;
   readonly catalog: readonly CachedCatalogItem[];
   readonly inventory: readonly ProjectedInventoryItem[];
   readonly syncStatus: OfflineSyncStatus;
@@ -68,7 +76,7 @@ interface OfflineCashierProps {
 
 export function OfflineCashier({
   bridge,
-  currency,
+  readiness,
   catalog,
   inventory,
   syncStatus,
@@ -77,14 +85,23 @@ export function OfflineCashier({
   onSignOut,
 }: OfflineCashierProps) {
   const { t, locale } = useI18n();
+  const currency = readiness.currency;
   const products = useMemo(() => cachedProducts(catalog), [catalog]);
   const availability = useMemo(
     () => new Map(inventory.map((item) => [item.variantId, item.projectedAvailable])),
     [inventory],
   );
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [catalogQuery, setCatalogQuery] = useState("");
   const [cart, setCart] = useState<readonly CartLine[]>([]);
+  const [customers, setCustomers] = useState<readonly OfflineCustomer[]>([]);
+  const [customerQuery, setCustomerQuery] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [payOpen, setPayOpen] = useState(false);
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentSubmitting, setPaymentSubmitting] = useState(false);
+  const [paymentNotice, setPaymentNotice] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<LocalReceipt | null>(null);
   const [recovered, setRecovered] = useState<readonly LocalReceipt[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -107,6 +124,50 @@ export function OfflineCashier({
   }, [refreshUnacknowledged]);
   const selectedProduct = products.find((item) => item.productId === selectedProductId) ?? null;
   const total = cartTotal(cart);
+
+  // Offline search matches product name, brand, and any variant SKU/name — the same fields the
+  // connected register searches, so the floor's muscle memory carries over when the link drops.
+  const normalizedQuery = catalogQuery.trim().toLowerCase();
+  const filteredProducts =
+    normalizedQuery === ""
+      ? products
+      : products.filter(
+          (product) =>
+            product.productName.toLowerCase().includes(normalizedQuery) ||
+            (product.brandName?.toLowerCase().includes(normalizedQuery) ?? false) ||
+            product.variants.some(
+              (variant) =>
+                variant.sku.toLowerCase().includes(normalizedQuery) ||
+                (variant.variantName?.toLowerCase().includes(normalizedQuery) ?? false),
+            ),
+        );
+  const groupedCatalog = groupByCategory(filteredProducts, t("pos.uncategorized"));
+
+  const installmentsAvailable = readiness.offlineInstallmentsAvailable;
+  const refreshCustomers = useCallback(async () => {
+    if (!installmentsAvailable) return;
+    setCustomers(await bridge.getOfflineCustomers());
+  }, [bridge, installmentsAvailable]);
+  useEffect(() => {
+    // Deferred so the load (which sets state) does not run synchronously in the effect body.
+    const initial = window.setTimeout(() => void refreshCustomers(), 0);
+    return () => window.clearTimeout(initial);
+  }, [refreshCustomers]);
+  const selectedCustomer = useMemo(
+    () => customers.find((item) => item.customerId === selectedCustomerId) ?? null,
+    [customers, selectedCustomerId],
+  );
+  const filteredCustomers = useMemo(() => {
+    const query = customerQuery.trim().toLowerCase();
+    const matches =
+      query === ""
+        ? customers
+        : customers.filter(
+            (item) =>
+              item.name.toLowerCase().includes(query) || item.phone.includes(customerQuery.trim()),
+          );
+    return matches.slice(0, 8);
+  }, [customers, customerQuery]);
 
   // The receipt on screen is either the just-completed sale or, on restart, the oldest sale awaiting
   // acknowledgement. A fresh sale takes precedence; otherwise a recovered sale blocks new selling.
@@ -142,8 +203,9 @@ export function OfflineCashier({
     setPayOpen(true);
   }
 
-  async function completeOfflineSale(tenders: SaleTender[]) {
+  async function completeOfflineSale(tenders: SaleTender[], amountPaidMinor?: number) {
     if (isRecovery || cart.length === 0) return;
+    const installment = amountPaidMinor !== undefined && selectedCustomer !== null;
     setPayOpen(false);
     setSubmitting(true);
     setError(null);
@@ -158,17 +220,49 @@ export function OfflineCashier({
             ? { cashReceivedMinor: tender.cashReceivedMinor }
             : {}),
         })),
+        ...(installment ? { customerId: selectedCustomer!.customerId, amountPaidMinor } : {}),
       });
       const durableReceipt = await bridge.getLocalReceipt(accepted.localSaleId);
       if (!durableReceipt) throw new Error("The accepted local receipt could not be read back.");
       setReceipt(durableReceipt);
       setCart([]);
+      setSelectedCustomerId(null);
+      setCustomerQuery("");
       await onRefresh();
       await refreshUnacknowledged();
+      await refreshCustomers();
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("cashier.err.notAccepted"));
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function submitPayment() {
+    if (!selectedCustomer) return;
+    const amountMinor = parseMajorToMinor(paymentAmount);
+    if (amountMinor === null || amountMinor <= 0) {
+      setPaymentNotice(t("cashier.payment.invalid"));
+      return;
+    }
+    if (amountMinor > selectedCustomer.projectedOutstandingMinor) {
+      setPaymentNotice(t("cashier.payment.exceeds"));
+      return;
+    }
+    setPaymentSubmitting(true);
+    setPaymentNotice(null);
+    try {
+      await bridge.recordCustomerPayment({ customerId: selectedCustomer.customerId, amountMinor });
+      setPaymentOpen(false);
+      setPaymentAmount("");
+      setSelectedCustomerId(null);
+      setCustomerQuery("");
+      await refreshCustomers();
+      await onRefresh();
+    } catch (caught) {
+      setPaymentNotice(caught instanceof Error ? caught.message : t("cashier.payment.failed"));
+    } finally {
+      setPaymentSubmitting(false);
     }
   }
 
@@ -244,6 +338,26 @@ export function OfflineCashier({
                 {formatMoney(displayReceipt.totalMinor, displayReceipt.currency, locale)}
               </strong>
             </div>
+            {displayReceipt.outstandingMinor > 0 ? (
+              <>
+                <div>
+                  <span>{t("cashier.amountPaid")}</span>
+                  <strong>
+                    {formatMoney(displayReceipt.amountPaidMinor, displayReceipt.currency, locale)}
+                  </strong>
+                </div>
+                <div className="receipt-balance">
+                  <span>
+                    {displayReceipt.customerName
+                      ? t("cashier.balanceOwedBy", { name: displayReceipt.customerName })
+                      : t("cashier.balanceOwed")}
+                  </span>
+                  <strong>
+                    {formatMoney(displayReceipt.outstandingMinor, displayReceipt.currency, locale)}
+                  </strong>
+                </div>
+              </>
+            ) : null}
             <div>
               <span>{t("cashier.cashReceived")}</span>
               <strong>
@@ -317,7 +431,10 @@ export function OfflineCashier({
           </button>
           <p>{t("cashier.returnsOfflineHint")}</p>
         </div>
-        <span>{t("cashier.offlineGrantHint")}</span>
+        <span>
+          {t("cashier.offlineGrantHint")}
+          <OfflineRunwayNote readiness={readiness} />
+        </span>
         <button
           className="button button--quiet"
           disabled={!syncStatus.networkOnline || syncStatus.synchronizing}
@@ -343,18 +460,50 @@ export function OfflineCashier({
             <span className="currency-pill">{currency}</span>
           </div>
           {products.length === 0 ? <p className="inline-state">{t("cashier.noCached")}</p> : null}
-          <div className="product-grid">
-            {products.map((product) => (
-              <button
-                key={product.productId}
-                className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
-                onClick={() => setSelectedProductId(product.productId)}
-              >
-                <span>{product.productName}</span>
-                <small>{t("cashier.variantCount", { count: product.variants.length })}</small>
-              </button>
-            ))}
-          </div>
+          {products.length > 0 ? (
+            <div className="catalog-search">
+              <input
+                className="catalog-search__input"
+                aria-label={t("pos.searchAria")}
+                placeholder={t("pos.searchPlaceholder")}
+                value={catalogQuery}
+                onChange={(event) => setCatalogQuery(event.target.value)}
+              />
+              {catalogQuery !== "" ? (
+                <button
+                  type="button"
+                  className="catalog-search__clear"
+                  aria-label={t("pos.clearSearch")}
+                  onClick={() => setCatalogQuery("")}
+                >
+                  ×
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+          {products.length > 0 && filteredProducts.length === 0 ? (
+            <p className="inline-state">{t("pos.noMatch", { query: catalogQuery })}</p>
+          ) : null}
+          {groupedCatalog.map((group) => (
+            <div className="catalog-group" key={group.category}>
+              <p className="catalog-group__heading">{group.category}</p>
+              <div className="product-grid">
+                {group.products.map((product) => (
+                  <button
+                    key={product.productId}
+                    className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
+                    onClick={() => setSelectedProductId(product.productId)}
+                  >
+                    <span>{product.productName}</span>
+                    {product.brandName ? (
+                      <span className="product-card__brand">{product.brandName}</span>
+                    ) : null}
+                    <small>{t("cashier.variantCount", { count: product.variants.length })}</small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
           {selectedProduct ? (
             <div className="variant-panel">
               <h3>{selectedProduct.productName}</h3>
@@ -440,6 +589,93 @@ export function OfflineCashier({
             <span>{t("cashier.total")}</span>
             <strong>{formatMoney(total, currency, locale)}</strong>
           </div>
+          {installmentsAvailable ? (
+            <div className="offline-customer">
+              <div className="offline-customer__heading">
+                <span className="eyebrow">{t("cashier.installmentCustomer")}</span>
+                <span>
+                  {t("cashier.creditRemaining", {
+                    amount: formatMoney(readiness.offlineCreditRemainingMinor, currency, locale),
+                  })}
+                </span>
+              </div>
+              {selectedCustomer ? (
+                <div className="offline-customer__selected">
+                  <div>
+                    <strong>{selectedCustomer.name}</strong>
+                    <span>{selectedCustomer.phone}</span>
+                    <span>
+                      {t("cashier.customerBalance", {
+                        amount: formatMoney(
+                          selectedCustomer.projectedOutstandingMinor,
+                          currency,
+                          locale,
+                        ),
+                      })}
+                    </span>
+                  </div>
+                  <div className="offline-customer__actions">
+                    <button
+                      className="button button--quiet"
+                      disabled={submitting || selectedCustomer.projectedOutstandingMinor <= 0}
+                      onClick={() => {
+                        setPaymentAmount("");
+                        setPaymentNotice(null);
+                        setPaymentOpen(true);
+                      }}
+                    >
+                      {t("cashier.recordPayment")}
+                    </button>
+                    <button
+                      className="button button--quiet"
+                      disabled={submitting}
+                      onClick={() => {
+                        setSelectedCustomerId(null);
+                        setCustomerQuery("");
+                      }}
+                    >
+                      {t("cashier.customerClear")}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <input
+                    aria-label={t("cashier.customerSearch")}
+                    placeholder={t("cashier.customerSearch")}
+                    value={customerQuery}
+                    disabled={submitting}
+                    onChange={(event) => setCustomerQuery(event.target.value)}
+                  />
+                  {customerQuery.trim() !== "" ? (
+                    <div className="offline-customer__results">
+                      {filteredCustomers.length === 0 ? (
+                        <p className="inline-state">{t("cashier.customerNone")}</p>
+                      ) : (
+                        filteredCustomers.map((item) => (
+                          <button
+                            key={item.customerId}
+                            className="offline-customer__option"
+                            disabled={submitting}
+                            onClick={() => {
+                              setSelectedCustomerId(item.customerId);
+                              setCustomerQuery("");
+                            }}
+                          >
+                            <strong>{item.name}</strong>
+                            <span>{item.phone}</span>
+                            <span>
+                              {formatMoney(item.projectedOutstandingMinor, currency, locale)}
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  ) : null}
+                </>
+              )}
+            </div>
+          ) : null}
           {error ? (
             <div className="notice notice--error" role="alert">
               {error}
@@ -457,9 +693,77 @@ export function OfflineCashier({
               netMinor={total}
               currency={currency}
               submitting={submitting}
-              onConfirm={(tenders) => void completeOfflineSale(tenders)}
+              disableFreeformCustomer
+              presetCustomer={
+                selectedCustomer
+                  ? {
+                      name: selectedCustomer.name,
+                      phone: selectedCustomer.phone,
+                      balanceMinor: selectedCustomer.projectedOutstandingMinor,
+                    }
+                  : undefined
+              }
+              onConfirm={(tenders, _customer, amountPaidMinor) =>
+                void completeOfflineSale(tenders, amountPaidMinor)
+              }
               onCancel={() => setPayOpen(false)}
             />
+          ) : null}
+          {paymentOpen && selectedCustomer ? (
+            <div
+              className="modal-overlay"
+              role="dialog"
+              aria-modal="true"
+              aria-label={t("cashier.recordPayment")}
+            >
+              <div className="modal-card pay-modal">
+                <p className="eyebrow">{t("cashier.recordPayment")}</p>
+                <div className="pay-customer__preset">
+                  <strong>{selectedCustomer.name}</strong>
+                  <span>{selectedCustomer.phone}</span>
+                  <span>
+                    {t("cashier.customerBalance", {
+                      amount: formatMoney(
+                        selectedCustomer.projectedOutstandingMinor,
+                        currency,
+                        locale,
+                      ),
+                    })}
+                  </span>
+                </div>
+                <label className="cash-field">
+                  {t("cashier.payment.amount")} <span>{currencySymbol(currency, locale)}</span>
+                  <input
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={paymentAmount}
+                    disabled={paymentSubmitting}
+                    onChange={(event) => setPaymentAmount(event.target.value)}
+                  />
+                </label>
+                {paymentNotice ? (
+                  <div className="notice notice--error" role="alert">
+                    {paymentNotice}
+                  </div>
+                ) : null}
+                <div className="pay-actions">
+                  <button
+                    className="button button--quiet"
+                    disabled={paymentSubmitting}
+                    onClick={() => setPaymentOpen(false)}
+                  >
+                    {t("pay.cancel")}
+                  </button>
+                  <button
+                    className="button button--complete"
+                    disabled={paymentSubmitting}
+                    onClick={() => void submitPayment()}
+                  >
+                    {paymentSubmitting ? t("pay.completing") : t("cashier.payment.confirm")}
+                  </button>
+                </div>
+              </div>
+            </div>
           ) : null}
           <p className="authority-note">{t("cashier.authorityNote")}</p>
         </aside>

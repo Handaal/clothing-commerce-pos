@@ -2,15 +2,23 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 
 import type {
+  IngestOfflineCustomerPaymentInput,
+  IngestOfflineCustomerPaymentResponse,
   IngestOfflineSaleInput,
   IngestOfflineSaleResponse,
+  OfflineCustomerPaymentCommand,
   OfflineSaleCommand,
 } from "@shifted/clothing-commerce-sdk" with { "resolution-mode": "import" };
 
 import type { OfflineSyncStatus } from "../../shared/offline";
 import { OutboxStore, type OutboxWorkItem } from "./outbox-store";
+import { PaymentOutboxStore, type PaymentOutboxWorkItem } from "./payment-outbox-store";
 
 type IngestOfflineSaleRequest = Omit<IngestOfflineSaleInput, "idempotencyKey">;
+type IngestOfflineCustomerPaymentRequest = Omit<
+  IngestOfflineCustomerPaymentInput,
+  "idempotencyKey"
+>;
 
 const sdk = createRequire(__filename)("@shifted/clothing-commerce-sdk") as {
   ApiContractError: new (...args: never[]) => Error;
@@ -18,6 +26,7 @@ const sdk = createRequire(__filename)("@shifted/clothing-commerce-sdk") as {
   ApiNetworkError: new (...args: never[]) => Error;
   SDK_VERSION: string;
   canonicalizeOfflineSaleCommand(command: OfflineSaleCommand): string;
+  canonicalizeOfflineCustomerPaymentCommand(command: OfflineCustomerPaymentCommand): string;
   createCommerceClient(options: {
     baseUrl: string;
     client: { type: "pos-desktop"; version: string };
@@ -26,6 +35,9 @@ const sdk = createRequire(__filename)("@shifted/clothing-commerce-sdk") as {
       ingestOfflineSale(
         input: IngestOfflineSaleRequest & { idempotencyKey: string },
       ): Promise<IngestOfflineSaleResponse>;
+      ingestOfflineCustomerPayment(
+        input: IngestOfflineCustomerPaymentRequest & { idempotencyKey: string },
+      ): Promise<IngestOfflineCustomerPaymentResponse>;
     };
   };
 };
@@ -35,6 +47,7 @@ const LEASE_DURATION_MS = 30_000;
 
 export interface OfflineDeliveryClient {
   deliver(item: OutboxWorkItem): Promise<IngestOfflineSaleResponse>;
+  deliverPayment(item: PaymentOutboxWorkItem): Promise<IngestOfflineCustomerPaymentResponse>;
 }
 
 export interface SyncWorkerTestSeam {
@@ -49,6 +62,8 @@ export interface OfflineSyncWorkerOptions {
   readonly networkOnline?: () => boolean;
   readonly pollIntervalMs?: number;
   readonly testSeam?: SyncWorkerTestSeam;
+  /** The payment-lane queue, drained alongside the sale outbox on every pass. */
+  readonly paymentOutbox?: PaymentOutboxStore;
 }
 
 export function readExactPersistedRequest(item: OutboxWorkItem): IngestOfflineSaleRequest {
@@ -76,18 +91,59 @@ export function readExactPersistedRequest(item: OutboxWorkItem): IngestOfflineSa
   return request;
 }
 
+export function readExactPersistedPaymentRequest(
+  item: PaymentOutboxWorkItem,
+): IngestOfflineCustomerPaymentRequest {
+  let request: IngestOfflineCustomerPaymentRequest;
+  try {
+    request = JSON.parse(item.requestJson) as IngestOfflineCustomerPaymentRequest;
+  } catch (error) {
+    throw new Error("The persisted offline payment request JSON is corrupt.", { cause: error });
+  }
+  if (JSON.stringify(request) !== item.requestJson) {
+    throw new Error("The persisted offline payment request is not in its original representation.");
+  }
+  const canonical = sdk.canonicalizeOfflineCustomerPaymentCommand(request.command);
+  const hash = createHash("sha256").update(canonical, "utf8").digest("hex");
+  if (
+    canonical !== item.canonicalCommand ||
+    hash !== item.payloadHash ||
+    request.command.localPaymentId !== item.localPaymentId ||
+    request.command.syncCommandId !== item.syncCommandId ||
+    item.idempotencyKey !== item.syncCommandId ||
+    request.signature.credentialId !== item.credentialId
+  ) {
+    throw new Error("The persisted offline payment request failed its immutable identity check.");
+  }
+  return request;
+}
+
 export class SdkOfflineDeliveryClient implements OfflineDeliveryClient {
   constructor(private readonly apiBaseUrl: string) {}
 
-  deliver(item: OutboxWorkItem): Promise<IngestOfflineSaleResponse> {
-    const request = readExactPersistedRequest(item);
-    const client = sdk
+  private tenantClient(tenantId: string) {
+    return sdk
       .createCommerceClient({
         baseUrl: this.apiBaseUrl,
         client: { type: "pos-desktop", version: sdk.SDK_VERSION },
       })
-      .withTenant(item.tenantId);
-    return client.ingestOfflineSale({ idempotencyKey: item.idempotencyKey, ...request });
+      .withTenant(tenantId);
+  }
+
+  deliver(item: OutboxWorkItem): Promise<IngestOfflineSaleResponse> {
+    const request = readExactPersistedRequest(item);
+    return this.tenantClient(item.tenantId).ingestOfflineSale({
+      idempotencyKey: item.idempotencyKey,
+      ...request,
+    });
+  }
+
+  deliverPayment(item: PaymentOutboxWorkItem): Promise<IngestOfflineCustomerPaymentResponse> {
+    const request = readExactPersistedPaymentRequest(item);
+    return this.tenantClient(item.tenantId).ingestOfflineCustomerPayment({
+      idempotencyKey: item.idempotencyKey,
+      ...request,
+    });
   }
 }
 
@@ -134,6 +190,7 @@ export class OfflineSyncWorker {
   private readonly now: () => Date;
   private readonly networkOnline: () => boolean;
   private readonly pollIntervalMs: number;
+  private readonly paymentOutbox: PaymentOutboxStore | undefined;
 
   constructor(
     private readonly outbox: OutboxStore,
@@ -144,6 +201,7 @@ export class OfflineSyncWorker {
     this.networkOnline = options.networkOnline ?? (() => true);
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.testSeam = options.testSeam;
+    this.paymentOutbox = options.paymentOutbox;
   }
 
   private readonly testSeam: SyncWorkerTestSeam | undefined;
@@ -199,12 +257,50 @@ export class OfflineSyncWorker {
       this.outbox.completeDelivery(item.syncCommandId, item.leaseId, response);
       this.lastError = null;
     }
+    await this.drainPayments();
+  }
+
+  private async drainPayments(): Promise<void> {
+    const payments = this.paymentOutbox;
+    if (!payments) return;
+    payments.recoverExpiredLeases();
+    for (let processed = 0; processed < 10; processed += 1) {
+      const item = payments.claimNext(LEASE_DURATION_MS);
+      if (!item) return;
+      this.lastAttemptAt = this.now().toISOString();
+      let response: IngestOfflineCustomerPaymentResponse;
+      try {
+        response = await this.delivery.deliverPayment(item);
+      } catch (error) {
+        const failure = classifySyncFailure(error);
+        this.lastError = failure.message.slice(0, 500);
+        if (failure.kind === "transient") {
+          payments.releaseForRetry(
+            item.syncCommandId,
+            item.leaseId,
+            retryAt(this.now(), item.attempts),
+            failure,
+          );
+        } else {
+          payments.markBlocked(item.syncCommandId, item.leaseId, failure);
+        }
+        continue;
+      }
+      payments.completeDelivery(item.syncCommandId, item.leaseId, response);
+      this.lastError = null;
+    }
   }
 
   getStatus(): OfflineSyncStatus {
     const counts = this.outbox.getStatusCounts();
+    const payments = this.paymentOutbox?.getStatusCounts();
     return {
-      ...counts,
+      pending: counts.pending + (payments?.pending ?? 0),
+      leased: counts.leased + (payments?.leased ?? 0),
+      retryWait: counts.retryWait + (payments?.retryWait ?? 0),
+      blocked: counts.blocked + (payments?.blocked ?? 0),
+      synced: counts.synced + (payments?.synced ?? 0),
+      needsReconciliation: counts.needsReconciliation,
       networkOnline: this.networkOnline(),
       synchronizing: this.running !== undefined,
       lastAttemptAt: this.lastAttemptAt,

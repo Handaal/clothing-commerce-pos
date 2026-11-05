@@ -21,8 +21,8 @@ importers:
         specifier: ^5.3.0
         version: 5.3.0
       '@shifted/clothing-commerce-sdk':
-        specifier: file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz
-        version: file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz
+        specifier: file:vendor/shifted-clothing-commerce-sdk-0.26.0.tgz
+        version: file:vendor/shifted-clothing-commerce-sdk-0.26.0.tgz
       react:
         specifier: 19.2.3
         version: 19.2.3
@@ -523,9 +523,9 @@ packages:
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
 
-  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz':
-    resolution: {integrity: sha512-LYkhWfHA0qGpkw1OXc33sxAyAY5B1KliiKEc9QMCf0H7Z19t8I+h5UKV4agE3Mf1R+1mAI5BJz6+OFSUjpN+fw==, tarball: file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz}
-    version: 0.19.0
+  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.26.0.tgz':
+    resolution: {integrity: sha512-zjMNFmuRiz5kEoMsFMzYrYMKrurmTbXmJQz/b+BEX+gl+qR9zoF9LaACy8tnpXO2on2aJgLjKX+EWPgJJIsZ/A==, tarball: file:vendor/shifted-clothing-commerce-sdk-0.26.0.tgz}
+    version: 0.26.0
 
   '@sindresorhus/is@4.6.0':
     resolution: {integrity: sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw==}
@@ -2838,7 +2838,7 @@ snapshots:
 
   '@rolldown/pluginutils@1.0.1': {}
 
-  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz':
+  '@shifted/clothing-commerce-sdk@file:vendor/shifted-clothing-commerce-sdk-0.26.0.tgz':
     dependencies:
       zod: 4.4.3
 

@@ -1,4 +1,4 @@
-import { createRequire } from "node:module";
+﻿import { createRequire } from "node:module";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LocalDatabase } from "../../src/main/offline/database";
@@ -21,6 +21,13 @@ const { ApiHttpError, ApiNetworkError } = createRequire(__filename)(
     requestId: string | null,
   ) => Error;
   ApiNetworkError: new (message: string) => Error;
+};
+
+// None of these tests wire a paymentOutbox into the worker, so the payment lane is never drained
+// and deliverPayment is never invoked. A throwing stub satisfies the interface and fails loudly if
+// that assumption ever regresses.
+const unexpectedPayment: OfflineDeliveryClient["deliverPayment"] = async () => {
+  throw new Error("deliverPayment was not expected in this test");
 };
 
 const harnesses: OfflineHarness[] = [];
@@ -72,7 +79,10 @@ describe("offline synchronization worker", () => {
       expect(request.signature.credentialId).toBe(item.credentialId);
       return ingestionResponse(accepted.localSaleId);
     });
-    const worker = new OfflineSyncWorker(harness.outbox, { deliver });
+    const worker = new OfflineSyncWorker(harness.outbox, {
+      deliver,
+      deliverPayment: unexpectedPayment,
+    });
     await worker.runOnce();
     expect(deliver).toHaveBeenCalledTimes(1);
     expect(harness.outbox.getStatusCounts()).toMatchObject({ pending: 0, synced: 1 });
@@ -99,7 +109,10 @@ describe("offline synchronization worker", () => {
     acceptOne(transient);
     const transientWorker = new OfflineSyncWorker(
       transient.outbox,
-      { deliver: async () => Promise.reject(new ApiNetworkError("offline")) },
+      {
+        deliver: async () => Promise.reject(new ApiNetworkError("offline")),
+        deliverPayment: unexpectedPayment,
+      },
       { now: () => current },
     );
     await transientWorker.runOnce();
@@ -114,6 +127,7 @@ describe("offline synchronization worker", () => {
         Promise.reject(
           new ApiHttpError("signature invalid", 401, "OFFLINE_SIGNATURE_INVALID", null),
         ),
+      deliverPayment: unexpectedPayment,
     });
     await permanentWorker.runOnce();
     expect(permanent.outbox.getStatusCounts()).toMatchObject({ retryWait: 0, blocked: 1 });
@@ -126,7 +140,7 @@ describe("offline synchronization worker", () => {
     const deliver = vi.fn<OfflineDeliveryClient["deliver"]>();
     const worker = new OfflineSyncWorker(
       harness.outbox,
-      { deliver },
+      { deliver, deliverPayment: unexpectedPayment },
       { networkOnline: () => false },
     );
     await worker.runOnce();
@@ -153,6 +167,7 @@ describe("offline synchronization worker", () => {
         }
         return response;
       },
+      deliverPayment: unexpectedPayment,
     };
     const crashing = new OfflineSyncWorker(harness.outbox, delivery, {
       now: () => current,
@@ -192,7 +207,11 @@ describe("offline synchronization worker", () => {
     const deliver = vi.fn<OfflineDeliveryClient["deliver"]>(async () =>
       ingestionResponse(accepted.localSaleId),
     );
-    const restarted = new OfflineSyncWorker(harness.outbox, { deliver }, { now: () => current });
+    const restarted = new OfflineSyncWorker(
+      harness.outbox,
+      { deliver, deliverPayment: unexpectedPayment },
+      { now: () => current },
+    );
     await restarted.runOnce();
     expect(deliver).not.toHaveBeenCalled();
     expect(harness.outbox.getStatusCounts()).toMatchObject({ leased: 1, synced: 0 });
@@ -209,6 +228,7 @@ describe("offline synchronization worker", () => {
     const accepted = acceptOne(synced);
     const syncedWorker = new OfflineSyncWorker(synced.outbox, {
       deliver: async () => ingestionResponse(accepted.localSaleId),
+      deliverPayment: unexpectedPayment,
     });
     await syncedWorker.runOnce();
     expect(synced.sales.getProjectedInventory()[0].pendingQuantity).toBe(1);
@@ -231,6 +251,7 @@ describe("offline synchronization worker", () => {
     const governedSale = acceptOne(governed);
     const governedWorker = new OfflineSyncWorker(governed.outbox, {
       deliver: async () => ingestionResponse(governedSale.localSaleId, "needs_reconciliation"),
+      deliverPayment: unexpectedPayment,
     });
     await governedWorker.runOnce();
     expect(governed.outbox.getStatusCounts()).toMatchObject({ needsReconciliation: 1 });

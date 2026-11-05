@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { classifyCommerceError } from "../commerce/errors";
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
 import { formatDate } from "../format";
+import { DatePicker } from "../shell/DatePicker";
 import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonLines } from "../shell/Skeleton";
@@ -391,10 +392,10 @@ export function VouchersDesk({
           </div>
           <label className="field">
             {t("vouchers.expiresOn")}
-            <input
-              type="date"
+            <DatePicker
               value={form.expiresAt}
-              onChange={(e) => setForm({ ...form, expiresAt: e.target.value })}
+              ariaLabel={t("vouchers.expiresOn")}
+              onChange={(expiresAt) => setForm({ ...form, expiresAt })}
             />
           </label>
           {!form.promotionId ? (

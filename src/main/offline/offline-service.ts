@@ -1,14 +1,20 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 
-import type { OfflineSaleCommand } from "@shifted/clothing-commerce-sdk" with {
+import type {
+  OfflineCustomerPaymentCommand,
+  OfflineSaleCommand,
+} from "@shifted/clothing-commerce-sdk" with {
   "resolution-mode": "import",
 };
 
 import type {
+  AcceptedOfflinePayment,
   AcceptedOfflineSale,
   CachedCatalogItem,
   LocalReceipt,
+  OfflineCustomer,
+  OfflineCustomerPaymentInput,
   OfflineReadiness,
   OfflineSaleInput,
   PendingSyncSummary,
@@ -18,10 +24,23 @@ import { LocalDatabase } from "./database";
 import { DeviceKeyStore } from "./device-key";
 
 const CLOCK_ROLLBACK_TOLERANCE_MS = 5 * 60 * 1_000;
-const { canonicalizeOfflineSaleCommand } = createRequire(__filename)(
-  "@shifted/clothing-commerce-sdk",
-) as {
+
+// Parse the display-only categories_json column (a JSON string array) defensively: any malformed value
+// degrades to no categories rather than throwing, since classification never gates selling.
+function parseCategories(value: string | number | null): readonly string[] {
+  if (typeof value !== "string" || value === "") return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((c): c is string => typeof c === "string") : [];
+  } catch {
+    return [];
+  }
+}
+const { canonicalizeOfflineSaleCommand, canonicalizeOfflineCustomerPaymentCommand } = createRequire(
+  __filename,
+)("@shifted/clothing-commerce-sdk") as {
   canonicalizeOfflineSaleCommand(command: OfflineSaleCommand): string;
+  canonicalizeOfflineCustomerPaymentCommand(command: OfflineCustomerPaymentCommand): string;
 };
 
 interface AuthorityRow {
@@ -48,6 +67,7 @@ interface AuthorityRow {
   max_cumulative_exposure_minor: number;
   max_quantity_per_line: number;
   max_pending_offline_sales: number;
+  max_offline_credit_exposure_minor: number;
   trusted_server_time: string | null;
   trusted_local_time: string | null;
 }
@@ -154,6 +174,8 @@ export class OfflineSaleService {
     ) {
       return this.unavailable("POLICY_LIMIT_REACHED", "The offline grant policy limit is reached.");
     }
+    const creditCap = authority.max_offline_credit_exposure_minor;
+    const creditRemaining = Math.max(0, creditCap - this.getCreditExposure(authority.grant_id));
     return {
       ready: true,
       deviceId: authority.device_id,
@@ -162,18 +184,53 @@ export class OfflineSaleService {
       currency: authority.currency,
       acceptedUntil: authority.accepted_until,
       catalogValidUntil: authority.catalog_valid_until,
+      offlineLoginAvailable: this.countStaffRoster() > 0,
+      offlineInstallmentsAvailable:
+        creditCap > 0 && this.countSnapshotCustomers(authority.snapshot_id) > 0,
+      offlineCreditRemainingMinor: creditRemaining,
     };
+  }
+
+  private countSnapshotCustomers(snapshotId: string): number {
+    const row = this.database.connection
+      .prepare("SELECT COUNT(*) AS count FROM catalog_customer WHERE snapshot_id = ?")
+      .get(snapshotId) as { count: number };
+    return Number(row.count);
+  }
+
+  /** Total unpaid remainder this grant has extended as installments (advisory, for the credit cap). */
+  private getCreditExposure(grantId: string): number {
+    const row = this.database.connection
+      .prepare(
+        "SELECT COALESCE(SUM(outstanding_minor), 0) AS total FROM local_sale WHERE grant_id = ?",
+      )
+      .get(grantId) as { total: number };
+    return Number(row.total);
+  }
+
+  private countStaffRoster(): number {
+    const row = this.database.connection
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM staff_roster r
+         JOIN catalog_snapshot c ON c.snapshot_id = r.snapshot_id AND c.state = 'active'`,
+      )
+      .get() as { count: number };
+    return Number(row.count);
   }
 
   getCachedCatalog(): ReadonlyArray<CachedCatalogItem> {
     return this.database.connection
       .prepare(
         `SELECT p.product_id, p.name AS product_name, p.brand_id, v.variant_id, v.sku,
-          v.option_summary, v.currency, v.authorized_unit_price_minor, v.price_id, v.price_version
+          v.option_summary, v.currency, v.authorized_unit_price_minor, v.price_id, v.price_version,
+          c.brand_name, c.categories_json
          FROM catalog_snapshot s
          JOIN catalog_product p ON p.snapshot_id = s.snapshot_id
          JOIN catalog_variant_price v
            ON v.snapshot_id = p.snapshot_id AND v.product_id = p.product_id
+         LEFT JOIN catalog_classification c
+           ON c.snapshot_id = p.snapshot_id AND c.product_id = p.product_id
          WHERE s.state = 'active' AND p.active = 1 AND v.active = 1
          ORDER BY p.name, v.sku, v.variant_id`,
       )
@@ -184,6 +241,8 @@ export class OfflineSaleService {
           productId: String(row.product_id),
           productName: String(row.product_name),
           brandId: String(row.brand_id),
+          brandName: row.brand_name === null ? null : String(row.brand_name),
+          categories: parseCategories(row.categories_json),
           variantId: String(row.variant_id),
           sku: String(row.sku),
           optionSummary: row.option_summary === null ? null : String(row.option_summary),
@@ -229,6 +288,148 @@ export class OfflineSaleService {
       });
   }
 
+  getOfflineCustomers(): ReadonlyArray<OfflineCustomer> {
+    return this.database.connection
+      .prepare(
+        `SELECT c.customer_id, c.name, c.phone, c.snapshot_outstanding_minor,
+          COALESCE((
+            SELECT SUM(s.outstanding_minor) FROM local_sale s
+            WHERE s.customer_id = c.customer_id AND s.projection_released_at IS NULL
+          ), 0) AS pending_debt,
+          COALESCE((
+            SELECT SUM(p.amount_minor) FROM local_customer_payment p
+            WHERE p.customer_id = c.customer_id AND p.projection_released_at IS NULL
+          ), 0) AS pending_paid
+         FROM catalog_snapshot cat
+         JOIN catalog_customer c ON c.snapshot_id = cat.snapshot_id
+         WHERE cat.state = 'active'
+         ORDER BY c.name, c.customer_id`,
+      )
+      .all()
+      .map((raw) => {
+        const row = raw as Record<string, string | number>;
+        const projected =
+          Number(row.snapshot_outstanding_minor) +
+          Number(row.pending_debt) -
+          Number(row.pending_paid);
+        return {
+          customerId: String(row.customer_id),
+          name: String(row.name),
+          phone: String(row.phone),
+          projectedOutstandingMinor: Math.max(0, projected),
+        };
+      });
+  }
+
+  recordCustomerPayment(input: OfflineCustomerPaymentInput): AcceptedOfflinePayment {
+    if (
+      !input ||
+      typeof input.customerId !== "string" ||
+      input.customerId.length === 0 ||
+      input.customerId.length > 200 ||
+      !Number.isSafeInteger(input.amountMinor) ||
+      input.amountMinor <= 0
+    ) {
+      throw new OfflineAcceptanceError("INPUT_INVALID", "The payment input is invalid.");
+    }
+    return this.database.transaction(() => {
+      const readiness = this.getReadiness();
+      if (!readiness.ready) throw new OfflineAcceptanceError(readiness.reason, readiness.message);
+      const authority = this.getAuthority();
+      if (!authority) throw new OfflineAcceptanceError("GRANT_MISSING", "No active grant exists.");
+      const customer = this.getOfflineCustomers().find(
+        (item) => item.customerId === input.customerId,
+      );
+      if (!customer || !this.snapshotCustomerExists(authority.snapshot_id, input.customerId)) {
+        throw new OfflineAcceptanceError(
+          "CUSTOMER_UNKNOWN",
+          "The customer is not in the snapshot.",
+        );
+      }
+      if (input.amountMinor > customer.projectedOutstandingMinor) {
+        throw new OfflineAcceptanceError(
+          "PAYMENT_EXCEEDS_BALANCE",
+          "The payment exceeds the customer's projected balance.",
+        );
+      }
+      const acceptedAt = this.now().toISOString();
+      const localPaymentId = randomUUID();
+      const syncCommandId = randomUUID();
+      const command: OfflineCustomerPaymentCommand = {
+        schemaVersion: 1,
+        localPaymentId,
+        syncCommandId,
+        grantId: authority.grant_id,
+        deviceId: authority.device_id,
+        registerId: authority.grant_register_id,
+        acceptedAt,
+        currency: authority.currency,
+        customerId: input.customerId,
+        amountMinor: input.amountMinor,
+      };
+      const canonicalCommand = canonicalizeOfflineCustomerPaymentCommand(command);
+      const signature = this.keys.signCanonical(canonicalCommand);
+      const request = {
+        command,
+        signature: {
+          algorithm: "Ed25519" as const,
+          credentialId: authority.credential_id,
+          value: signature,
+        },
+      };
+      const payloadHash = createHash("sha256").update(canonicalCommand, "utf8").digest("hex");
+      this.database.connection
+        .prepare(
+          `INSERT INTO local_customer_payment(
+            local_payment_id, grant_id, snapshot_id, customer_id, currency, amount_minor,
+            accepted_at, lifecycle, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
+        )
+        .run(
+          localPaymentId,
+          authority.grant_id,
+          authority.snapshot_id,
+          input.customerId,
+          authority.currency,
+          input.amountMinor,
+          acceptedAt,
+          acceptedAt,
+        );
+      this.database.connection
+        .prepare(
+          `INSERT INTO payment_outbox(
+            sync_command_id, local_payment_id, idempotency_key, canonical_command, payload_hash,
+            signature_base64, credential_id, request_json, state, next_attempt_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        )
+        .run(
+          syncCommandId,
+          localPaymentId,
+          syncCommandId,
+          canonicalCommand,
+          payloadHash,
+          signature,
+          authority.credential_id,
+          JSON.stringify(request),
+          acceptedAt,
+          acceptedAt,
+          acceptedAt,
+        );
+      return {
+        localPaymentId,
+        syncCommandId,
+        customerId: input.customerId,
+        currency: authority.currency,
+        amountMinor: input.amountMinor,
+        acceptedAt,
+        projectedOutstandingMinor: Math.max(
+          0,
+          customer.projectedOutstandingMinor - input.amountMinor,
+        ),
+      };
+    });
+  }
+
   acceptCashSale(input: OfflineSaleInput): AcceptedOfflineSale {
     this.validateInput(input);
     return this.database.transaction(() => this.acceptInTransaction(input));
@@ -238,9 +439,12 @@ export class OfflineSaleService {
     const sale = this.database.connection
       .prepare(
         `SELECT s.local_sale_id, s.local_receipt_id, s.lifecycle, s.accepted_at, s.acknowledged_at,
-          s.currency, s.total_minor, t.cash_received_minor, t.change_minor
+          s.currency, s.total_minor, s.customer_id, s.amount_paid_minor, s.outstanding_minor,
+          c.name AS customer_name, t.cash_received_minor, t.change_minor
          FROM local_sale s
          JOIN local_cash_tender t ON t.local_sale_id = s.local_sale_id
+         LEFT JOIN catalog_customer c
+           ON c.snapshot_id = s.snapshot_id AND c.customer_id = s.customer_id
          WHERE s.local_sale_id = ?`,
       )
       .get(localSaleId) as Record<string, string | number | null> | undefined;
@@ -276,6 +480,11 @@ export class OfflineSaleService {
       totalMinor: Number(sale.total_minor),
       cashReceivedMinor: Number(sale.cash_received_minor),
       changeMinor: Number(sale.change_minor),
+      customerId: sale.customer_id === null ? null : String(sale.customer_id),
+      customerName: sale.customer_name === null ? null : String(sale.customer_name),
+      amountPaidMinor:
+        sale.amount_paid_minor === null ? Number(sale.total_minor) : Number(sale.amount_paid_minor),
+      outstandingMinor: Number(sale.outstanding_minor),
       lines,
     };
   }
@@ -353,15 +562,65 @@ export class OfflineSaleService {
         "The grant sale amount limit is exceeded.",
       );
     }
+    // Installment resolution. A deposit below the total creates a customer debt; a full (or absent)
+    // deposit is a normal fully-settled sale whose command omits the installment fields entirely.
+    const amountPaidMinor = input.amountPaidMinor ?? totalMinor;
+    if (
+      input.amountPaidMinor !== undefined &&
+      (!Number.isSafeInteger(input.amountPaidMinor) ||
+        input.amountPaidMinor < 0 ||
+        input.amountPaidMinor > totalMinor)
+    ) {
+      throw new OfflineAcceptanceError(
+        "INSTALLMENT_INVALID",
+        "The deposit is outside the sale total.",
+      );
+    }
+    const isInstallment = amountPaidMinor < totalMinor;
+    const outstandingMinor = totalMinor - amountPaidMinor;
+    if (isInstallment) {
+      if (authority.max_offline_credit_exposure_minor <= 0) {
+        throw new OfflineAcceptanceError(
+          "INSTALLMENT_UNAVAILABLE",
+          "Offline installments are not enabled for this grant.",
+        );
+      }
+      if (amountPaidMinor < 1) {
+        throw new OfflineAcceptanceError(
+          "INSTALLMENT_INVALID",
+          "An installment requires a positive deposit.",
+        );
+      }
+      if (
+        !input.customerId ||
+        !this.snapshotCustomerExists(authority.snapshot_id, input.customerId)
+      ) {
+        throw new OfflineAcceptanceError(
+          "INSTALLMENT_CUSTOMER_REQUIRED",
+          "An installment requires a known customer.",
+        );
+      }
+      if (
+        this.getCreditExposure(authority.grant_id) + outstandingMinor >
+        authority.max_offline_credit_exposure_minor
+      ) {
+        throw new OfflineAcceptanceError(
+          "CREDIT_LIMIT_EXCEEDED",
+          "The offline credit limit is exceeded.",
+        );
+      }
+    }
+    // Tenders/cash settle only the amount collected now (the deposit for an installment, else the total).
+    const settleTarget = amountPaidMinor;
     if (input.tenders) {
       const tenderSum = input.tenders.reduce((sum, tender) => sum + tender.amountMinor, 0);
-      if (tenderSum !== totalMinor) {
+      if (tenderSum !== settleTarget) {
         throw new OfflineAcceptanceError(
           "TENDERS_MISMATCH",
           "The split tenders do not sum to the amount due.",
         );
       }
-    } else if (input.cashReceivedMinor < totalMinor) {
+    } else if (input.cashReceivedMinor < settleTarget) {
       throw new OfflineAcceptanceError(
         "INSUFFICIENT_CASH",
         "Cash received is below the amount due.",
@@ -387,7 +646,7 @@ export class OfflineSaleService {
     // For a split sale, the top-level cash fields describe the cash tender only (change comes from it);
     // a cashless split records zero cash received and zero change.
     const cashTender = input.tenders?.find((tender) => tender.method === "cash") ?? null;
-    const cashAmountMinor = input.tenders ? (cashTender?.amountMinor ?? 0) : totalMinor;
+    const cashAmountMinor = input.tenders ? (cashTender?.amountMinor ?? 0) : settleTarget;
     const cashReceivedMinor = input.tenders
       ? (cashTender?.cashReceivedMinor ?? cashTender?.amountMinor ?? 0)
       : input.cashReceivedMinor;
@@ -421,6 +680,9 @@ export class OfflineSaleService {
             })),
           }
         : {}),
+      ...(isInstallment
+        ? { customerId: input.customerId!, amountPaidMinor, outstandingMinor }
+        : {}),
       offlineSaleOrdinal,
       cumulativeExposureMinor,
     };
@@ -441,8 +703,9 @@ export class OfflineSaleService {
         `INSERT INTO local_sale(
           local_sale_id, local_receipt_id, grant_id, snapshot_id, device_id, register_id,
           inventory_location_id, operator_membership_id, accepted_at, currency, total_minor,
-          offline_sale_ordinal, cumulative_exposure_minor, lifecycle, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
+          offline_sale_ordinal, cumulative_exposure_minor, customer_id, amount_paid_minor,
+          outstanding_minor, lifecycle, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
       )
       .run(
         localSaleId,
@@ -458,6 +721,9 @@ export class OfflineSaleService {
         totalMinor,
         offlineSaleOrdinal,
         cumulativeExposureMinor,
+        isInstallment ? input.customerId! : null,
+        isInstallment ? amountPaidMinor : null,
+        outstandingMinor,
         acceptedAt,
       );
     this.testSeam?.afterStage?.("sale");
@@ -491,7 +757,7 @@ export class OfflineSaleService {
           local_sale_id, amount_due_minor, cash_received_minor, change_minor, accepted_at
         ) VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(localSaleId, totalMinor, cashReceivedMinor, changeMinor, acceptedAt);
+      .run(localSaleId, cashAmountMinor, cashReceivedMinor, changeMinor, acceptedAt);
     this.testSeam?.afterStage?.("tender");
     this.database.connection
       .prepare(
@@ -524,7 +790,18 @@ export class OfflineSaleService {
       totalMinor,
       cashReceivedMinor,
       changeMinor,
+      amountPaidMinor,
+      outstandingMinor,
     };
+  }
+
+  private snapshotCustomerExists(snapshotId: string, customerId: string): boolean {
+    const row = this.database.connection
+      .prepare(
+        "SELECT 1 AS present FROM catalog_customer WHERE snapshot_id = ? AND customer_id = ?",
+      )
+      .get(snapshotId, customerId) as { present: number } | undefined;
+    return row !== undefined;
   }
 
   private resolveLine(
@@ -612,6 +889,23 @@ export class OfflineSaleService {
         "Cash received must be a non-negative integer.",
       );
     }
+    if (
+      input.customerId !== undefined &&
+      (typeof input.customerId !== "string" ||
+        input.customerId.length === 0 ||
+        input.customerId.length > 200)
+    ) {
+      throw new OfflineAcceptanceError("INPUT_INVALID", "The customer id is invalid.");
+    }
+    if (
+      input.amountPaidMinor !== undefined &&
+      (!Number.isSafeInteger(input.amountPaidMinor) || input.amountPaidMinor < 0)
+    ) {
+      throw new OfflineAcceptanceError(
+        "INPUT_INVALID",
+        "Amount paid must be a non-negative integer.",
+      );
+    }
     const variants = new Set<string>();
     for (const line of input.lines) {
       if (
@@ -657,7 +951,8 @@ export class OfflineSaleService {
           g.inventory_location_id, g.operator_membership_id, g.currency, g.issued_at,
           g.accepted_until, g.catalog_valid_until, g.max_sale_amount_minor,
           g.max_cumulative_exposure_minor, g.max_quantity_per_line,
-          g.max_pending_offline_sales, m.trusted_server_time, m.trusted_local_time
+          g.max_pending_offline_sales, g.max_offline_credit_exposure_minor,
+          m.trusted_server_time, m.trusted_local_time
          FROM device_state d
          JOIN catalog_snapshot c ON c.state = 'active'
          JOIN offline_grant g ON g.grant_id = c.grant_id
