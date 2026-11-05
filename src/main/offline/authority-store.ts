@@ -213,7 +213,7 @@ export class OfflineAuthorityStore {
           bootstrap.policy.maxCumulativeExposureMinor,
           bootstrap.policy.maxQuantityPerLine,
           bootstrap.policy.maxPendingOfflineSales,
-          bootstrap.policy.maxOfflineCreditExposureMinor,
+          bootstrap.policy.maxOfflineCreditExposureMinor ?? 0,
           payload,
           observedAt,
         );
