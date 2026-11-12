@@ -1,12 +1,16 @@
 import type {
+  AcceptedOfflineAttendanceEvent,
   AcceptedOfflinePayment,
   AcceptedOfflineSale,
   CachedCatalogItem,
+  LocalAttendanceState,
   LocalReceipt,
+  OfflineAttendanceEventInput,
   OfflineCustomer,
   OfflineCustomerPaymentInput,
   OfflineBootstrapInput,
   OfflineBootstrapResult,
+  OfflineLocalReport,
   OfflineReadiness,
   OfflineSaleInput,
   OfflineStaffPinInput,
@@ -23,6 +27,7 @@ import { DeviceKeyStore, type OsSecureStorage } from "./device-key";
 import { OfflineSaleService } from "./offline-service";
 import { OutboxStore } from "./outbox-store";
 import { PaymentOutboxStore } from "./payment-outbox-store";
+import { AttendanceOutboxStore } from "./attendance-outbox-store";
 import { StaffRosterStore } from "./staff-roster";
 import { LocalUserStore } from "../local-users/store";
 import { ReturnService } from "../returns/service";
@@ -88,6 +93,8 @@ export class OfflineRuntime {
       outbox.recoverExpiredLeases();
       const paymentOutbox = new PaymentOutboxStore(database, now);
       paymentOutbox.recoverExpiredLeases();
+      const attendanceOutbox = new AttendanceOutboxStore(database, now);
+      attendanceOutbox.recoverExpiredLeases();
       const syncWorker = new OfflineSyncWorker(
         outbox,
         options.deliveryClient ?? new SdkOfflineDeliveryClient(apiBaseUrl),
@@ -97,6 +104,7 @@ export class OfflineRuntime {
           pollIntervalMs: options.syncPollIntervalMs,
           testSeam: options.syncTestSeam,
           paymentOutbox,
+          attendanceOutbox,
         },
       );
       // Eager evaluation loads enrolled state and verifies the protected key without requiring it
@@ -185,6 +193,17 @@ export class OfflineRuntime {
     return result;
   }
 
+  recordAttendanceEvent(input: OfflineAttendanceEventInput): AcceptedOfflineAttendanceEvent {
+    const result = this.requireSales().recordAttendanceEvent(input);
+    void this.syncWorker?.requestRun();
+    return result;
+  }
+
+  getLocalAttendance(): LocalAttendanceState {
+    if (!this.sales) return { lastEvent: null, pending: 0, recent: [] };
+    return this.sales.getLocalAttendance();
+  }
+
   acceptCashSale(input: OfflineSaleInput): AcceptedOfflineSale {
     return this.requireSales().acceptCashSale(input);
   }
@@ -203,6 +222,26 @@ export class OfflineRuntime {
 
   getPendingSyncSummary(): PendingSyncSummary {
     return this.requireSales().getPendingSyncSummary();
+  }
+
+  getLocalReport(): OfflineLocalReport {
+    // Resilient like getSyncStatus: before local persistence is initialized there is simply no
+    // on-device activity to report, so return an honest empty projection rather than throwing.
+    if (!this.sales) {
+      return {
+        generatedAt: new Date().toISOString(),
+        currency: null,
+        coverageFrom: null,
+        coverageTo: null,
+        sales: { count: 0, grossMinor: 0, collectedMinor: 0, outstandingMinor: 0 },
+        lifecycle: { acceptedPendingSync: 0, synced: 0, needsReconciliation: 0 },
+        customerPayments: { count: 0, totalMinor: 0 },
+        unacknowledged: 0,
+        pending: 0,
+        blocked: 0,
+      };
+    }
+    return this.sales.getLocalReport();
   }
 
   getSyncStatus(): OfflineSyncStatus {

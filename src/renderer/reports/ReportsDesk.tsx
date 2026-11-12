@@ -24,6 +24,7 @@ import { DateRangeFilter } from "../shell/DateRangeFilter";
 import { useI18n, type TVars } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonLines } from "../shell/Skeleton";
+import { OfflineLocalReport } from "./OfflineLocalReport";
 
 type T = (key: string, vars?: TVars) => string;
 type Tab = "summary" | "sales" | "products" | "inventory" | "returns" | "promotions" | "suppliers";
@@ -373,6 +374,10 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
           </button>
         </div>
       ) : null}
+
+      {/* On-device operational summary (this till only), sourced from durable local state so it
+          remains available offline. Clearly separated from the server-built reports above. */}
+      <OfflineLocalReport />
     </main>
   );
 }

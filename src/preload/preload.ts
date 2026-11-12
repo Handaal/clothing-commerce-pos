@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame } from "electron";
 
 import type { ActivityBridge, ActivityEventInput, ActivityListQuery } from "../shared/activity";
 import type {
+  OfflineAttendanceEventInput,
   OfflineBridge,
   OfflineBootstrapInput,
   OfflineCustomerPaymentInput,
@@ -27,10 +28,13 @@ const OFFLINE_IPC_CHANNELS = Object.freeze({
   customers: "offline:get-offline-customers",
   recordPayment: "offline:record-customer-payment",
   acceptCash: "offline:accept-cash-sale",
+  recordAttendance: "offline:record-attendance-event",
+  localAttendance: "offline:get-local-attendance",
   receipt: "offline:get-local-receipt",
   unacknowledged: "offline:get-unacknowledged-sales",
   acknowledge: "offline:acknowledge-sale",
   pendingSummary: "offline:get-pending-sync-summary",
+  localReport: "offline:get-local-report",
   syncStatus: "offline:get-sync-status",
   requestSync: "offline:request-sync",
   bootstrap: "offline:bootstrap",
@@ -80,12 +84,16 @@ const offlineBridge: OfflineBridge = Object.freeze({
     ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.recordPayment, input),
   acceptCashSale: (input: OfflineSaleInput) =>
     ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.acceptCash, input),
+  recordAttendanceEvent: (input: OfflineAttendanceEventInput) =>
+    ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.recordAttendance, input),
+  getLocalAttendance: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.localAttendance),
   getLocalReceipt: (localSaleId: string) =>
     ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.receipt, localSaleId),
   getUnacknowledgedSales: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.unacknowledged),
   acknowledgeSale: (localSaleId: string) =>
     ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.acknowledge, localSaleId),
   getPendingSyncSummary: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.pendingSummary),
+  getLocalReport: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.localReport),
   getSyncStatus: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.syncStatus),
   requestSync: () => ipcRenderer.invoke(OFFLINE_IPC_CHANNELS.requestSync),
   bootstrap: (input: OfflineBootstrapInput) =>

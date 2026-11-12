@@ -27,6 +27,7 @@
     "acceptance:returns": "pnpm build:main && node scripts/run-returns-acceptance.mjs",
     "acceptance:sale-recovery": "pnpm build:main && node scripts/run-sale-recovery-acceptance.mjs",
     "acceptance:offline-ack": "pnpm build:main && node scripts/run-offline-ack-acceptance.mjs",
+    "acceptance:attendance": "pnpm build:main && node scripts/run-attendance-acceptance.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json"
   },
@@ -35,7 +36,7 @@
     "@fontsource-variable/cairo": "^5.3.0",
     "@fontsource-variable/fraunces": "^5.3.0",
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
-    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.26.0.tgz",
+    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.27.0.tgz",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },

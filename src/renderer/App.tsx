@@ -64,6 +64,8 @@ import { VouchersDesk } from "./vouchers/VouchersDesk";
 import { SuppliersDesk } from "./suppliers/SuppliersDesk";
 import { ReportsDesk } from "./reports/ReportsDesk";
 import { SettingsDesk } from "./settings/SettingsDesk";
+import { OfflineDeskBanner } from "./offline/OfflineDeskBanner";
+import { DESK_OFFLINE_PROFILES } from "./offline/desk-capabilities";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
 import { StaffPinSignIn } from "./auth/StaffPinSignIn";
@@ -1152,6 +1154,9 @@ export function PosApplication({
             client={tenantClient}
             branchId={register.branchId}
             disabled={returnLocked}
+            offline={typeof window === "undefined" ? undefined : window.offline}
+            networkOnline={syncStatus.networkOnline}
+            offlineReady={offlineReadiness.ready}
           />
           {registers.length > 1 ? (
             <Select
@@ -1560,6 +1565,19 @@ export function PosApplication({
   );
 
   const activeSection = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
+  // Shared offline-status banner for every management desk. The cashier (`pos`) owns its own richer
+  // sync UI, so it is excluded here; all other desks get the one honest banner derived from the
+  // single authoritative signal (networkOnline + offlineReadiness + the durable sync summary).
+  const deskProfile = section === "pos" ? undefined : DESK_OFFLINE_PROFILES[section];
+  const deskBanner = deskProfile ? (
+    <OfflineDeskBanner
+      capability={deskProfile.capability}
+      reasonKey={deskProfile.reasonKey}
+      networkOnline={syncStatus.networkOnline}
+      readiness={offlineReadiness}
+      sync={syncStatus}
+    />
+  ) : null;
   return (
     <AppShell
       sections={visibleSections}
@@ -1569,6 +1587,7 @@ export function PosApplication({
       onSignOut={() => void signOut()}
       signOutDisabled={locked || returnLocked}
     >
+      {deskBanner}
       {section === "pos" ? (
         posContent
       ) : section === "orders" ? (

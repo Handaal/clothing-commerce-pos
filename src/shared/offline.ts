@@ -162,6 +162,48 @@ export interface OfflineCustomer {
   readonly projectedOutstandingMinor: number;
 }
 
+export type OfflineAttendanceEventType = "clock_in" | "clock_out";
+
+export interface OfflineAttendanceEventInput {
+  readonly eventType: OfflineAttendanceEventType;
+}
+
+/**
+ * A clock event accepted and durably queued on this device. It is PROVISIONAL: `lifecycle` is
+ * `accepted_pending_sync` until the server acknowledges receipt, and even then the server records it as
+ * a received, policy-pending event — never as final payroll attendance. The UI must not claim a
+ * server-confirmed clock-in before acknowledgment.
+ */
+export interface AcceptedOfflineAttendanceEvent {
+  readonly lifecycle: "accepted_pending_sync";
+  readonly localEventId: string;
+  readonly syncCommandId: string;
+  readonly operatorMembershipId: string;
+  readonly eventType: OfflineAttendanceEventType;
+  readonly eventAt: string;
+  readonly acceptedAt: string;
+}
+
+export interface LocalAttendanceEvent {
+  readonly localEventId: string;
+  readonly operatorMembershipId: string;
+  readonly eventType: OfflineAttendanceEventType;
+  readonly eventAt: string;
+  /** `accepted_pending_sync` = queued locally; `received` = server acknowledged durable receipt. */
+  readonly lifecycle: "accepted_pending_sync" | "received";
+}
+
+/**
+ * The device-local attendance picture for the active offline operator: the latest event (so the clock
+ * can show the next action), how many events are still waiting to sync, and a short recent history.
+ * Device-local only — not the server attendance feed.
+ */
+export interface LocalAttendanceState {
+  readonly lastEvent: LocalAttendanceEvent | null;
+  readonly pending: number;
+  readonly recent: readonly LocalAttendanceEvent[];
+}
+
 export interface PendingSyncSummary {
   readonly pending: number;
   readonly leased: number;
@@ -176,6 +218,48 @@ export interface OfflineSyncStatus extends PendingSyncSummary {
   readonly needsReconciliation: number;
   readonly lastAttemptAt: string | null;
   readonly lastError: string | null;
+}
+
+/**
+ * A device-local operational report projected entirely from durable local state (accepted sales,
+ * the outbox, local customer payments). It is explicitly NOT a company-wide report or a financial
+ * close: every figure covers only what this till has rung and the server may still reject/reconcile
+ * any pending item. The renderer labels it as such and shows `coverageFrom..coverageTo` + `generatedAt`.
+ */
+export interface OfflineLocalReport {
+  /** When this projection was computed (ISO). The "as of" the UI shows. */
+  readonly generatedAt: string;
+  /** Currency of the local sales, or null when this till has no local sales yet. */
+  readonly currency: string | null;
+  /** Earliest / latest `accepted_at` across local sales — the coverage window (null when empty). */
+  readonly coverageFrom: string | null;
+  readonly coverageTo: string | null;
+  readonly sales: {
+    /** Number of sales accepted on this device (all lifecycles). */
+    readonly count: number;
+    /** Sum of sale totals (payable net) rung locally. */
+    readonly grossMinor: number;
+    /** Sum of amounts settled now (deposit for installments; full total otherwise). */
+    readonly collectedMinor: number;
+    /** Sum of installment balances recorded as customer debt (0 for fully-settled sales). */
+    readonly outstandingMinor: number;
+  };
+  /** Local sales broken down by their current lifecycle. Separates provisional from server-confirmed. */
+  readonly lifecycle: {
+    readonly acceptedPendingSync: number;
+    readonly synced: number;
+    readonly needsReconciliation: number;
+  };
+  readonly customerPayments: {
+    readonly count: number;
+    readonly totalMinor: number;
+  };
+  /** Accepted sales the cashier has not yet acknowledged. */
+  readonly unacknowledged: number;
+  /** Outbox items still waiting to sync (pending + leased + retry-waiting). */
+  readonly pending: number;
+  /** Outbox items the server could not accept and that need operator attention. */
+  readonly blocked: number;
 }
 
 export interface OfflineStaffIdentity {
@@ -226,6 +310,12 @@ export interface OfflineBridge {
   /** Record a customer installment paydown offline; it is queued and synced when connected. */
   recordCustomerPayment(input: OfflineCustomerPaymentInput): Promise<AcceptedOfflinePayment>;
   acceptCashSale(input: OfflineSaleInput): Promise<AcceptedOfflineSale>;
+  /** Capture a signed, append-only attendance clock event offline; queued and synced when connected. */
+  recordAttendanceEvent(
+    input: OfflineAttendanceEventInput,
+  ): Promise<AcceptedOfflineAttendanceEvent>;
+  /** The device-local attendance state for the active offline operator (last event + pending + recent). */
+  getLocalAttendance(): Promise<LocalAttendanceState>;
   getLocalReceipt(localSaleId: string): Promise<LocalReceipt | null>;
   /**
    * Locally accepted sales the cashier has not yet acknowledged, oldest first. On restart this is
@@ -236,6 +326,8 @@ export interface OfflineBridge {
   /** Record that the cashier has seen and acknowledged a specific accepted sale receipt. */
   acknowledgeSale(localSaleId: string): Promise<LocalReceipt>;
   getPendingSyncSummary(): Promise<PendingSyncSummary>;
+  /** Device-local operational report (this till only). Never a company-wide/financial report. */
+  getLocalReport(): Promise<OfflineLocalReport>;
   getSyncStatus(): Promise<OfflineSyncStatus>;
   requestSync(): Promise<OfflineSyncStatus>;
   bootstrap(input: OfflineBootstrapInput): Promise<OfflineBootstrapResult>;
@@ -253,10 +345,13 @@ export const OFFLINE_IPC_CHANNELS = Object.freeze({
   customers: "offline:get-offline-customers",
   recordPayment: "offline:record-customer-payment",
   acceptCash: "offline:accept-cash-sale",
+  recordAttendance: "offline:record-attendance-event",
+  localAttendance: "offline:get-local-attendance",
   receipt: "offline:get-local-receipt",
   unacknowledged: "offline:get-unacknowledged-sales",
   acknowledge: "offline:acknowledge-sale",
   pendingSummary: "offline:get-pending-sync-summary",
+  localReport: "offline:get-local-report",
   syncStatus: "offline:get-sync-status",
   requestSync: "offline:request-sync",
   bootstrap: "offline:bootstrap",

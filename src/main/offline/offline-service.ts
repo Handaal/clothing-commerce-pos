@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 
 import type {
+  OfflineAttendanceCommand,
   OfflineCustomerPaymentCommand,
   OfflineSaleCommand,
 } from "@shifted/clothing-commerce-sdk" with {
@@ -9,12 +10,17 @@ import type {
 };
 
 import type {
+  AcceptedOfflineAttendanceEvent,
   AcceptedOfflinePayment,
   AcceptedOfflineSale,
   CachedCatalogItem,
+  LocalAttendanceEvent,
+  LocalAttendanceState,
   LocalReceipt,
+  OfflineAttendanceEventInput,
   OfflineCustomer,
   OfflineCustomerPaymentInput,
+  OfflineLocalReport,
   OfflineReadiness,
   OfflineSaleInput,
   PendingSyncSummary,
@@ -36,11 +42,14 @@ function parseCategories(value: string | number | null): readonly string[] {
     return [];
   }
 }
-const { canonicalizeOfflineSaleCommand, canonicalizeOfflineCustomerPaymentCommand } = createRequire(
-  __filename,
-)("@shifted/clothing-commerce-sdk") as {
+const {
+  canonicalizeOfflineSaleCommand,
+  canonicalizeOfflineCustomerPaymentCommand,
+  canonicalizeOfflineAttendanceCommand,
+} = createRequire(__filename)("@shifted/clothing-commerce-sdk") as {
   canonicalizeOfflineSaleCommand(command: OfflineSaleCommand): string;
   canonicalizeOfflineCustomerPaymentCommand(command: OfflineCustomerPaymentCommand): string;
+  canonicalizeOfflineAttendanceCommand(command: OfflineAttendanceCommand): string;
 };
 
 interface AuthorityRow {
@@ -435,6 +444,135 @@ export class OfflineSaleService {
     return this.database.transaction(() => this.acceptInTransaction(input));
   }
 
+  /**
+   * Capture an attendance clock event offline. It is APPEND-ONLY and PROVISIONAL: a signed, immutable
+   * command is persisted to the local event table + attendance outbox inside ONE SQLite transaction
+   * before any network, exactly like the sale/payment path. The event time is the device clock, bounded
+   * by the same readiness gate (grant window, clock-rollback tolerance). Attribution is to the active
+   * offline-PIN roster operator (the grant operator — Decision C-i); payroll effects are never claimed.
+   */
+  recordAttendanceEvent(input: OfflineAttendanceEventInput): AcceptedOfflineAttendanceEvent {
+    if (
+      !input ||
+      (input.eventType !== "clock_in" && input.eventType !== "clock_out")
+    ) {
+      throw new OfflineAcceptanceError("INPUT_INVALID", "The attendance input is invalid.");
+    }
+    return this.database.transaction(() => {
+      const readiness = this.getReadiness();
+      if (!readiness.ready) throw new OfflineAcceptanceError(readiness.reason, readiness.message);
+      const authority = this.getAuthority();
+      if (!authority) throw new OfflineAcceptanceError("GRANT_MISSING", "No active grant exists.");
+      const acceptedAt = this.now().toISOString();
+      const localEventId = randomUUID();
+      const syncCommandId = randomUUID();
+      const command: OfflineAttendanceCommand = {
+        schemaVersion: 1,
+        localEventId,
+        syncCommandId,
+        grantId: authority.grant_id,
+        deviceId: authority.device_id,
+        registerId: authority.grant_register_id,
+        operatorMembershipId: authority.operator_membership_id,
+        eventType: input.eventType,
+        // The device clock is the trustworthy time evidence available from the lease model; it equals
+        // acceptedAt here and the server re-bounds both against the grant window + skew allowance.
+        eventAt: acceptedAt,
+        acceptedAt,
+      };
+      const canonicalCommand = canonicalizeOfflineAttendanceCommand(command);
+      const signature = this.keys.signCanonical(canonicalCommand);
+      const request = {
+        command,
+        signature: {
+          algorithm: "Ed25519" as const,
+          credentialId: authority.credential_id,
+          value: signature,
+        },
+      };
+      const payloadHash = createHash("sha256").update(canonicalCommand, "utf8").digest("hex");
+      this.database.connection
+        .prepare(
+          `INSERT INTO local_attendance_event(
+            local_event_id, grant_id, operator_membership_id, event_type, event_at, accepted_at,
+            lifecycle, created_at
+          ) VALUES (?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
+        )
+        .run(
+          localEventId,
+          authority.grant_id,
+          authority.operator_membership_id,
+          input.eventType,
+          acceptedAt,
+          acceptedAt,
+          acceptedAt,
+        );
+      this.database.connection
+        .prepare(
+          `INSERT INTO attendance_outbox(
+            sync_command_id, local_event_id, idempotency_key, canonical_command, payload_hash,
+            signature_base64, credential_id, request_json, state, next_attempt_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        )
+        .run(
+          syncCommandId,
+          localEventId,
+          syncCommandId,
+          canonicalCommand,
+          payloadHash,
+          signature,
+          authority.credential_id,
+          JSON.stringify(request),
+          acceptedAt,
+          acceptedAt,
+          acceptedAt,
+        );
+      return {
+        lifecycle: "accepted_pending_sync",
+        localEventId,
+        syncCommandId,
+        operatorMembershipId: authority.operator_membership_id,
+        eventType: input.eventType,
+        eventAt: acceptedAt,
+        acceptedAt,
+      };
+    });
+  }
+
+  /**
+   * Device-local attendance state for the active offline operator: the latest event (drives the next
+   * clock action), how many events are still queued, and a short recent history. Not the server feed.
+   */
+  getLocalAttendance(): LocalAttendanceState {
+    const rows = this.database.connection
+      .prepare(
+        `SELECT local_event_id, operator_membership_id, event_type, event_at, lifecycle
+         FROM local_attendance_event
+         ORDER BY event_at DESC, local_event_id DESC
+         LIMIT 20`,
+      )
+      .all() as Array<Record<string, string>>;
+    const recent: LocalAttendanceEvent[] = rows.map((row) => ({
+      localEventId: String(row.local_event_id),
+      operatorMembershipId: String(row.operator_membership_id),
+      eventType: row.event_type as LocalAttendanceEvent["eventType"],
+      eventAt: String(row.event_at),
+      lifecycle: row.lifecycle as LocalAttendanceEvent["lifecycle"],
+    }));
+    const pending = (
+      this.database.connection
+        .prepare(
+          "SELECT COUNT(*) AS count FROM attendance_outbox WHERE state IN ('pending','leased','retry_wait')",
+        )
+        .get() as { count: number }
+    ).count;
+    return {
+      lastEvent: recent[0] ?? null,
+      pending: Number(pending),
+      recent,
+    };
+  }
+
   getLocalReceipt(localSaleId: string): LocalReceipt | null {
     const sale = this.database.connection
       .prepare(
@@ -537,6 +675,70 @@ export class OfflineSaleService {
       leased: count("leased"),
       retryWait: count("retry_wait"),
       blocked: count("blocked"),
+    };
+  }
+
+  /**
+   * Project a device-local operational report from durable local state only. Every figure is the
+   * sum of what this till has rung — never company-wide and never a financial close. The renderer
+   * labels it accordingly and shows the coverage window + generation time. If there are no local
+   * sales yet the currency is null and the UI shows an honest "no on-device activity" state.
+   */
+  getLocalReport(): OfflineLocalReport {
+    const conn = this.database.connection;
+    const sales = conn
+      .prepare(
+        `SELECT COUNT(*) AS count,
+            COALESCE(SUM(total_minor), 0) AS gross,
+            COALESCE(SUM(amount_paid_minor), 0) AS collected,
+            COALESCE(SUM(outstanding_minor), 0) AS outstanding,
+            MIN(accepted_at) AS coverage_from,
+            MAX(accepted_at) AS coverage_to
+         FROM local_sale`,
+      )
+      .get() as Record<string, number | string | null>;
+    const lifecycleRows = conn
+      .prepare("SELECT lifecycle, COUNT(*) AS count FROM local_sale GROUP BY lifecycle")
+      .all() as Array<{ lifecycle: string; count: number }>;
+    const lifecycleCount = (value: string) =>
+      lifecycleRows.find((row) => row.lifecycle === value)?.count ?? 0;
+    // Currency is uniform within a grant; read it from any local sale (null when none exist).
+    const currencyRow = conn
+      .prepare("SELECT currency FROM local_sale ORDER BY created_at LIMIT 1")
+      .get() as { currency: string } | undefined;
+    const unacknowledged = conn
+      .prepare("SELECT COUNT(*) AS count FROM local_sale WHERE acknowledged_at IS NULL")
+      .get() as { count: number };
+    const payments = conn
+      .prepare(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(amount_minor), 0) AS total
+         FROM local_customer_payment`,
+      )
+      .get() as { count: number; total: number };
+    const pending = this.getPendingSyncSummary();
+    return {
+      generatedAt: this.now().toISOString(),
+      currency: currencyRow ? currencyRow.currency : null,
+      coverageFrom: sales.coverage_from === null ? null : String(sales.coverage_from),
+      coverageTo: sales.coverage_to === null ? null : String(sales.coverage_to),
+      sales: {
+        count: Number(sales.count),
+        grossMinor: Number(sales.gross),
+        collectedMinor: Number(sales.collected),
+        outstandingMinor: Number(sales.outstanding),
+      },
+      lifecycle: {
+        acceptedPendingSync: lifecycleCount("accepted_pending_sync"),
+        synced: lifecycleCount("synced"),
+        needsReconciliation: lifecycleCount("needs_reconciliation"),
+      },
+      customerPayments: {
+        count: Number(payments.count),
+        totalMinor: Number(payments.total),
+      },
+      unacknowledged: Number(unacknowledged.count),
+      pending: pending.pending + pending.leased + pending.retryWait,
+      blocked: pending.blocked,
     };
   }
 

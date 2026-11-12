@@ -96,6 +96,8 @@ function bridge(): OfflineBridge {
       amountPaidMinor: receipt.totalMinor,
       outstandingMinor: 0,
     })),
+    recordAttendanceEvent: vi.fn(),
+    getLocalAttendance: vi.fn(async () => ({ lastEvent: null, pending: 0, recent: [] })),
     getLocalReceipt: vi.fn(async () => receipt),
     getUnacknowledgedSales: vi.fn(async () => []),
     acknowledgeSale: vi.fn(async () => ({
@@ -103,6 +105,7 @@ function bridge(): OfflineBridge {
       acknowledgedAt: "2026-09-08T12:05:00.000Z",
     })),
     getPendingSyncSummary: vi.fn(),
+    getLocalReport: vi.fn(),
     getSyncStatus: vi.fn(),
     requestSync: vi.fn(async () => status),
     bootstrap: vi.fn(),

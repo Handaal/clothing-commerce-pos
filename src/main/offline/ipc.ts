@@ -2,6 +2,7 @@ import { ipcMain, type IpcMainInvokeEvent } from "electron";
 
 import {
   OFFLINE_IPC_CHANNELS,
+  type OfflineAttendanceEventInput,
   type OfflineBootstrapInput,
   type OfflineCustomerPaymentInput,
   type OfflineSaleInput,
@@ -116,6 +117,17 @@ export function parseOfflineCustomerPaymentInput(value: unknown): OfflineCustome
   };
 }
 
+export function parseOfflineAttendanceEventInput(value: unknown): OfflineAttendanceEventInput {
+  if (!value || typeof value !== "object") {
+    throw new TypeError("Offline attendance input is invalid.");
+  }
+  const input = value as Record<string, unknown>;
+  if (input.eventType !== "clock_in" && input.eventType !== "clock_out") {
+    throw new TypeError("Offline attendance event type is invalid.");
+  }
+  return { eventType: input.eventType };
+}
+
 export function parseOfflineBootstrapInput(value: unknown): OfflineBootstrapInput {
   if (!value || typeof value !== "object")
     throw new TypeError("Offline bootstrap input is invalid.");
@@ -169,7 +181,12 @@ export function registerOfflineIpc(runtime: OfflineRuntime, rendererUrl: string)
   handle(OFFLINE_IPC_CHANNELS.acknowledge, (_event, localSaleId: unknown) =>
     runtime.acknowledgeSale(requireString(localSaleId, "localSaleId")),
   );
+  handle(OFFLINE_IPC_CHANNELS.recordAttendance, (_event, input: unknown) =>
+    runtime.recordAttendanceEvent(parseOfflineAttendanceEventInput(input)),
+  );
+  handle(OFFLINE_IPC_CHANNELS.localAttendance, () => runtime.getLocalAttendance());
   handle(OFFLINE_IPC_CHANNELS.pendingSummary, () => runtime.getPendingSyncSummary());
+  handle(OFFLINE_IPC_CHANNELS.localReport, () => runtime.getLocalReport());
   handle(OFFLINE_IPC_CHANNELS.syncStatus, () => runtime.getSyncStatus());
   handle(OFFLINE_IPC_CHANNELS.requestSync, () => runtime.requestSync());
   handle(OFFLINE_IPC_CHANNELS.bootstrap, (_event, input: unknown) =>

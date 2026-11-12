@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 12;
+export const LOCAL_SCHEMA_VERSION = 13;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -578,6 +578,72 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
         categories_json TEXT NOT NULL DEFAULT '[]',
         PRIMARY KEY (snapshot_id, product_id)
       ) STRICT, WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 13,
+    name: "offline_attendance",
+    sql: `
+      -- An attendance clock event (clock-in / clock-out) captured while OFFLINE. Append-only and
+      -- PROVISIONAL: the operator clocks, the event is stored + signed locally and queued for the server
+      -- to receive idempotently. It carries NO money, stock, ordinal or payroll effect — the server records
+      -- it as a received, pending-policy event (roadmap §15 Decision C). Mirrors the local_customer_payment
+      -- / payment_outbox pair.
+      CREATE TABLE local_attendance_event (
+        local_event_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES offline_grant(grant_id) ON DELETE RESTRICT,
+        operator_membership_id TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK (event_type IN ('clock_in', 'clock_out')),
+        event_at TEXT NOT NULL,
+        accepted_at TEXT NOT NULL,
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('accepted_pending_sync', 'received')),
+        server_ingestion_id TEXT,
+        server_received_at TEXT,
+        synchronized_at TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX local_attendance_event_by_member ON local_attendance_event(operator_membership_id, event_at);
+
+      CREATE TRIGGER immutable_attendance_facts BEFORE UPDATE OF
+        local_event_id, grant_id, operator_membership_id, event_type, event_at, accepted_at, created_at
+        ON local_attendance_event
+      BEGIN SELECT RAISE(ABORT, 'accepted attendance facts are immutable'); END;
+      CREATE TRIGGER immutable_attendance_delete BEFORE DELETE ON local_attendance_event
+      BEGIN SELECT RAISE(ABORT, 'accepted attendance event is immutable'); END;
+
+      -- Durable, leased delivery queue for attendance commands — the attendance-lane sibling of outbox.
+      CREATE TABLE attendance_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        local_event_id TEXT NOT NULL UNIQUE REFERENCES local_attendance_event(local_event_id) ON DELETE RESTRICT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        canonical_command TEXT NOT NULL,
+        payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+        signature_base64 TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'delivered', 'blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        server_ingestion_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK ((state = 'leased') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+      ) STRICT;
+
+      CREATE INDEX attendance_outbox_due_work ON attendance_outbox(state, next_attempt_at, created_at);
+      CREATE INDEX attendance_outbox_expired_lease ON attendance_outbox(state, lease_expires_at);
+
+      CREATE TRIGGER immutable_attendance_outbox_command BEFORE UPDATE OF
+        sync_command_id, local_event_id, idempotency_key, canonical_command, payload_hash,
+        signature_base64, credential_id, request_json, created_at ON attendance_outbox
+      BEGIN SELECT RAISE(ABORT, 'attendance outbox command is immutable'); END;
+      CREATE TRIGGER immutable_attendance_outbox_delete BEFORE DELETE ON attendance_outbox
+      BEGIN SELECT RAISE(ABORT, 'attendance outbox command is immutable'); END;
     `,
   },
 ];

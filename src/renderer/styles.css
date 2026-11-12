@@ -2323,6 +2323,149 @@ h3 {
   align-self: flex-start;
   margin-top: 0.3rem;
 }
+
+/* ---------- Shared offline desk-status banner ---------- */
+.desk-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 1rem;
+  border-radius: 0.8rem;
+  border: 1px solid transparent;
+  padding: 0.7rem 0.9rem;
+  font-size: 0.82rem;
+}
+.desk-status__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.desk-status__title {
+  font-size: 0.86rem;
+}
+.desk-status__detail {
+  color: var(--text-faint);
+}
+.desk-status__reason {
+  margin: 0;
+}
+.desk-status__meta {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 0.76rem;
+}
+.desk-status__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  margin: 0.1rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.76rem;
+  color: var(--text-faint);
+}
+.desk-status--good {
+  border-color: var(--success-border, var(--success-bg));
+  background: var(--success-bg);
+  color: var(--success-text);
+}
+.desk-status--info {
+  border-color: var(--border);
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+}
+.desk-status--warn {
+  border-color: var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+.desk-status--bad {
+  border-color: var(--error-border);
+  background: var(--error-bg);
+  color: var(--error-text);
+}
+
+/* ---------- On-device (local) report summary ---------- */
+.local-report {
+  margin-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 1.1rem;
+}
+.local-report__head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.local-report__head h3 {
+  margin: 0;
+}
+.local-report__note {
+  margin: 0.4rem 0 0.8rem;
+  color: var(--text-faint);
+  font-size: 0.8rem;
+}
+.local-report__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.8rem;
+  margin: 0 0 0.9rem;
+}
+.local-report__meta div {
+  display: flex;
+  flex-direction: column;
+}
+.local-report__meta dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.local-report__meta dd {
+  margin: 0;
+  font-size: 0.86rem;
+}
+.local-report__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.7rem;
+}
+.local-report__figure {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  padding: 0.7rem 0.8rem;
+  background: var(--surface-2, var(--surface));
+}
+.local-report__figure-label {
+  font-size: 0.72rem;
+  color: var(--text-faint);
+}
+.local-report__figure-value {
+  font-size: 1.05rem;
+}
+.local-report__lifecycle {
+  margin-top: 1rem;
+}
+.local-report__lifecycle h4 {
+  margin: 0 0 0.4rem;
+  font-size: 0.82rem;
+}
+.local-report__lifecycle ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 1.2rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8rem;
+  color: var(--text-faint);
+}
+.local-report__lifecycle li[data-tone="bad"] {
+  color: var(--error-text);
+}
 .authority-note {
   margin: 0.7rem 0 0;
   color: var(--text-faint);
