@@ -14,6 +14,8 @@ import { classifyCommerceError } from "../commerce/errors";
 import { AddStaffModal } from "./AddStaffModal";
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
 import { formatDateTime } from "../format";
+import { DatePicker } from "../shell/DatePicker";
+import { DateRangeFilter } from "../shell/DateRangeFilter";
 import { useI18n, type TVars } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonTable } from "../shell/Skeleton";
@@ -336,14 +338,7 @@ export function StaffAttendance({
           <button className="button button--quiet" onClick={() => quick(30)}>
             {t("staff.month")}
           </button>
-          <label>
-            {t("activity.from")}
-            <input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
-          </label>
-          <label>
-            {t("activity.to")}
-            <input type="date" value={to} min={from} onChange={(e) => setTo(e.target.value)} />
-          </label>
+          <DateRangeFilter from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
           <button
             className="button button--quiet"
             onClick={exportCsv}
@@ -755,10 +750,10 @@ export function StaffAttendance({
           </label>
           <label className="field">
             {t("customers.date")}
-            <input
-              type="date"
+            <DatePicker
               value={adjEdit.date}
-              onChange={(e) => setAdjEdit({ ...adjEdit, date: e.target.value })}
+              ariaLabel={t("customers.date")}
+              onChange={(date) => setAdjEdit({ ...adjEdit, date })}
             />
           </label>
           <label className="field">

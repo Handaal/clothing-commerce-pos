@@ -1,23 +1,45 @@
 import type { AttendanceEntry, TenantCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type {
+  LocalAttendanceState,
+  OfflineAttendanceEventType,
+  OfflineBridge,
+} from "../../shared/offline";
 import { useI18n } from "../shell/i18n";
 
 type Phase = "loading" | "ready" | "working" | "error";
 
-// The signed-in operator's own attendance toggle, rendered in the POS top bar. It reflects the
+/** The slice of the offline bridge the clock needs — capture an event and read the local state. */
+export type AttendanceOfflineBridge = Pick<
+  OfflineBridge,
+  "recordAttendanceEvent" | "getLocalAttendance"
+>;
+
+// The signed-in operator's own attendance toggle, rendered in the POS top bar. Online, it reflects the
 // server's authoritative open-entry state (one open entry at a time) and records the register's branch
-// on clock-in. Reading and recording use the operator's own `attendance.record` grant — never anyone
-// else's. All timing (worked duration, open/closed) is owned by the Commerce API; this is only a view.
+// on clock-in. When the device is offline but offline authority is ready, it switches to an offline
+// capture path: it writes a signed, durable, PROVISIONAL clock event to the local outbox and shows a
+// "queued — will sync" state. It never claims a server-confirmed clock-in while offline. All server-side
+// timing/pairing/payroll remains owned by the Commerce API.
 export function AttendanceClock({
   client,
   branchId,
   disabled = false,
+  offline,
+  networkOnline = true,
+  offlineReady = false,
 }: {
   client: TenantCommerceClient;
   branchId: string | null;
   disabled?: boolean;
+  offline?: AttendanceOfflineBridge;
+  networkOnline?: boolean;
+  offlineReady?: boolean;
 }) {
   const { t, locale } = useI18n();
+  // Offline capture is active only when we are genuinely offline AND offline authority is installed.
+  // Otherwise the connected server path below is authoritative.
+  const offlineMode = Boolean(offline) && !networkOnline && offlineReady;
   const [openEntry, setOpenEntry] = useState<AttendanceEntry | null>(null);
   const [phase, setPhase] = useState<Phase>("loading");
   const [message, setMessage] = useState<string | null>(null);
@@ -27,6 +49,10 @@ export function AttendanceClock({
   const [leaveBusy, setLeaveBusy] = useState(false);
   // Discards results from a client that has been swapped out (tenant/session change) mid-flight.
   const activeClient = useRef(client);
+  // Offline capture state: the device-local attendance picture + a transient "queued" phase.
+  const [localAttendance, setLocalAttendance] = useState<LocalAttendanceState | null>(null);
+  const [offlineBusy, setOfflineBusy] = useState(false);
+  const [offlineMessage, setOfflineMessage] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     activeClient.current = client;
@@ -87,8 +113,83 @@ export function AttendanceClock({
     }
   }, [client, openEntry, onLeave, branchId, t]);
 
+  // Refresh the device-local attendance view whenever offline capture becomes active, so the button
+  // can offer the correct next action (toggle in/out from the last local event) and show the queue.
+  useEffect(() => {
+    if (!offlineMode || !offline) return;
+    let active = true;
+    offline
+      .getLocalAttendance()
+      .then((state) => {
+        if (active) setLocalAttendance(state);
+      })
+      .catch(() => {
+        if (active) setLocalAttendance(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [offlineMode, offline]);
+
+  // The next clock action offline toggles from the last captured local event. With no local history we
+  // default to clock-in; the server adjudicates true pairing later (no payroll claim is made here).
+  const offlineNextAction: OfflineAttendanceEventType =
+    localAttendance?.lastEvent?.eventType === "clock_in" ? "clock_out" : "clock_in";
+
+  const captureOffline = useCallback(async () => {
+    if (!offline) return;
+    setOfflineBusy(true);
+    setOfflineMessage(null);
+    try {
+      await offline.recordAttendanceEvent({ eventType: offlineNextAction });
+      const state = await offline.getLocalAttendance();
+      setLocalAttendance(state);
+      // Explicitly a QUEUED state — never "clocked in successfully" as a server fact.
+      setOfflineMessage(t("attendance.offlineQueued"));
+    } catch {
+      setOfflineMessage(t("attendance.offlineFailed"));
+    } finally {
+      setOfflineBusy(false);
+    }
+  }, [offline, offlineNextAction, t]);
+
   const since = openEntry ? formatClockInTime(openEntry.clockIn, locale) : null;
   const busy = phase === "loading" || phase === "working";
+
+  if (offlineMode) {
+    const pending = localAttendance?.pending ?? 0;
+    return (
+      <div className="attendance-clock" data-mode="offline">
+        <button
+          type="button"
+          className="button button--quiet"
+          aria-label={
+            offlineNextAction === "clock_out"
+              ? t("attendance.clockOutAria")
+              : t("attendance.clockInAria")
+          }
+          disabled={disabled || offlineBusy}
+          onClick={() => void captureOffline()}
+        >
+          {offlineBusy
+            ? t("attendance.offlineSaving")
+            : offlineNextAction === "clock_out"
+              ? t("attendance.clockOutOffline")
+              : t("attendance.clockInOffline")}
+        </button>
+        {pending > 0 ? (
+          <span className="attendance-clock__message" role="status">
+            {t("attendance.offlinePending", { count: pending })}
+          </span>
+        ) : null}
+        {offlineMessage ? (
+          <span className="attendance-clock__message" role="status">
+            {offlineMessage}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="attendance-clock">

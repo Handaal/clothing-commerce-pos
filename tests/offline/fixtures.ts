@@ -29,6 +29,8 @@ export const ids = {
   brand: "10000000-0000-4000-8000-000000000011",
   variant: "10000000-0000-4000-8000-000000000012",
   price: "10000000-0000-4000-8000-000000000013",
+  customer: "10000000-0000-4000-8000-000000000014",
+  collection: "10000000-0000-4000-8000-000000000015",
 } as const;
 
 export function ingestionResponse(
@@ -169,6 +171,7 @@ export function bootstrapFixture(
       maxCumulativeExposureMinor: 500_000,
       maxQuantityPerLine: 20,
       maxPendingOfflineSales: 50,
+      maxOfflineCreditExposureMinor: 200_000,
     },
     catalog: [
       {
@@ -176,6 +179,8 @@ export function bootstrapFixture(
         brandId: ids.brand,
         name: "Foundation Tee",
         active: true,
+        brandName: "Foundation",
+        categories: [{ id: ids.collection, name: "Tees" }],
         variants: [
           {
             variantId: ids.variant,
@@ -192,6 +197,14 @@ export function bootstrapFixture(
             },
           },
         ],
+      },
+    ],
+    customers: [
+      {
+        customerId: ids.customer,
+        name: "Layla Hassan",
+        phone: "+201000000000",
+        outstandingMinor: 0,
       },
     ],
     ...overrides,

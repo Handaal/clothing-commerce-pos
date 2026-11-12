@@ -7,6 +7,7 @@ import {
   type ActivityEvent,
   type ActivitySeverity,
 } from "../../shared/activity";
+import { DateRangeFilter } from "../shell/DateRangeFilter";
 import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SkeletonTable } from "../shell/Skeleton";
@@ -162,24 +163,7 @@ export function ActivityDesk({
           <h1>{t("nav.activity")}</h1>
         </div>
         <div className="staff-filters">
-          <label>
-            {t("activity.from")}
-            <input
-              type="date"
-              value={from}
-              max={to}
-              onChange={(event) => setFrom(event.target.value)}
-            />
-          </label>
-          <label>
-            {t("activity.to")}
-            <input
-              type="date"
-              value={to}
-              min={from}
-              onChange={(event) => setTo(event.target.value)}
-            />
-          </label>
+          <DateRangeFilter from={from} to={to} onFromChange={setFrom} onToChange={setTo} />
           <label>
             {t("activity.col.severity")}
             <Select<"" | ActivitySeverity>

@@ -1,11 +1,20 @@
 import type {
+  AcceptedOfflineAttendanceEvent,
+  AcceptedOfflinePayment,
   AcceptedOfflineSale,
   CachedCatalogItem,
+  LocalAttendanceState,
   LocalReceipt,
+  OfflineAttendanceEventInput,
+  OfflineCustomer,
+  OfflineCustomerPaymentInput,
   OfflineBootstrapInput,
   OfflineBootstrapResult,
+  OfflineLocalReport,
   OfflineReadiness,
   OfflineSaleInput,
+  OfflineStaffPinInput,
+  OfflineStaffPinResult,
   OfflineSyncStatus,
   PendingSyncSummary,
   ProjectedInventoryItem,
@@ -17,6 +26,10 @@ import { LocalDatabase, localDatabasePath } from "./database";
 import { DeviceKeyStore, type OsSecureStorage } from "./device-key";
 import { OfflineSaleService } from "./offline-service";
 import { OutboxStore } from "./outbox-store";
+import { PaymentOutboxStore } from "./payment-outbox-store";
+import { AttendanceOutboxStore } from "./attendance-outbox-store";
+import { StaffRosterStore } from "./staff-roster";
+import { LocalUserStore } from "../local-users/store";
 import { ReturnService } from "../returns/service";
 import { ReturnStore } from "../returns/store";
 import { ConnectedSaleService } from "../sales/service";
@@ -49,6 +62,8 @@ export class OfflineRuntime {
     private readonly returnService?: ReturnService,
     private readonly saleService?: ConnectedSaleService,
     private readonly activityStore?: ActivityStore,
+    private readonly staffRoster?: StaffRosterStore,
+    private readonly userStore?: LocalUserStore,
   ) {}
 
   static async initialize(
@@ -76,6 +91,10 @@ export class OfflineRuntime {
       const sales = new OfflineSaleService(database, keys, now);
       const outbox = new OutboxStore(database, now);
       outbox.recoverExpiredLeases();
+      const paymentOutbox = new PaymentOutboxStore(database, now);
+      paymentOutbox.recoverExpiredLeases();
+      const attendanceOutbox = new AttendanceOutboxStore(database, now);
+      attendanceOutbox.recoverExpiredLeases();
       const syncWorker = new OfflineSyncWorker(
         outbox,
         options.deliveryClient ?? new SdkOfflineDeliveryClient(apiBaseUrl),
@@ -84,6 +103,8 @@ export class OfflineRuntime {
           networkOnline: options.networkOnline,
           pollIntervalMs: options.syncPollIntervalMs,
           testSeam: options.syncTestSeam,
+          paymentOutbox,
+          attendanceOutbox,
         },
       );
       // Eager evaluation loads enrolled state and verifies the protected key without requiring it
@@ -107,6 +128,10 @@ export class OfflineRuntime {
         // Client-only activity ledger. Available whenever the local database is healthy, independent
         // of offline-selling enrollment.
         new ActivityStore(database.connection),
+        new StaffRosterStore(database, now),
+        // Device-local POS floor-staff accounts (the shifted-cafe login model). Available whenever the
+        // local database is healthy, independent of offline-selling enrollment.
+        new LocalUserStore(database, now),
       );
       if (options.startSyncWorker !== false) syncWorker.start();
       return runtime;
@@ -140,6 +165,10 @@ export class OfflineRuntime {
     return this.activityStore;
   }
 
+  getUserStore(): LocalUserStore | undefined {
+    return this.userStore;
+  }
+
   getSales(): ConnectedSaleService {
     if (!this.saleService)
       throw new Error("Connected sale persistence is unavailable. Connected sales are disabled.");
@@ -152,6 +181,27 @@ export class OfflineRuntime {
 
   getProjectedInventory(): ReadonlyArray<ProjectedInventoryItem> {
     return this.requireSales().getProjectedInventory();
+  }
+
+  getOfflineCustomers(): ReadonlyArray<OfflineCustomer> {
+    return this.requireSales().getOfflineCustomers();
+  }
+
+  recordCustomerPayment(input: OfflineCustomerPaymentInput): AcceptedOfflinePayment {
+    const result = this.requireSales().recordCustomerPayment(input);
+    void this.syncWorker?.requestRun();
+    return result;
+  }
+
+  recordAttendanceEvent(input: OfflineAttendanceEventInput): AcceptedOfflineAttendanceEvent {
+    const result = this.requireSales().recordAttendanceEvent(input);
+    void this.syncWorker?.requestRun();
+    return result;
+  }
+
+  getLocalAttendance(): LocalAttendanceState {
+    if (!this.sales) return { lastEvent: null, pending: 0, recent: [] };
+    return this.sales.getLocalAttendance();
   }
 
   acceptCashSale(input: OfflineSaleInput): AcceptedOfflineSale {
@@ -172,6 +222,26 @@ export class OfflineRuntime {
 
   getPendingSyncSummary(): PendingSyncSummary {
     return this.requireSales().getPendingSyncSummary();
+  }
+
+  getLocalReport(): OfflineLocalReport {
+    // Resilient like getSyncStatus: before local persistence is initialized there is simply no
+    // on-device activity to report, so return an honest empty projection rather than throwing.
+    if (!this.sales) {
+      return {
+        generatedAt: new Date().toISOString(),
+        currency: null,
+        coverageFrom: null,
+        coverageTo: null,
+        sales: { count: 0, grossMinor: 0, collectedMinor: 0, outstandingMinor: 0 },
+        lifecycle: { acceptedPendingSync: 0, synced: 0, needsReconciliation: 0 },
+        customerPayments: { count: 0, totalMinor: 0 },
+        unacknowledged: 0,
+        pending: 0,
+        blocked: 0,
+      };
+    }
+    return this.sales.getLocalReport();
   }
 
   getSyncStatus(): OfflineSyncStatus {
@@ -196,6 +266,11 @@ export class OfflineRuntime {
     if (!this.syncWorker) throw new Error(this.initializationError ?? "Local sync unavailable.");
     await this.syncWorker.requestRun();
     return this.syncWorker.getStatus();
+  }
+
+  verifyStaffPin(input: OfflineStaffPinInput): OfflineStaffPinResult {
+    if (!this.staffRoster) return { ok: false, reason: "UNAVAILABLE" };
+    return this.staffRoster.verifyPin(input);
   }
 
   async bootstrap(input: OfflineBootstrapInput): Promise<OfflineBootstrapResult> {

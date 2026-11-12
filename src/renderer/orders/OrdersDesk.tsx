@@ -9,6 +9,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { classifyCommerceError } from "../commerce/errors";
 import { formatMoney } from "../money";
 import { formatDateTime } from "../format";
+import { DateRangeFilter } from "../shell/DateRangeFilter";
 import { useI18n, type TVars } from "../shell/i18n";
 import { SkeletonLines } from "../shell/Skeleton";
 
@@ -68,6 +69,11 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  // Date-range filter mirrors the Reports desk's From/To. The orders list API has no date params,
+  // so (like the order-number search above) this filters the already-loaded pages client-side on
+  // each order's placedAt. It starts empty — no range — so every loaded order shows by default.
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [order, setOrder] = useState<OrderDetailResponse | null>(null);
@@ -173,12 +179,23 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
   );
 
   const normalizedQuery = query.trim().toLowerCase();
+  // End date is inclusive of the whole day, so compare against its final millisecond.
+  const fromTime = startDate ? new Date(startDate).getTime() : null;
+  const toTime = endDate ? new Date(`${endDate}T23:59:59.999`).getTime() : null;
   const visibleItems: readonly OrderListItem[] =
     list === null
       ? []
-      : normalizedQuery === ""
-        ? list.items
-        : list.items.filter((item) => item.orderNumber.toLowerCase().includes(normalizedQuery));
+      : list.items.filter((item) => {
+          if (normalizedQuery && !item.orderNumber.toLowerCase().includes(normalizedQuery))
+            return false;
+          if (fromTime !== null || toTime !== null) {
+            const placed = new Date(item.placedAt).getTime();
+            if (fromTime !== null && placed < fromTime) return false;
+            if (toTime !== null && placed > toTime) return false;
+          }
+          return true;
+        });
+  const hasDateFilter = fromTime !== null || toTime !== null;
 
   return (
     <main className="orders-shell">
@@ -196,6 +213,23 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
+          <DateRangeFilter
+            from={startDate}
+            to={endDate}
+            onFromChange={setStartDate}
+            onToChange={setEndDate}
+          />
+          {hasDateFilter ? (
+            <button
+              className="button button--quiet"
+              onClick={() => {
+                setStartDate("");
+                setEndDate("");
+              }}
+            >
+              {t("orders.clearDates")}
+            </button>
+          ) : null}
           <button className="button button--quiet" onClick={() => void loadFirstPage()}>
             {t("orders.refresh")}
           </button>
@@ -221,7 +255,11 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
             {listLoading ? <SkeletonLines lines={6} label={t("orders.loadingOrders")} /> : null}
             {!listLoading && visibleItems.length === 0 ? (
               <p className="staff-empty">
-                {normalizedQuery === "" ? t("orders.none") : t("orders.noMatch", { query })}
+                {normalizedQuery !== ""
+                  ? t("orders.noMatch", { query })
+                  : hasDateFilter
+                    ? t("orders.noneInRange")
+                    : t("orders.none")}
               </p>
             ) : null}
             {visibleItems.map((item) => (

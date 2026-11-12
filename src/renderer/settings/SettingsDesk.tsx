@@ -16,8 +16,10 @@ import { SkeletonLines, SkeletonTable } from "../shell/Skeleton";
 import { useTheme } from "../shell/theme";
 import { useToast } from "../shell/Toast";
 import { useModalA11y } from "../shell/useModalA11y";
+import { PosUsersManager } from "./PosUsersManager";
+import type { PosAuthBridge, PosUser } from "../../shared/pos-auth";
 
-type Tab = "business" | "branches" | "registers" | "returns" | "appearance";
+type Tab = "business" | "branches" | "registers" | "returns" | "appearance" | "team";
 
 const TABS: readonly { id: Tab; labelKey: string }[] = [
   { id: "business", labelKey: "settings.tab.business" },
@@ -32,12 +34,21 @@ type LifecycleStatus = Branch["status"];
 export function SettingsDesk({
   client,
   currency,
+  posAuthBridge,
+  operator,
 }: {
   client: TenantCommerceClient;
   currency: string;
+  posAuthBridge?: PosAuthBridge;
+  operator?: PosUser | null;
 }) {
   const { t } = useI18n();
   const [tab, setTab] = useState<Tab>("business");
+  // The team tab (server-backed pos_pin account management) is only meaningful for an admin operator. The
+  // device-local posAuth bridge is optional here — used only to mirror the roster display cache.
+  const showTeam = operator?.role === "admin";
+  const tabs = showTeam ? [...TABS, { id: "team" as Tab, labelKey: "posUsers.tab" }] : TABS;
+  const activeTab = tab === "team" && !showTeam ? "business" : tab;
 
   return (
     <main className="staff-shell">
@@ -49,11 +60,11 @@ export function SettingsDesk({
       </header>
 
       <nav className="report-tabs" aria-label={t("settings.area")}>
-        {TABS.map((item) => (
+        {tabs.map((item) => (
           <button
             key={item.id}
-            className={`report-tab${tab === item.id ? " report-tab--active" : ""}`}
-            aria-pressed={tab === item.id}
+            className={`report-tab${activeTab === item.id ? " report-tab--active" : ""}`}
+            aria-pressed={activeTab === item.id}
             onClick={() => setTab(item.id)}
           >
             {t(item.labelKey)}
@@ -61,14 +72,16 @@ export function SettingsDesk({
         ))}
       </nav>
 
-      {tab === "business" ? (
+      {activeTab === "business" ? (
         <BusinessTab client={client} />
-      ) : tab === "branches" ? (
+      ) : activeTab === "branches" ? (
         <BranchesTab client={client} />
-      ) : tab === "registers" ? (
+      ) : activeTab === "registers" ? (
         <RegistersTab client={client} />
-      ) : tab === "returns" ? (
+      ) : activeTab === "returns" ? (
         <ReturnsTab client={client} currency={currency} />
+      ) : activeTab === "team" ? (
+        <PosUsersManager client={client} rosterBridge={posAuthBridge} operator={operator ?? null} />
       ) : (
         <AppearanceTab />
       )}
@@ -969,7 +982,7 @@ function RegistersTab({ client }: { client: TenantCommerceClient }) {
 // Theme and language are device-local operator preferences (persisted in localStorage by their
 // providers), not tenant configuration — so they apply immediately with no server round-trip.
 function AppearanceTab() {
-  const { theme, setTheme, palette, setPalette } = useTheme();
+  const { theme, setTheme, palette, setPalette, scale, setScale } = useTheme();
   const { lang, setLang, t } = useI18n();
 
   return (
@@ -1002,7 +1015,21 @@ function AppearanceTab() {
             ]}
           />
         </label>
+        <label className="field">
+          {t("settings.displaySize")}
+          <Select<typeof scale>
+            ariaLabel={t("settings.displaySize")}
+            value={scale}
+            onChange={setScale}
+            options={[
+              { value: "compact", label: t("settings.displayCompact") },
+              { value: "normal", label: t("settings.displayNormal") },
+              { value: "large", label: t("settings.displayLarge") },
+            ]}
+          />
+        </label>
       </div>
+      <p className="staff-empty settings-grid__wide">{t("settings.displaySizeHint")}</p>
 
       <div className="field settings-grid__wide" style={{ marginTop: "1rem" }}>
         <span>{t("settings.colorPalette")}</span>

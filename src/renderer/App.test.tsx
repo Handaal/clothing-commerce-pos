@@ -358,8 +358,11 @@ function offlineEnablementFixture(): OfflineBridge {
             registerId: "register-1",
             inventoryLocationId: "location-1",
             currency: "USD",
-            acceptedUntil: "2026-09-08T20:00:00.000Z",
-            catalogValidUntil: "2026-09-08T20:00:00.000Z",
+            acceptedUntil: "2099-01-01T00:00:00.000Z",
+            catalogValidUntil: "2099-01-01T00:00:00.000Z",
+            offlineLoginAvailable: false,
+            offlineInstallmentsAvailable: false,
+            offlineCreditRemainingMinor: 0,
           }
         : {
             ready: false as const,
@@ -369,11 +372,27 @@ function offlineEnablementFixture(): OfflineBridge {
     ),
     getCachedCatalog: vi.fn(async () => []),
     getProjectedInventory: vi.fn(async () => []),
+    getOfflineCustomers: vi.fn(async () => []),
+    recordCustomerPayment: vi.fn(),
     acceptCashSale: vi.fn(),
+    recordAttendanceEvent: vi.fn(),
+    getLocalAttendance: vi.fn(async () => ({ lastEvent: null, pending: 0, recent: [] })),
     getLocalReceipt: vi.fn(),
     getUnacknowledgedSales: vi.fn(async () => []),
     acknowledgeSale: vi.fn(),
     getPendingSyncSummary: vi.fn(async () => ({ pending: 0, leased: 0, retryWait: 0, blocked: 0 })),
+    getLocalReport: vi.fn(async () => ({
+      generatedAt: "2026-11-11T00:00:00.000Z",
+      currency: null,
+      coverageFrom: null,
+      coverageTo: null,
+      sales: { count: 0, grossMinor: 0, collectedMinor: 0, outstandingMinor: 0 },
+      lifecycle: { acceptedPendingSync: 0, synced: 0, needsReconciliation: 0 },
+      customerPayments: { count: 0, totalMinor: 0 },
+      unacknowledged: 0,
+      pending: 0,
+      blocked: 0,
+    })),
     getSyncStatus: vi.fn(async () => ({
       pending: 0,
       leased: 0,
@@ -394,12 +413,13 @@ function offlineEnablementFixture(): OfflineBridge {
         registerId: "register-1",
         grantId: "grant-1",
         snapshotId: "snapshot-1",
-        acceptedUntil: "2026-09-08T20:00:00.000Z",
-        catalogValidUntil: "2026-09-08T20:00:00.000Z",
+        acceptedUntil: "2099-01-01T00:00:00.000Z",
+        catalogValidUntil: "2099-01-01T00:00:00.000Z",
         catalogItemCount: 1,
         releasedProjectionCount: 0,
       };
     }),
+    verifyStaffPin: vi.fn(async () => ({ ok: false as const, reason: "UNAVAILABLE" as const })),
   };
 }
 
@@ -442,7 +462,10 @@ describe("connected cashier application", () => {
       />,
     );
     await screen.findByRole("heading", { name: "Products" });
-    fireEvent.click(screen.getByRole("button", { name: "Enable offline selling" }));
+    // A never-armed register shows the first-run commissioning prompt and an "Arm offline selling"
+    // action rather than the terse unavailable line.
+    expect(await screen.findByText(/has not been armed for offline selling/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Arm offline selling" }));
     await waitFor(() =>
       expect(offlineBridge.bootstrap).toHaveBeenCalledWith({
         tenantId: "tenant-1",
@@ -453,6 +476,8 @@ describe("connected cashier application", () => {
     );
     expect(await screen.findByText(/Offline selling is ready/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Work offline" })).toBeTruthy();
+    // Once armed, the commissioning prompt is gone.
+    expect(screen.queryByText(/has not been armed for offline selling/)).toBeNull();
   });
 
   it("combines cart lines, submits only sale intent, shows receipt, and resets", async () => {
@@ -593,16 +618,35 @@ function readyOfflineBridge(): OfflineBridge {
       registerId: "register-1",
       inventoryLocationId: "location-1",
       currency: "USD",
-      acceptedUntil: "2026-09-08T20:00:00.000Z",
-      catalogValidUntil: "2026-09-08T20:00:00.000Z",
+      acceptedUntil: "2099-01-01T00:00:00.000Z",
+      catalogValidUntil: "2099-01-01T00:00:00.000Z",
+      offlineLoginAvailable: false,
+      offlineInstallmentsAvailable: false,
+      offlineCreditRemainingMinor: 0,
     })),
     getCachedCatalog: vi.fn(async () => []),
     getProjectedInventory: vi.fn(async () => []),
+    getOfflineCustomers: vi.fn(async () => []),
+    recordCustomerPayment: vi.fn(),
     acceptCashSale: vi.fn(),
+    recordAttendanceEvent: vi.fn(),
+    getLocalAttendance: vi.fn(async () => ({ lastEvent: null, pending: 0, recent: [] })),
     getLocalReceipt: vi.fn(),
     getUnacknowledgedSales: vi.fn(async () => []),
     acknowledgeSale: vi.fn(),
     getPendingSyncSummary: vi.fn(async () => ({ pending: 0, leased: 0, retryWait: 0, blocked: 0 })),
+    getLocalReport: vi.fn(async () => ({
+      generatedAt: "2026-11-11T00:00:00.000Z",
+      currency: null,
+      coverageFrom: null,
+      coverageTo: null,
+      sales: { count: 0, grossMinor: 0, collectedMinor: 0, outstandingMinor: 0 },
+      lifecycle: { acceptedPendingSync: 0, synced: 0, needsReconciliation: 0 },
+      customerPayments: { count: 0, totalMinor: 0 },
+      unacknowledged: 0,
+      pending: 0,
+      blocked: 0,
+    })),
     getSyncStatus: vi.fn(async () => ({
       pending: 0,
       leased: 0,
@@ -617,6 +661,7 @@ function readyOfflineBridge(): OfflineBridge {
     })),
     requestSync: vi.fn(),
     bootstrap: vi.fn(),
+    verifyStaffPin: vi.fn(async () => ({ ok: false as const, reason: "UNAVAILABLE" as const })),
   };
 }
 

@@ -1,4 +1,4 @@
-import { SignIn, useAuth, useClerk, useUser } from "@clerk/react";
+import { useAuth, useClerk, useUser } from "@clerk/react";
 import type {
   CommerceClient,
   CreatePosSaleResponse,
@@ -10,6 +10,7 @@ import type {
   CachedCatalogItem,
   OfflineBridge,
   OfflineReadiness,
+  OfflineStaffIdentity,
   OfflineSyncStatus,
   ProjectedInventoryItem,
 } from "../shared/offline";
@@ -22,7 +23,12 @@ import {
   updateQuantity,
   type CartLine,
 } from "./cart/cart";
-import { loadSellableCatalog, type SellableProduct, type SellableVariant } from "./catalog/catalog";
+import {
+  groupByCategory,
+  loadSellableCatalog,
+  type SellableProduct,
+  type SellableVariant,
+} from "./catalog/catalog";
 import { SaleExecutor, type SaleExecutionState, type SalesGateway } from "./checkout/sale-executor";
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
@@ -31,6 +37,9 @@ import { VariantDialog } from "./pos/VariantDialog";
 import { PayModal, type SaleCustomer, type SaleTender } from "./checkout/PayModal";
 import { QuoteController, type QuoteState } from "./promotions/quote";
 import { OfflineCashier, syncLabel, waitingSyncCount } from "./offline/cashier";
+import { OfflineRunwayNote } from "./offline/OfflineRunwayNote";
+import { needsCommissioning } from "./offline/commissioning";
+import { shouldAutoRefreshOffline } from "./offline/runway";
 import { AttendanceClock } from "./pos/AttendanceClock";
 import { resolveRegisters, type PosRegister } from "./pos/context";
 import { StaffAttendance } from "./staff/StaffAttendance";
@@ -55,8 +64,21 @@ import { VouchersDesk } from "./vouchers/VouchersDesk";
 import { SuppliersDesk } from "./suppliers/SuppliersDesk";
 import { ReportsDesk } from "./reports/ReportsDesk";
 import { SettingsDesk } from "./settings/SettingsDesk";
+import { OfflineDeskBanner } from "./offline/OfflineDeskBanner";
+import { DESK_OFFLINE_PROFILES } from "./offline/desk-capabilities";
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
+import { StaffPinSignIn } from "./auth/StaffPinSignIn";
+import { OfflineStaffPinSignIn } from "./auth/OfflineStaffPinSignIn";
+import { LocalLogin } from "./auth/LocalLogin";
+import { capabilitiesForOperator } from "./auth/posCapabilities";
+import type { PosAuthBridge, PosUser } from "../shared/pos-auth";
+import type {
+  PosSessionBridge,
+  PosSessionLoginResult,
+  PosSessionOperator,
+  PosSessionSnapshot,
+} from "../shared/pos-session";
 import { AppShell } from "./shell/AppShell";
 import { useI18n } from "./shell/i18n";
 import { PlaceholderSection } from "./shell/PlaceholderSection";
@@ -88,28 +110,144 @@ interface PosApplicationProps {
   offlineBridge?: OfflineBridge;
   returnsBridge?: ReturnsBridge;
   salesGateway?: SalesGateway;
+  posAuthBridge?: PosAuthBridge;
+  // POS-native (pos_pin) floor session. When present, the first screen is the username + PIN floor login
+  // (verified by the server via `onSignIn`), and the connected `operator` is the server-resolved
+  // `sessionOperator`. Absent in the non-Electron test host, which keeps the injected-`auth` behaviour.
+  posSessionBridge?: PosSessionBridge;
+  sessionOperator?: PosUser | null;
+  onSignIn?: (username: string, pin: string) => Promise<PosSessionLoginResult>;
+  // Owner provisioning (Clerk) affordance: entered from the floor login to create the first accounts on a
+  // fresh till, exited back to the floor. Clerk never appears on the floor path itself.
+  onEnterOwnerMode?: () => void;
+  onExitOwnerMode?: () => void;
 }
 
 type LoadPhase = "idle" | "loading" | "ready" | "choosing" | "empty" | "error";
 
+// Map the server-resolved pos_pin operator onto the renderer's operator shape, which drives the sidebar
+// capabilities and audit attribution. Admins see every section (permissions null); a cashier is limited
+// to the sections the server granted.
+function sessionOperatorToPosUser(operator: PosSessionOperator): PosUser {
+  return {
+    id: operator.membershipId,
+    username: operator.username,
+    name: operator.displayName,
+    role: operator.role,
+    permissions: operator.role === "admin" ? null : operator.permissions,
+    active: true,
+  };
+}
+
 export function App() {
+  return <PosRoot />;
+}
+
+// Root auth broker. The floor signs in with username + PIN against the POS-native (pos_pin) provider,
+// whose access token the main process owns and feeds to the SDK client through `getToken`. Clerk is kept
+// solely as an owner-only provisioning mode (create the first accounts on a fresh till); the floor flow
+// never renders it.
+function PosRoot() {
+  const sessionBridge = typeof window === "undefined" ? undefined : window.posSession;
+  const [snapshot, setSnapshot] = useState<PosSessionSnapshot | null>(null);
+  const [sessionLoaded, setSessionLoaded] = useState(false);
+  const [ownerMode, setOwnerMode] = useState(false);
+
+  // Clerk hooks stay mounted (ClerkProvider wraps the app) but are only consulted in owner mode.
   const { isLoaded, isSignedIn, userId, sessionId, getToken } = useAuth();
   const { user } = useUser();
   const clerk = useClerk();
-  const displayName =
-    user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? user?.username ?? undefined;
+
+  useEffect(() => {
+    if (!sessionBridge) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- no bridge → immediately resolved
+      setSessionLoaded(true);
+      return;
+    }
+    let active = true;
+    void sessionBridge
+      .getSession()
+      .then((value) => {
+        if (active) setSnapshot(value);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (active) setSessionLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionBridge]);
+
+  const refreshSession = useCallback(async () => {
+    if (!sessionBridge) return;
+    setSnapshot(await sessionBridge.getSession().catch(() => null));
+  }, [sessionBridge]);
+
+  // The shift token expires without a refresh token (by design). Re-read the session periodically so an
+  // expired token (the store purges it and returns null) returns the till to the floor login rather than
+  // silently 401-ing every connected request.
+  useEffect(() => {
+    if (!sessionBridge || !snapshot) return;
+    const timer = window.setInterval(() => void refreshSession(), 30_000);
+    return () => window.clearInterval(timer);
+  }, [sessionBridge, snapshot, refreshSession]);
+
+  const signIn = useCallback(
+    async (username: string, pin: string): Promise<PosSessionLoginResult> => {
+      if (!sessionBridge) return { ok: false, reason: "ERROR" };
+      const result = await sessionBridge.login(username, pin);
+      if (result.ok) setSnapshot(result.session);
+      return result;
+    },
+    [sessionBridge],
+  );
+
+  if (ownerMode) {
+    const displayName =
+      user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? user?.username ?? undefined;
+    return (
+      <PosApplication
+        auth={{
+          isLoaded,
+          isSignedIn: isSignedIn === true,
+          userId: userId ?? null,
+          sessionId: sessionId ?? null,
+          displayName,
+          getToken: async () => (await getToken()) ?? null,
+          signOut: async () => {
+            await clerk.signOut();
+            setOwnerMode(false);
+          },
+        }}
+        signedOutContent={<StaffPinSignIn />}
+        onExitOwnerMode={() => {
+          void clerk.signOut();
+          setOwnerMode(false);
+        }}
+      />
+    );
+  }
+
+  const operator = snapshot ? sessionOperatorToPosUser(snapshot.operator) : null;
   return (
     <PosApplication
       auth={{
-        isLoaded,
-        isSignedIn: isSignedIn === true,
-        userId: userId ?? null,
-        sessionId: sessionId ?? null,
-        displayName,
-        getToken: async () => (await getToken()) ?? null,
-        signOut: () => clerk.signOut(),
+        isLoaded: sessionLoaded,
+        isSignedIn: snapshot !== null,
+        userId: snapshot?.operator.membershipId ?? null,
+        sessionId: snapshot?.expiresAt ?? null,
+        displayName: snapshot?.operator.displayName,
+        getToken: async () => (sessionBridge ? await sessionBridge.getToken() : null),
+        signOut: async () => {
+          if (sessionBridge) await sessionBridge.logout();
+          setSnapshot(null);
+        },
       }}
-      signedOutContent={<SignIn routing="hash" />}
+      posSessionBridge={sessionBridge}
+      sessionOperator={operator}
+      onSignIn={signIn}
+      onEnterOwnerMode={() => setOwnerMode(true)}
     />
   );
 }
@@ -121,6 +259,12 @@ export function PosApplication({
   offlineBridge = typeof window === "undefined" ? undefined : window.offline,
   returnsBridge = typeof window === "undefined" ? undefined : window.returns,
   salesGateway,
+  posAuthBridge = typeof window === "undefined" ? undefined : window.posAuth,
+  posSessionBridge,
+  sessionOperator = null,
+  onSignIn,
+  onEnterOwnerMode,
+  onExitOwnerMode,
 }: PosApplicationProps) {
   const { t, locale } = useI18n();
   const tokenRef = useRef(auth.getToken);
@@ -205,24 +349,13 @@ export function PosApplication({
   const [section, setSection] = useState<SectionId>("pos");
   const [showReturns, setShowReturns] = useState(false);
 
-  // Role-based navigation. The gating mechanism is live (see `accessibleSections`); capabilities
-  // are permissive during the section build-out and will be sourced from the operator's
-  // server-resolved access guidance as each section is wired to the API.
-  const capabilities = useMemo<Capabilities>(
-    () => ({
-      isManager: true,
-      orders: true,
-      inventory: true,
-      customers: true,
-      reports: true,
-      vouchers: true,
-      suppliers: true,
-      staff: true,
-      activity: true,
-      settings: true,
-    }),
-    [],
-  );
+  // Role-based navigation. The connected operator is the server-resolved pos_pin identity (the human who
+  // signed in at the floor login); it drives section access and audit attribution. Null while the till is
+  // locked (no session) and in the non-Electron test host, where capabilities stay permissive.
+  const operator = sessionOperator;
+  // Capabilities follow the authenticated operator: admin sees everything, a cashier only the sections
+  // the server granted. With no session (tests / locked till) it stays permissive.
+  const capabilities = useMemo<Capabilities>(() => capabilitiesForOperator(operator), [operator]);
   const visibleSections = useMemo(() => accessibleSections(capabilities), [capabilities]);
   const [returnLocked, setReturnLocked] = useState(false);
   useEffect(() => {
@@ -263,6 +396,13 @@ export function PosApplication({
   );
   const [offlineActionPending, setOfflineActionPending] = useState(false);
   const [offlineActionMessage, setOfflineActionMessage] = useState<string | null>(null);
+  // Pre-authentication offline path: when Clerk is unreachable, a cashier unlocks the till with a
+  // local PIN (verified in main against the cached roster). `authMode` toggles the signed-out card
+  // between the connected sign-in and the offline PIN pad; `offlineOperator` holds the verified
+  // cashier so the offline cashier can render without a Clerk session.
+  const [authMode, setAuthMode] = useState<"connected" | "offline">("connected");
+  const [offlineOperator, setOfflineOperator] = useState<OfflineStaffIdentity | null>(null);
+  const lastAutoRefreshRef = useRef<number | null>(null);
 
   const tenantClient = useMemo<TenantCommerceClient | null>(
     () => (tenantId && client ? client.withTenant(tenantId) : null),
@@ -293,8 +433,11 @@ export function PosApplication({
     installActivityClickCapture();
   }, []);
   useEffect(() => {
-    setActivityActor({ id: auth.userId, name: auth.displayName ?? null });
-  }, [auth.userId, auth.displayName]);
+    // Prefer the local operator (the human actually at the till) for audit attribution; fall back to
+    // the Clerk identity when no local gate is in play.
+    if (operator) setActivityActor({ id: operator.id, name: operator.name });
+    else setActivityActor({ id: auth.userId, name: auth.displayName ?? null });
+  }, [operator, auth.userId, auth.displayName]);
   useEffect(() => {
     setActivityTenant(tenantId);
   }, [tenantId]);
@@ -355,15 +498,18 @@ export function PosApplication({
     }
   }, [offlineBridge]);
 
+  // Offline state is local and tokenless, so it is polled whenever the bridge exists — including on
+  // the signed-out screen, so the app knows whether to offer offline PIN sign-in, and while an
+  // offline operator is working without a Clerk session.
   useEffect(() => {
-    if (!auth.isLoaded || !auth.isSignedIn || !offlineBridge) return;
+    if (!offlineBridge) return;
     const initial = window.setTimeout(() => void refreshOfflineState(), 0);
     const timer = window.setInterval(() => void refreshOfflineState(), 2_000);
     return () => {
       window.clearTimeout(initial);
       window.clearInterval(timer);
     };
-  }, [auth.isLoaded, auth.isSignedIn, offlineBridge, refreshOfflineState]);
+  }, [offlineBridge, refreshOfflineState]);
 
   const resetTransaction = useCallback(() => {
     executor.reset();
@@ -624,7 +770,7 @@ export function PosApplication({
     setPayOpen(true);
   }
 
-  function completeSale(tenders: SaleTender[], customer?: SaleCustomer) {
+  function completeSale(tenders: SaleTender[], customer?: SaleCustomer, amountPaidMinor?: number) {
     if (!tenantClient || !register || locked || priceConfirmationRequired) return;
     if (cart.length === 0 || !quoteReady || quote === null) return;
     setPayOpen(false);
@@ -645,6 +791,7 @@ export function PosApplication({
       lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
       ...(appliedCode ? { promotionCode: appliedCode } : {}),
       ...(customer ? { customer } : {}),
+      ...(amountPaidMinor !== undefined ? { amountPaidMinor } : {}),
     });
   }
 
@@ -655,38 +802,156 @@ export function PosApplication({
     setSellingMode("connected");
     setTenantId(null);
     setTenants([]);
+    // Clearing the pos_pin session drops the operator (derived from it) back to the floor login, so the
+    // next cashier signs in with their own PIN. With no server session (Clerk owner mode) this is the
+    // Clerk sign-out.
     await auth.signOut();
   }
 
-  async function enableOfflineSelling() {
-    if (!offlineBridge || !tenantId || !register) return;
-    setOfflineActionPending(true);
-    setOfflineActionMessage(null);
-    try {
-      const accessToken = await auth.getToken();
-      if (!accessToken) throw new Error(t("pos.offline.sessionRefresh"));
-      const result = await offlineBridge.bootstrap({
-        tenantId,
-        registerId: register.registerId,
-        displayName: register.registerName,
-        accessToken,
-      });
-      await refreshOfflineState();
-      setOfflineActionMessage(
-        result.releasedProjectionCount > 0
-          ? t("pos.offline.refreshed", { count: result.releasedProjectionCount })
-          : t("pos.offline.ready"),
-      );
-    } catch (error) {
-      setOfflineActionMessage(error instanceof Error ? error.message : t("pos.offline.notEnabled"));
-    } finally {
-      setOfflineActionPending(false);
+  // Install or refresh the offline grant from live server authority. Invoked explicitly from the
+  // sync strip, and automatically (`auto`) when a connected, online session notices the offline
+  // runway is low or a cached grant has lapsed — so an intermittent connection keeps topping the
+  // grant up silently. The automatic path stays quiet: it never nags with a toast on a transient
+  // failure (the throttle prevents hammering) and only reports when the operator asked.
+  const runOfflineBootstrap = useCallback(
+    async (options: { readonly auto?: boolean } = {}) => {
+      const auto = options.auto ?? false;
+      const activeRegister = registers.find((item) => item.registerId === registerId) ?? null;
+      if (!offlineBridge || !tenantId || !activeRegister) return;
+      setOfflineActionPending(true);
+      if (!auto) setOfflineActionMessage(null);
+      try {
+        const accessToken = await tokenRef.current();
+        if (!accessToken) throw new Error(t("pos.offline.sessionRefresh"));
+        const result = await offlineBridge.bootstrap({
+          tenantId,
+          registerId: activeRegister.registerId,
+          displayName: activeRegister.registerName,
+          accessToken,
+        });
+        await refreshOfflineState();
+        if (!auto) {
+          setOfflineActionMessage(
+            result.releasedProjectionCount > 0
+              ? t("pos.offline.refreshed", { count: result.releasedProjectionCount })
+              : t("pos.offline.ready"),
+          );
+        }
+      } catch (error) {
+        if (!auto) {
+          setOfflineActionMessage(
+            error instanceof Error ? error.message : t("pos.offline.notEnabled"),
+          );
+        }
+      } finally {
+        setOfflineActionPending(false);
+      }
+    },
+    [offlineBridge, tenantId, registerId, registers, refreshOfflineState, t],
+  );
+
+  // Opportunistic grant top-up. The offline-state poll above refreshes `offlineReadiness`/`syncStatus`
+  // every couple of seconds, so re-evaluating here keeps the grant fresh without a dedicated timer:
+  // whenever a connected, online session sees a low (or lapsed-but-recoverable) runway, re-bootstrap
+  // once per throttle window. Turns an unstable connection into a continuous top-up instead of a
+  // grant that silently expires mid-outage.
+  useEffect(() => {
+    const connected = auth.isSignedIn && tenantId !== null && registerId !== null;
+    if (
+      !shouldAutoRefreshOffline({
+        readiness: offlineReadiness,
+        connected,
+        networkOnline: syncStatus.networkOnline,
+        refreshing: offlineActionPending,
+        now: Date.now(),
+        lastAttemptAt: lastAutoRefreshRef.current,
+      })
+    ) {
+      return;
     }
-  }
+    lastAutoRefreshRef.current = Date.now();
+    void runOfflineBootstrap({ auto: true });
+  }, [
+    auth.isSignedIn,
+    tenantId,
+    registerId,
+    offlineReadiness,
+    syncStatus.networkOnline,
+    offlineActionPending,
+    runOfflineBootstrap,
+  ]);
 
   if (!auth.isLoaded)
     return <CenteredState title={t("pos.state.restoring")} body={t("pos.state.restoringBody")} />;
+
+  const offlineLoginReady =
+    Boolean(offlineBridge) && offlineReadiness.ready && offlineReadiness.offlineLoginAvailable;
+
+  // POS-native (pos_pin) floor login is the FIRST screen: the till is locked until a cashier signs in
+  // with their username + PIN, verified by the server (`onSignIn`) or, when the server is unreachable,
+  // against the cached offline roster. On success the server-resolved operator drives the connected
+  // desks. Inactive in the non-Electron test host (no posSession bridge), which keeps the injected-`auth`
+  // behaviour. Clerk never appears here — it is reachable only via the owner setup affordance.
+  if (posSessionBridge && posAuthBridge && !operator && !offlineOperator) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-copy">
+          <p className="eyebrow">{t("pos.connectedCashier")}</p>
+          <h1>{t("app.name")}</h1>
+          <p>{t("login.localGateHint")}</p>
+        </section>
+        <section className="auth-card">
+          <LocalLogin
+            rosterBridge={posAuthBridge}
+            onSignIn={onSignIn ?? (async () => ({ ok: false, reason: "ERROR" }))}
+            offlineBridge={offlineLoginReady ? offlineBridge : undefined}
+            onOfflineSignedIn={setOfflineOperator}
+            onOwnerSetup={onEnterOwnerMode}
+          />
+        </section>
+      </main>
+    );
+  }
+
   if (!auth.isSignedIn) {
+    // A cashier who unlocked the till offline sells directly through the offline cashier with no
+    // Clerk session. Signing out (or reconnecting) returns to the connected sign-in card.
+    if (offlineOperator && offlineBridge && offlineReadiness.ready) {
+      const leaveOffline = () => {
+        setOfflineOperator(null);
+        setAuthMode("connected");
+      };
+      return (
+        <OfflineCashier
+          bridge={offlineBridge}
+          readiness={offlineReadiness}
+          catalog={offlineCatalog}
+          inventory={projectedInventory}
+          syncStatus={syncStatus}
+          onRefresh={refreshOfflineState}
+          onUseConnected={leaveOffline}
+          onSignOut={async () => leaveOffline()}
+        />
+      );
+    }
+    if (authMode === "offline" && offlineBridge && offlineReadiness.ready) {
+      return (
+        <main className="auth-shell">
+          <section className="auth-copy">
+            <p className="eyebrow">{t("cashier.offlineCashier")}</p>
+            <h1>{t("app.name")}</h1>
+            <p>{t("login.offlineHint")}</p>
+          </section>
+          <section className="auth-card">
+            <OfflineStaffPinSignIn
+              bridge={offlineBridge}
+              onSignedIn={setOfflineOperator}
+              onBack={() => setAuthMode("connected")}
+            />
+          </section>
+        </main>
+      );
+    }
     return (
       <main className="auth-shell">
         <section className="auth-copy">
@@ -694,7 +959,23 @@ export function PosApplication({
           <h1>{t("app.name")}</h1>
           <p>{t("pos.signInPrompt")}</p>
         </section>
-        <section className="auth-card">{signedOutContent}</section>
+        <section className="auth-card">
+          {signedOutContent}
+          {onExitOwnerMode ? (
+            <button type="button" className="button button--quiet" onClick={onExitOwnerMode}>
+              ‹ {t("local.backToTill")}
+            </button>
+          ) : null}
+          {offlineLoginReady ? (
+            <button
+              type="button"
+              className="button button--quiet"
+              onClick={() => setAuthMode("offline")}
+            >
+              {t("login.offlineOption")}
+            </button>
+          ) : null}
+        </section>
       </main>
     );
   }
@@ -703,7 +984,7 @@ export function PosApplication({
     return (
       <OfflineCashier
         bridge={offlineBridge}
-        currency={offlineReadiness.currency}
+        readiness={offlineReadiness}
         catalog={offlineCatalog}
         inventory={projectedInventory}
         syncStatus={syncStatus}
@@ -801,8 +1082,8 @@ export function PosApplication({
     projectedInventory.map((item) => [item.variantId, item.projectedAvailable]),
   );
 
-  // Search matches product name, style code, and any variant name or SKU. A barcode scanner types
-  // the SKU then sends Enter: an exact SKU match adds that variant straight to the cart.
+  // Search matches product name, brand, style code, and any variant name or SKU. A barcode scanner
+  // types the SKU then sends Enter: an exact SKU match adds that variant straight to the cart.
   const normalizedQuery = catalogQuery.trim().toLowerCase();
   const filteredProducts =
     normalizedQuery === ""
@@ -810,6 +1091,7 @@ export function PosApplication({
       : products.filter(
           (product) =>
             product.productName.toLowerCase().includes(normalizedQuery) ||
+            (product.brandName?.toLowerCase().includes(normalizedQuery) ?? false) ||
             (product.styleCode?.toLowerCase().includes(normalizedQuery) ?? false) ||
             product.variants.some(
               (variant) =>
@@ -817,6 +1099,9 @@ export function PosApplication({
                 (variant.variantName?.toLowerCase().includes(normalizedQuery) ?? false),
             ),
         );
+  // Group the visible products by category so the floor browses by category first (Zara jackets,
+  // shirts, …). A product in multiple collections appears under each; uncategorized items sort last.
+  const groupedCatalog = groupByCategory(filteredProducts, t("pos.uncategorized"));
 
   function submitCatalogSearch() {
     if (normalizedQuery === "" || locked) return;
@@ -852,11 +1137,26 @@ export function PosApplication({
             {register.branchName} · {register.defaultInventoryLocationName}
           </span>
         </div>
+        <div className="topbar-status">
+          <strong>{t("pos.connected")}</strong>
+          <span>
+            {offlineReadiness.ready
+              ? ` · ${t("pos.offlineReadyStrip", {
+                  status: t(syncLabel(syncStatus)),
+                  count: waitingSyncCount(syncStatus),
+                })}`
+              : ` · ${t("pos.offlineUnavailable", { message: offlineReadiness.message })}`}
+          </span>
+          {offlineReadiness.ready ? <OfflineRunwayNote readiness={offlineReadiness} /> : null}
+        </div>
         <div className="operator-actions">
           <AttendanceClock
             client={tenantClient}
             branchId={register.branchId}
             disabled={returnLocked}
+            offline={typeof window === "undefined" ? undefined : window.offline}
+            networkOnline={syncStatus.networkOnline}
+            offlineReady={offlineReadiness.ready}
           />
           {registers.length > 1 ? (
             <Select
@@ -880,33 +1180,34 @@ export function PosApplication({
               {t("pos.workOffline")}
             </button>
           ) : null}
+          <button
+            className="button button--quiet"
+            disabled={offlineActionPending}
+            onClick={() => void runOfflineBootstrap()}
+          >
+            {offlineActionPending
+              ? t("pos.updatingOffline")
+              : offlineReadiness.ready
+                ? t("pos.refreshOffline")
+                : needsCommissioning(offlineReadiness)
+                  ? t("pos.commissionOffline")
+                  : t("pos.enableOffline")}
+          </button>
+          <button
+            className="button button--quiet"
+            disabled={returnLocked || submitting}
+            onClick={() => setShowReturns((value) => !value)}
+          >
+            {showReturns ? t("pos.closeReturns") : t("pos.returns")}
+          </button>
         </div>
       </header>
 
-      <div className="sync-strip">
-        <div>
-          <strong>{t("pos.connected")}</strong>
-          <span>
-            {offlineReadiness.ready
-              ? ` · ${t("pos.offlineReadyStrip", {
-                  status: t(syncLabel(syncStatus)),
-                  count: waitingSyncCount(syncStatus),
-                })}`
-              : ` · ${t("pos.offlineUnavailable", { message: offlineReadiness.message })}`}
-          </span>
+      {needsCommissioning(offlineReadiness) ? (
+        <div className="commissioning-strip" role="status">
+          {t("pos.commissionOfflinePrompt")}
         </div>
-        <button
-          className="button button--quiet"
-          disabled={offlineActionPending}
-          onClick={() => void enableOfflineSelling()}
-        >
-          {offlineActionPending
-            ? t("pos.updatingOffline")
-            : offlineReadiness.ready
-              ? t("pos.refreshOffline")
-              : t("pos.enableOffline")}
-        </button>
-      </div>
+      ) : null}
       {offlineActionMessage ? (
         <div className="operation-message" role="status">
           {offlineActionMessage}
@@ -918,15 +1219,6 @@ export function PosApplication({
         </div>
       ) : null}
 
-      <div className="operation-message">
-        <button
-          className="button"
-          disabled={returnLocked || submitting}
-          onClick={() => setShowReturns((value) => !value)}
-        >
-          {showReturns ? t("pos.closeReturns") : t("pos.returns")}
-        </button>
-      </div>
       {showReturns && tenantClient && client ? (
         <ReturnDesk
           key={`${auth.sessionId}:${tenantId}:${registerId}`}
@@ -995,21 +1287,29 @@ export function PosApplication({
           {catalogPhase === "ready" && filteredProducts.length === 0 && normalizedQuery !== "" ? (
             <InlineState>{t("pos.noMatch", { query: catalogQuery })}</InlineState>
           ) : null}
-          <div className="product-grid">
-            {filteredProducts.map((product) => (
-              <button
-                key={product.productId}
-                className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
-                onClick={() => setSelectedProductId(product.productId)}
-              >
-                <span>{product.productName}</span>
-                <small>
-                  {product.styleCode ??
-                    t("cashier.variantCount", { count: product.variants.length })}
-                </small>
-              </button>
-            ))}
-          </div>
+          {groupedCatalog.map((group) => (
+            <div className="catalog-group" key={group.category}>
+              <p className="catalog-group__heading">{group.category}</p>
+              <div className="product-grid">
+                {group.products.map((product) => (
+                  <button
+                    key={product.productId}
+                    className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
+                    onClick={() => setSelectedProductId(product.productId)}
+                  >
+                    <span>{product.productName}</span>
+                    {product.brandName ? (
+                      <span className="product-card__brand">{product.brandName}</span>
+                    ) : null}
+                    <small>
+                      {product.styleCode ??
+                        t("cashier.variantCount", { count: product.variants.length })}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
           {selectedProduct ? (
             <VariantDialog
               product={selectedProduct}
@@ -1029,63 +1329,65 @@ export function PosApplication({
             </div>
             <span>{t("cashier.lines", { count: cart.length })}</span>
           </div>
-          {cart.length === 0 ? (
-            <InlineState>{t("cashier.cartEmpty")}</InlineState>
-          ) : (
-            <div className="cart-lines">
-              {cart.map((line) => (
-                <div className="cart-line" key={line.variantId}>
-                  <div className="cart-line__description">
-                    <strong>{line.label}</strong>
-                    <span>{t("cashier.sku", { sku: line.sku })}</span>
-                    <span>
-                      {t("cashier.each", {
-                        price: formatMoney(
-                          line.displayedUnitPriceMinor,
-                          register.sellingCurrency,
-                          locale,
-                        ),
-                      })}
-                    </span>
-                  </div>
-                  <label>
-                    {t("cashier.qty")}
-                    <input
-                      aria-label={t("cashier.qtyFor", { label: line.label })}
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={line.quantity}
+          <div className="cart-body">
+            {cart.length === 0 ? (
+              <InlineState>{t("cashier.cartEmpty")}</InlineState>
+            ) : (
+              <div className="cart-lines">
+                {cart.map((line) => (
+                  <div className="cart-line" key={line.variantId}>
+                    <div className="cart-line__description">
+                      <strong>{line.label}</strong>
+                      <span>{t("cashier.sku", { sku: line.sku })}</span>
+                      <span>
+                        {t("cashier.each", {
+                          price: formatMoney(
+                            line.displayedUnitPriceMinor,
+                            register.sellingCurrency,
+                            locale,
+                          ),
+                        })}
+                      </span>
+                    </div>
+                    <label>
+                      {t("cashier.qty")}
+                      <input
+                        aria-label={t("cashier.qtyFor", { label: line.label })}
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={line.quantity}
+                        disabled={submitting}
+                        // Prevent the scroll wheel from silently changing the quantity while the
+                        // cashier scrolls the page.
+                        onWheel={(event) => event.currentTarget.blur()}
+                        onChange={(event) =>
+                          changeCart((current) =>
+                            updateQuantity(current, line.variantId, Number(event.target.value)),
+                          )
+                        }
+                      />
+                    </label>
+                    <strong>
+                      {formatMoney(
+                        line.quantity * line.displayedUnitPriceMinor,
+                        register.sellingCurrency,
+                        locale,
+                      )}
+                    </strong>
+                    <button
+                      className="remove-button"
+                      aria-label={t("pos.removeLine", { label: line.label })}
                       disabled={submitting}
-                      // Prevent the scroll wheel from silently changing the quantity while the
-                      // cashier scrolls the page.
-                      onWheel={(event) => event.currentTarget.blur()}
-                      onChange={(event) =>
-                        changeCart((current) =>
-                          updateQuantity(current, line.variantId, Number(event.target.value)),
-                        )
-                      }
-                    />
-                  </label>
-                  <strong>
-                    {formatMoney(
-                      line.quantity * line.displayedUnitPriceMinor,
-                      register.sellingCurrency,
-                      locale,
-                    )}
-                  </strong>
-                  <button
-                    className="remove-button"
-                    aria-label={t("pos.removeLine", { label: line.label })}
-                    disabled={submitting}
-                    onClick={() => changeCart((current) => removeLine(current, line.variantId))}
-                  >
-                    {t("cashier.remove")}
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+                      onClick={() => changeCart((current) => removeLine(current, line.variantId))}
+                    >
+                      {t("cashier.remove")}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="promotion-panel">
             <div className="promotion-code-row">
               <label className="promotion-code-field">
@@ -1246,24 +1548,46 @@ export function PosApplication({
               lookupCustomer={(phone) =>
                 tenantClient.lookupCustomerByPhone(phone).then((result) => result.customer)
               }
+              searchCustomers={(term) =>
+                tenantClient.listCustomers({ search: term, limit: 6 }).then((result) =>
+                  result.items.map((item) => ({
+                    id: item.id,
+                    name: item.name,
+                    phone: item.phone,
+                  })),
+                )
+              }
             />
           ) : null}
-          <p className="authority-note">{t("pos.authorityNote")}</p>
         </aside>
       </div>
     </main>
   );
 
   const activeSection = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
+  // Shared offline-status banner for every management desk. The cashier (`pos`) owns its own richer
+  // sync UI, so it is excluded here; all other desks get the one honest banner derived from the
+  // single authoritative signal (networkOnline + offlineReadiness + the durable sync summary).
+  const deskProfile = section === "pos" ? undefined : DESK_OFFLINE_PROFILES[section];
+  const deskBanner = deskProfile ? (
+    <OfflineDeskBanner
+      capability={deskProfile.capability}
+      reasonKey={deskProfile.reasonKey}
+      networkOnline={syncStatus.networkOnline}
+      readiness={offlineReadiness}
+      sync={syncStatus}
+    />
+  ) : null;
   return (
     <AppShell
       sections={visibleSections}
       active={section}
       onNavigate={handleNavigate}
-      userName={auth.displayName ?? t("pos.operator")}
+      userName={operator?.name ?? auth.displayName ?? t("pos.operator")}
       onSignOut={() => void signOut()}
       signOutDisabled={locked || returnLocked}
     >
+      {deskBanner}
       {section === "pos" ? (
         posContent
       ) : section === "orders" ? (
@@ -1291,7 +1615,12 @@ export function PosApplication({
       ) : section === "activity" ? (
         <ActivityDesk />
       ) : section === "settings" ? (
-        <SettingsDesk client={tenantClient} currency={register.sellingCurrency} />
+        <SettingsDesk
+          client={tenantClient}
+          currency={register.sellingCurrency}
+          posAuthBridge={posAuthBridge}
+          operator={operator}
+        />
       ) : (
         <PlaceholderSection section={activeSection} />
       )}
@@ -1421,6 +1750,8 @@ function Receipt({
   );
 }
 
+// Non-authoritative "how long can we sell offline" note for the connected sync strip. A low runway is
+// tinted and also drives the opportunistic auto-refresh above; the title carries the exact instant.
 function CenteredState({ title, body }: { title: string; body: string }) {
   return (
     <main className="state-shell">

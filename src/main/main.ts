@@ -3,6 +3,10 @@ import path from "node:path";
 
 import { registerActivityIpc } from "./activity/ipc";
 import { registerOfflineIpc } from "./offline/ipc";
+import { registerPosAuthIpc } from "./local-users/ipc";
+import { registerPosSessionIpc } from "./pos-session/ipc";
+import { PosSessionManager } from "./pos-session/manager";
+import { PosSessionStore } from "./pos-session/store";
 import { registerReturnIpc } from "./returns/ipc";
 import { registerSalesIpc } from "./sales/ipc";
 import { OfflineRuntime } from "./offline/runtime";
@@ -25,6 +29,14 @@ function createWindow(rendererUrl: string): void {
   });
 
   window.once("ready-to-show", () => window.show());
+
+  // Chromium can lose renderer input focus after a native window steals OS focus — most notably the
+  // receipt print dialog and shell.openExternal. When that happens text fields silently ignore
+  // keystrokes and look "disabled" a moment after they were clicked, until the window is blurred and
+  // refocused (the reason alt-tabbing or double-tapping the Windows key "fixes" it). Re-assert the
+  // renderer's input focus whenever the window regains OS focus so the desync never persists.
+  window.on("focus", () => window.webContents.focus());
+
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("https://")) void shell.openExternal(url);
     return { action: "deny" };
@@ -38,6 +50,7 @@ function createWindow(rendererUrl: string): void {
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 let offlineRuntime: OfflineRuntime | undefined;
+let posSessionManager: PosSessionManager | undefined;
 
 if (!hasSingleInstanceLock) {
   app.quit();
@@ -78,6 +91,14 @@ if (!hasSingleInstanceLock) {
       registerReturnIpc(() => offlineRuntime!.getReturns(), rendererUrl);
       registerSalesIpc(() => offlineRuntime!.getSales(), rendererUrl);
       registerActivityIpc(() => offlineRuntime!.getActivityStore(), rendererUrl);
+      registerPosAuthIpc(() => offlineRuntime!.getUserStore(), rendererUrl);
+      // POS-native (pos_pin) connected session: username + PIN → server access token, cached OS-encrypted
+      // in the main process. This is the connected floor login that replaced Clerk for POS staff.
+      posSessionManager = new PosSessionManager(
+        commerceApiUrl,
+        new PosSessionStore(app.getPath("userData"), osSecureStorage),
+      );
+      registerPosSessionIpc(() => posSessionManager, rendererUrl);
       createWindow(rendererUrl);
     })();
     app.on("activate", () => {

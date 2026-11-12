@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 7;
+export const LOCAL_SCHEMA_VERSION = 13;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -392,6 +392,258 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
       ) STRICT;
       CREATE INDEX activity_log_by_time ON activity_log(occurred_at DESC);
       CREATE INDEX activity_log_by_severity ON activity_log(severity, occurred_at DESC);
+    `,
+  },
+  {
+    version: 8,
+    name: "offline_staff_roster",
+    sql: `
+      -- Authorized-staff roster for offline (no-connection) till login, delivered with the offline
+      -- grant and keyed to the same catalog snapshot so it rotates and retires atomically with it.
+      -- The row holds only a PIN *verifier* (server-computed salted scrypt digest), never the PIN.
+      -- Verification is re-derived and compared in the main process; the renderer never reads it.
+      -- This is an access gate: offline sales remain attributed to the grant operator_membership_id.
+      CREATE TABLE staff_roster (
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id) ON DELETE RESTRICT,
+        membership_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        pin_kdf TEXT NOT NULL CHECK (pin_kdf = 'scrypt'),
+        pin_salt_base64 TEXT NOT NULL,
+        pin_hash_base64 TEXT NOT NULL,
+        scrypt_n INTEGER NOT NULL CHECK (scrypt_n > 1),
+        scrypt_r INTEGER NOT NULL CHECK (scrypt_r > 0),
+        scrypt_p INTEGER NOT NULL CHECK (scrypt_p > 0),
+        key_length INTEGER NOT NULL CHECK (key_length >= 16),
+        PRIMARY KEY (snapshot_id, membership_id),
+        UNIQUE (snapshot_id, username)
+      ) STRICT;
+
+      CREATE INDEX staff_roster_by_username ON staff_roster(snapshot_id, username);
+    `,
+  },
+  {
+    version: 9,
+    name: "pos_local_users",
+    sql: `
+      -- Locally-managed POS floor-staff logins (the shifted-cafe model). These are device-local
+      -- accounts: created and edited in-app by an admin, authenticated entirely in the main process
+      -- with a salted scrypt PIN hash ("<saltHex>:<hashHex>"), independent of Clerk and the server
+      -- staff_roster above. They gate who operates this terminal and which sections they may open;
+      -- the underlying API session (Clerk) is unchanged.
+      CREATE TABLE pos_users (
+        id TEXT PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('admin', 'cashier')),
+        pin_hash TEXT NOT NULL,
+        -- JSON array of granted section ids for a cashier; NULL = role default (selling only).
+        permissions_json TEXT,
+        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX pos_users_roster ON pos_users(active, role, name);
+    `,
+  },
+  {
+    version: 10,
+    name: "offline_installments",
+    sql: `
+      -- Customer snapshot delivered with the offline grant so the till can attach installments and show
+      -- running tabs OFFLINE. Keyed to the catalog snapshot so it rotates and retires atomically with it
+      -- (mirrors staff_roster v8). snapshot_outstanding_minor is the server's authoritative balance at
+      -- bootstrap time; the live projected balance adds locally accepted (unsynced) installment debts.
+      CREATE TABLE catalog_customer (
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id) ON DELETE RESTRICT,
+        customer_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        snapshot_outstanding_minor INTEGER NOT NULL CHECK (snapshot_outstanding_minor >= 0),
+        PRIMARY KEY (snapshot_id, customer_id)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE INDEX catalog_customer_by_name ON catalog_customer(snapshot_id, name);
+
+      CREATE TRIGGER immutable_catalog_customer_update BEFORE UPDATE ON catalog_customer
+      BEGIN SELECT RAISE(ABORT, 'catalog customer is immutable'); END;
+
+      -- The dedicated offline credit cap, carried on the grant exactly like the other policy limits.
+      -- DDL ADD COLUMN is not an UPDATE, so the grant-immutability trigger does not fire.
+      ALTER TABLE offline_grant
+        ADD COLUMN max_offline_credit_exposure_minor INTEGER NOT NULL DEFAULT 0
+          CHECK (max_offline_credit_exposure_minor >= 0);
+
+      -- Installment facts on the accepted sale. A fully-settled sale keeps customer_id/amount_paid_minor
+      -- NULL and outstanding_minor 0; an installment records the attached customer, the deposit, and the
+      -- unpaid remainder that becomes their debt on sync.
+      ALTER TABLE local_sale ADD COLUMN customer_id TEXT;
+      ALTER TABLE local_sale ADD COLUMN amount_paid_minor INTEGER
+        CHECK (amount_paid_minor IS NULL OR amount_paid_minor >= 0);
+      ALTER TABLE local_sale ADD COLUMN outstanding_minor INTEGER NOT NULL DEFAULT 0
+        CHECK (outstanding_minor >= 0);
+
+      -- Fold the three new columns into the accepted-sale immutability guard.
+      DROP TRIGGER immutable_sale_facts;
+      CREATE TRIGGER immutable_sale_facts BEFORE UPDATE OF
+        local_sale_id, local_receipt_id, grant_id, snapshot_id, device_id, register_id,
+        inventory_location_id, operator_membership_id, accepted_at, currency, total_minor,
+        offline_sale_ordinal, cumulative_exposure_minor, created_at,
+        customer_id, amount_paid_minor, outstanding_minor ON local_sale
+      BEGIN SELECT RAISE(ABORT, 'accepted sale facts are immutable'); END;
+    `,
+  },
+  {
+    version: 11,
+    name: "offline_customer_payments",
+    sql: `
+      -- A customer installment paydown accepted while OFFLINE: the cashier takes cash against a tab, the
+      -- balance is reduced locally and the signed command is queued for the server to apply idempotently.
+      -- Mirrors the local_sale/outbox pair but for paydowns (no inventory, no fulfillment, no ordinal).
+      CREATE TABLE local_customer_payment (
+        local_payment_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES offline_grant(grant_id) ON DELETE RESTRICT,
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id) ON DELETE RESTRICT,
+        customer_id TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+        accepted_at TEXT NOT NULL,
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('accepted_pending_sync', 'synced', 'needs_reconciliation')),
+        server_payment_id TEXT,
+        server_outstanding_minor INTEGER,
+        server_received_at TEXT,
+        synchronized_at TEXT,
+        projection_released_at TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX local_customer_payment_by_customer ON local_customer_payment(customer_id);
+
+      CREATE TRIGGER immutable_payment_facts BEFORE UPDATE OF
+        local_payment_id, grant_id, snapshot_id, customer_id, currency, amount_minor, accepted_at,
+        created_at ON local_customer_payment
+      BEGIN SELECT RAISE(ABORT, 'accepted payment facts are immutable'); END;
+      CREATE TRIGGER immutable_payment_delete BEFORE DELETE ON local_customer_payment
+      BEGIN SELECT RAISE(ABORT, 'accepted payment is immutable'); END;
+
+      -- Durable, leased delivery queue for paydown commands — the payment-lane sibling of outbox.
+      CREATE TABLE payment_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        local_payment_id TEXT NOT NULL UNIQUE REFERENCES local_customer_payment(local_payment_id) ON DELETE RESTRICT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        canonical_command TEXT NOT NULL,
+        payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+        signature_base64 TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'delivered', 'blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        server_ingestion_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK ((state = 'leased') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+      ) STRICT;
+
+      CREATE INDEX payment_outbox_due_work ON payment_outbox(state, next_attempt_at, created_at);
+      CREATE INDEX payment_outbox_expired_lease ON payment_outbox(state, lease_expires_at);
+
+      CREATE TRIGGER immutable_payment_outbox_command BEFORE UPDATE OF
+        sync_command_id, local_payment_id, idempotency_key, canonical_command, payload_hash,
+        signature_base64, credential_id, request_json, created_at ON payment_outbox
+      BEGIN SELECT RAISE(ABORT, 'payment outbox command is immutable'); END;
+      CREATE TRIGGER immutable_payment_outbox_delete BEFORE DELETE ON payment_outbox
+      BEGIN SELECT RAISE(ABORT, 'payment outbox command is immutable'); END;
+    `,
+  },
+  {
+    version: 12,
+    name: "offline_catalog_classification",
+    sql: `
+      -- Display-only classification (brand name + category/collection names) captured at bootstrap time
+      -- from the live client, keyed to the catalog snapshot so it rotates and retires atomically with it
+      -- (mirrors staff_roster v8 / catalog_customer v10). This is PURELY for the register's category-first
+      -- browse and brand search — it carries no money and no selling authority, so the offline sale path
+      -- never reads it. Forward/backward compatible: a bootstrap without classification installs nothing
+      -- and the till simply falls back to a flat, brand-id-only catalog. categories_json is a JSON array.
+      CREATE TABLE catalog_classification (
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id) ON DELETE RESTRICT,
+        product_id TEXT NOT NULL,
+        brand_name TEXT,
+        categories_json TEXT NOT NULL DEFAULT '[]',
+        PRIMARY KEY (snapshot_id, product_id)
+      ) STRICT, WITHOUT ROWID;
+    `,
+  },
+  {
+    version: 13,
+    name: "offline_attendance",
+    sql: `
+      -- An attendance clock event (clock-in / clock-out) captured while OFFLINE. Append-only and
+      -- PROVISIONAL: the operator clocks, the event is stored + signed locally and queued for the server
+      -- to receive idempotently. It carries NO money, stock, ordinal or payroll effect — the server records
+      -- it as a received, pending-policy event (roadmap §15 Decision C). Mirrors the local_customer_payment
+      -- / payment_outbox pair.
+      CREATE TABLE local_attendance_event (
+        local_event_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES offline_grant(grant_id) ON DELETE RESTRICT,
+        operator_membership_id TEXT NOT NULL,
+        event_type TEXT NOT NULL CHECK (event_type IN ('clock_in', 'clock_out')),
+        event_at TEXT NOT NULL,
+        accepted_at TEXT NOT NULL,
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('accepted_pending_sync', 'received')),
+        server_ingestion_id TEXT,
+        server_received_at TEXT,
+        synchronized_at TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX local_attendance_event_by_member ON local_attendance_event(operator_membership_id, event_at);
+
+      CREATE TRIGGER immutable_attendance_facts BEFORE UPDATE OF
+        local_event_id, grant_id, operator_membership_id, event_type, event_at, accepted_at, created_at
+        ON local_attendance_event
+      BEGIN SELECT RAISE(ABORT, 'accepted attendance facts are immutable'); END;
+      CREATE TRIGGER immutable_attendance_delete BEFORE DELETE ON local_attendance_event
+      BEGIN SELECT RAISE(ABORT, 'accepted attendance event is immutable'); END;
+
+      -- Durable, leased delivery queue for attendance commands — the attendance-lane sibling of outbox.
+      CREATE TABLE attendance_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        local_event_id TEXT NOT NULL UNIQUE REFERENCES local_attendance_event(local_event_id) ON DELETE RESTRICT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        canonical_command TEXT NOT NULL,
+        payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+        signature_base64 TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'delivered', 'blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        server_ingestion_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK ((state = 'leased') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+      ) STRICT;
+
+      CREATE INDEX attendance_outbox_due_work ON attendance_outbox(state, next_attempt_at, created_at);
+      CREATE INDEX attendance_outbox_expired_lease ON attendance_outbox(state, lease_expires_at);
+
+      CREATE TRIGGER immutable_attendance_outbox_command BEFORE UPDATE OF
+        sync_command_id, local_event_id, idempotency_key, canonical_command, payload_hash,
+        signature_base64, credential_id, request_json, created_at ON attendance_outbox
+      BEGIN SELECT RAISE(ABORT, 'attendance outbox command is immutable'); END;
+      CREATE TRIGGER immutable_attendance_outbox_delete BEFORE DELETE ON attendance_outbox
+      BEGIN SELECT RAISE(ABORT, 'attendance outbox command is immutable'); END;
     `,
   },
 ];

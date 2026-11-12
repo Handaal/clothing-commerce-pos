@@ -24,15 +24,17 @@ a tax engine, and any offline promotions remain absent.
 ## Technology and contract
 
 Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.19.0**:
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.25.0**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.19.0.tgz`
-- SHA-256: `78ca20340b19364ccba6936c048492e05fc2d7d6c444a2ee0ef52380e38f3c30`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.19.0.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.25.0.tgz`
+- SHA-256: `5de0460701ddf4a612b58b68ae3a77b66e0c497bf6afc2ed0e6ff5bd7252af28`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.25.0.tgz`
 
-The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.19.0 includes the
-existing selling/workforce/customer surface plus supplier purchase money, standalone payments,
-server-computed dues, and payment reminders.
+The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.25.0 adds the POS-native
+`pos_pin` authentication surface — `posPinLogin` plus the staff-login management methods
+(`listStaffLogins`/`createStaffLogin`/`updateStaffLogin`/`setStaffLoginPin`/`deactivateStaffLogin`) —
+on top of the existing selling/workforce/customer/collections/installments surface. (This 0.25.0 tarball
+is a provisional local pack; replace it with the canonical CI artifact at release.)
 
 ## Supplier payables desk
 
@@ -82,6 +84,43 @@ atomic server generation containing the register binding, bounded grant, catalog
 inventory. Connected selling remains available when this optional bootstrap is unavailable. Main
 derives readiness and the renderer presents Connected, Offline ready/unavailable, Pending sync,
 Synchronizing, and attention states with non-authoritative “projected available” stock wording.
+
+### First-run offline commissioning
+
+Offline selling is a server-issued capability: a register cannot sell offline until it has been
+**armed at least once over a connection**. A brand-new install reports offline as unavailable
+(`DEVICE_NOT_ENROLLED`, then `GRANT_MISSING` after enrollment). This is the one hard first-run
+dependency on connectivity — if the connection is down the first time a till opens and it was never
+armed, there is no cached grant, roster, catalog, or key to fall back to.
+
+The connected shell distinguishes this never-armed state from a lapsed grant. When the register has
+never been commissioned it shows a **commissioning prompt** and an **Arm offline selling** action
+(rather than the terse "offline unavailable" line used for genuine faults). Arming is the same
+bootstrap as **Refresh offline data**; it enrolls the device, installs the grant/catalog/advisory
+inventory, and delivers the staff roster that lets a cashier unlock the till offline with a PIN.
+
+Commissioning runbook (per register, before go-live):
+
+1. On a reliable connection, sign in as an authorized operator and select the register.
+2. Click **Arm offline selling** and confirm the strip changes to **Offline ready** with a staff
+   roster installed (the offline PIN sign-in option then appears on the sign-in card).
+3. Verify the runway note shows a healthy remaining window ("offline valid ~Nh"). Once armed, every
+   later window of connectivity opportunistically tops the grant back up, so the runway does not
+   silently lapse mid-outage.
+4. Repeat for each register that must sell offline. The arming is device- and register-bound; it is
+   not shared between installs.
+
+Re-arming is safe and idempotent — it reuses the enrolled device and simply installs the newest
+server generation.
+
+### Returns and promotions offline
+
+Returns and promotions are **not** available offline, by design — both are server-authoritative and
+the client never computes refund or discount money. The offline cashier disables returns and directs
+the operator to reconnect; switching to offline invalidates any connected promotion pricing. Offline
+returns are deferred pending a server-issued signed offline-return authority (analogous to the
+offline-sale grant); the rationale and exact unblock path are in
+[`docs/offline-returns-promotions.md`](docs/offline-returns-promotions.md).
 
 An offline cash checkout calls the main-process acceptance service. One durable transaction validates
 the installed authority and policy, allocates the local receipt, stores the immutable sale/tender and
