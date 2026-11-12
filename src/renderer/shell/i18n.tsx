@@ -1071,7 +1071,8 @@ const EN: Dict = {
   "desk.status.online": "Connected",
   "desk.status.online.detail": "Live data from the server.",
   "desk.status.offlineReady": "Available offline",
-  "desk.status.offlineReady.detail": "Changes are saved on this device and sent when you reconnect.",
+  "desk.status.offlineReady.detail":
+    "Changes are saved on this device and sent when you reconnect.",
   "desk.status.queued": "Queued offline",
   "desk.status.queued.detail": "Saved locally — waiting to be sent to the server.",
   "desk.status.syncing": "Syncing",
@@ -1086,7 +1087,8 @@ const EN: Dict = {
   "desk.status.localOnly.detail":
     "This shows only what is stored on this till, not company-wide totals.",
   "desk.status.onlineOnly": "Needs a connection",
-  "desk.status.onlineOnly.detail": "This desk works online only. Use the offline cashier for sales.",
+  "desk.status.onlineOnly.detail":
+    "This desk works online only. Use the offline cashier for sales.",
   "desk.status.blocked": "Unavailable offline",
   "desk.status.blocked.detail": "This action is held until the server can authorize it.",
   "desk.status.blockedAuthority": "Offline access unavailable",
@@ -1099,25 +1101,35 @@ const EN: Dict = {
   "desk.reason.inventory": "Stock is tracked on the server ledger, so it cannot change offline.",
   "desk.reason.suppliers": "Supplier purchases and payments are back-office and need a connection.",
   "desk.reason.vouchers": "Discounts are calculated by the server and cannot be applied offline.",
-  "desk.reason.customers": "Customer management needs a connection; the cashier can still capture a customer with a sale.",
-  "desk.reason.reports": "Company-wide reports are built on the server. See the on-device summary below while offline.",
-  "desk.reason.staff": "Staff management needs a connection; attendance can be clocked offline from the cashier.",
-  "desk.reason.settings": "Device and shared settings need a connection; your local preferences still apply.",
-  "desk.reason.returns": "Returns stay closed offline until the server issues a signed return authorization.",
-  "desk.reason.orders": "Order changes need a connection; you can still re-open orders cached before going offline.",
+  "desk.reason.customers":
+    "Customer management needs a connection; the cashier can still capture a customer with a sale.",
+  "desk.reason.reports":
+    "Company-wide reports are built on the server. See the on-device summary below while offline.",
+  "desk.reason.staff":
+    "Staff management needs a connection; attendance can be clocked offline from the cashier.",
+  "desk.reason.settings":
+    "Device and shared settings need a connection; your local preferences still apply.",
+  "desk.reason.returns":
+    "Returns stay closed offline until the server issues a signed return authorization.",
+  "desk.reason.orders":
+    "Order changes need a connection; you can still re-open orders cached before going offline.",
   // Offline-authority reasons (mirror OfflineUnavailableReason)
   "desk.reason.NOT_INITIALIZED": "Offline mode is still starting up.",
   "desk.reason.DATABASE_UNHEALTHY": "The local database is unavailable, so offline work is held.",
   "desk.reason.DEVICE_NOT_ENROLLED": "This device has not been set up for offline use yet.",
   "desk.reason.DEVICE_NOT_ACTIVE": "This device's offline access has been turned off.",
-  "desk.reason.PRIVATE_KEY_UNAVAILABLE": "This device's secure key is unavailable, so offline work is held.",
+  "desk.reason.PRIVATE_KEY_UNAVAILABLE":
+    "This device's secure key is unavailable, so offline work is held.",
   "desk.reason.GRANT_MISSING": "No offline authorization is installed on this till.",
-  "desk.reason.GRANT_EXPIRED": "This till's offline authorization has expired — reconnect to renew it.",
+  "desk.reason.GRANT_EXPIRED":
+    "This till's offline authorization has expired — reconnect to renew it.",
   "desk.reason.BINDING_MISMATCH": "This till's offline authorization does not match this register.",
   "desk.reason.CATALOG_MISSING": "No offline catalog is installed on this till.",
   "desk.reason.CATALOG_EXPIRED": "The offline catalog has expired — reconnect to refresh it.",
-  "desk.reason.CLOCK_ROLLBACK": "The device clock moved backwards, so offline work is held for safety.",
-  "desk.reason.POLICY_LIMIT_REACHED": "This till has reached its offline limit — reconnect to continue.",
+  "desk.reason.CLOCK_ROLLBACK":
+    "The device clock moved backwards, so offline work is held for safety.",
+  "desk.reason.POLICY_LIMIT_REACHED":
+    "This till has reached its offline limit — reconnect to continue.",
 
   // On-device (local) report summary on the Reports desk
   "reports.local.title": "On-device summary",
@@ -2200,7 +2212,8 @@ const AR: Dict = {
   "desk.status.localOnly": "دون اتصال — بيانات على الجهاز",
   "desk.status.localOnly.detail": "يعرض هذا ما هو مخزّن على هذه الكاشير فقط، وليس إجماليات الشركة.",
   "desk.status.onlineOnly": "يحتاج إلى اتصال",
-  "desk.status.onlineOnly.detail": "يعمل هذا القسم عند الاتصال فقط. استخدم كاشير دون اتصال للمبيعات.",
+  "desk.status.onlineOnly.detail":
+    "يعمل هذا القسم عند الاتصال فقط. استخدم كاشير دون اتصال للمبيعات.",
   "desk.status.blocked": "غير متاح دون اتصال",
   "desk.status.blocked.detail": "يُحتجَز هذا الإجراء حتى يتمكّن الخادم من اعتماده.",
   "desk.status.blockedAuthority": "الوصول دون اتصال غير متاح",
@@ -2213,18 +2226,24 @@ const AR: Dict = {
   "desk.reason.inventory": "يُدار المخزون في سجلّ الخادم، لذا لا يمكن تغييره دون اتصال.",
   "desk.reason.suppliers": "مشتريات الموردين والمدفوعات عمليات مكتبية وتحتاج إلى اتصال.",
   "desk.reason.vouchers": "يحسب الخادم الخصومات، لذا لا يمكن تطبيقها دون اتصال.",
-  "desk.reason.customers": "تحتاج إدارة العملاء إلى اتصال؛ ومع ذلك يمكن للكاشير تسجيل عميل مع البيع.",
-  "desk.reason.reports": "تُبنى تقارير الشركة على الخادم. اطّلع على الملخّص المحلي أدناه أثناء عدم الاتصال.",
+  "desk.reason.customers":
+    "تحتاج إدارة العملاء إلى اتصال؛ ومع ذلك يمكن للكاشير تسجيل عميل مع البيع.",
+  "desk.reason.reports":
+    "تُبنى تقارير الشركة على الخادم. اطّلع على الملخّص المحلي أدناه أثناء عدم الاتصال.",
   "desk.reason.staff": "تحتاج إدارة الموظفين إلى اتصال؛ ويمكن تسجيل الحضور دون اتصال من الكاشير.",
-  "desk.reason.settings": "تحتاج إعدادات الجهاز والإعدادات المشتركة إلى اتصال؛ وتظل تفضيلاتك المحلية فعّالة.",
+  "desk.reason.settings":
+    "تحتاج إعدادات الجهاز والإعدادات المشتركة إلى اتصال؛ وتظل تفضيلاتك المحلية فعّالة.",
   "desk.reason.returns": "تبقى المرتجعات مغلقة دون اتصال حتى يُصدر الخادم تفويض إرجاع موقّعًا.",
-  "desk.reason.orders": "تحتاج تعديلات الطلبات إلى اتصال؛ ويمكنك إعادة فتح الطلبات المخزّنة قبل انقطاع الاتصال.",
+  "desk.reason.orders":
+    "تحتاج تعديلات الطلبات إلى اتصال؛ ويمكنك إعادة فتح الطلبات المخزّنة قبل انقطاع الاتصال.",
   // أسباب تعذّر الصلاحية دون اتصال
   "desk.reason.NOT_INITIALIZED": "لا يزال وضع عدم الاتصال قيد البدء.",
-  "desk.reason.DATABASE_UNHEALTHY": "قاعدة البيانات المحلية غير متاحة، لذا يُحتجَز العمل دون اتصال.",
+  "desk.reason.DATABASE_UNHEALTHY":
+    "قاعدة البيانات المحلية غير متاحة، لذا يُحتجَز العمل دون اتصال.",
   "desk.reason.DEVICE_NOT_ENROLLED": "لم يُجهَّز هذا الجهاز للعمل دون اتصال بعد.",
   "desk.reason.DEVICE_NOT_ACTIVE": "تم إيقاف وصول هذا الجهاز دون اتصال.",
-  "desk.reason.PRIVATE_KEY_UNAVAILABLE": "المفتاح الآمن لهذا الجهاز غير متاح، لذا يُحتجَز العمل دون اتصال.",
+  "desk.reason.PRIVATE_KEY_UNAVAILABLE":
+    "المفتاح الآمن لهذا الجهاز غير متاح، لذا يُحتجَز العمل دون اتصال.",
   "desk.reason.GRANT_MISSING": "لا يوجد تفويض دون اتصال مُثبَّت على هذه الكاشير.",
   "desk.reason.GRANT_EXPIRED": "انتهت صلاحية تفويض هذه الكاشير دون اتصال — أعد الاتصال لتجديده.",
   "desk.reason.BINDING_MISMATCH": "تفويض هذه الكاشير دون اتصال لا يطابق نقطة البيع هذه.",

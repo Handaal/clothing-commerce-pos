@@ -125,7 +125,12 @@ describe("deskStatus", () => {
 
   it("carries pending/unresolved counts and last-sync in the status", () => {
     const result = statusFor("offline-writes", {
-      sync: sync({ pending: 2, leased: 1, needsReconciliation: 1, lastAttemptAt: "2026-11-11T08:00:00.000Z" }),
+      sync: sync({
+        pending: 2,
+        leased: 1,
+        needsReconciliation: 1,
+        lastAttemptAt: "2026-11-11T08:00:00.000Z",
+      }),
     });
     expect(result.pendingCount).toBe(3);
     expect(result.unresolvedCount).toBe(1);

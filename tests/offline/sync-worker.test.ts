@@ -118,7 +118,7 @@ describe("offline synchronization worker", () => {
       {
         deliver: async () => Promise.reject(new ApiNetworkError("offline")),
         deliverPayment: unexpectedPayment,
-      deliverAttendance: unexpectedAttendance,
+        deliverAttendance: unexpectedAttendance,
       },
       { now: () => current },
     );

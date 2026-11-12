@@ -100,9 +100,7 @@ export function OfflineLocalReport({
       <div className="local-report__lifecycle">
         <h4>{t("reports.local.confirmation")}</h4>
         <ul>
-          <li>
-            {t("reports.local.pendingSync", { count: report.lifecycle.acceptedPendingSync })}
-          </li>
+          <li>{t("reports.local.pendingSync", { count: report.lifecycle.acceptedPendingSync })}</li>
           <li>{t("reports.local.synced", { count: report.lifecycle.synced })}</li>
           <li>
             {t("reports.local.needsReconciliation", {

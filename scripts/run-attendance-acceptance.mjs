@@ -49,7 +49,9 @@ if (!sendReport.recoveredProvisional)
 if (!sendReport.outboxPendingBefore)
   failures.push("the recovered event was not queued pending before send");
 if (!sendReport.saleOutboxEmpty)
-  failures.push("precondition failed: the sale outbox was not empty for the standalone-drain check");
+  failures.push(
+    "precondition failed: the sale outbox was not empty for the standalone-drain check",
+  );
 if (sendReport.dispatchedKeyCount !== 1)
   failures.push(`expected exactly one dispatch on recovery, saw ${sendReport.dispatchedKeyCount}`);
 if (sendReport.distinctKeyCount !== 1)
@@ -73,9 +75,13 @@ if (replayReport.distinctKeyCount !== 1)
 if (!replayReport.allKeysAreOriginal)
   failures.push("replay dispatched a key other than the original command identity");
 if (replayReport.lifecycleAfter !== "received")
-  failures.push(`event lifecycle after replay was ${replayReport.lifecycleAfter}, expected received`);
+  failures.push(
+    `event lifecycle after replay was ${replayReport.lifecycleAfter}, expected received`,
+  );
 if (replayReport.outboxStateAfter !== "delivered")
-  failures.push(`outbox state after replay was ${replayReport.outboxStateAfter}, expected delivered`);
+  failures.push(
+    `outbox state after replay was ${replayReport.outboxStateAfter}, expected delivered`,
+  );
 if (replayReport.pendingAfter !== 0)
   failures.push(`events still pending after replay: ${replayReport.pendingAfter}`);
 

@@ -117,9 +117,7 @@ function distinctKeys(log) {
 }
 function attendanceOutboxRow(database, syncCommandId) {
   return database.connection
-    .prepare(
-      "SELECT state, server_ingestion_id FROM attendance_outbox WHERE sync_command_id = ?",
-    )
+    .prepare("SELECT state, server_ingestion_id FROM attendance_outbox WHERE sync_command_id = ?")
     .get(syncCommandId);
 }
 
@@ -224,7 +222,8 @@ async function restartSendPhase() {
 
   // The exact event survived the crash as provisional (accepted_pending_sync), queued with its original id.
   const stateBefore = sales.getLocalAttendance();
-  const recovered = stateBefore.recent.find((e) => e.localEventId === captured.localEventId) ?? null;
+  const recovered =
+    stateBefore.recent.find((e) => e.localEventId === captured.localEventId) ?? null;
   const outboxBefore = attendanceOutboxRow(database, captured.syncCommandId);
 
   // Drain with ONLY the attendance outbox wired and an EMPTY sale outbox — proves the standalone drain
@@ -300,11 +299,10 @@ async function replayPhase() {
   // lease so recovery reclaims and redelivers the retained command (deterministic, test-only time source).
   const future = () => new Date(Date.now() + 120_000);
   const log = keysLog("replay-keys");
-  const worker = new OfflineSyncWorker(
-    new OutboxStore(database, future),
-    stubDelivery(log),
-    { attendanceOutbox: new AttendanceOutboxStore(database, future), now: future },
-  );
+  const worker = new OfflineSyncWorker(new OutboxStore(database, future), stubDelivery(log), {
+    attendanceOutbox: new AttendanceOutboxStore(database, future),
+    now: future,
+  });
   await worker.requestRun();
 
   const stateAfter = sales.getLocalAttendance();

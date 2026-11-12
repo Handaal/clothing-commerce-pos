@@ -553,12 +553,12 @@ launch-readiness claim.
 
 ### 11.0 Per-repo state at execution
 
-| Repo                           | Branch                            | HEAD      | Worktree (uncommitted)                                                                                                                                                                                       |
-| ------------------------------ | --------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Repo                           | Branch                            | HEAD      | Worktree (uncommitted)                                                                                                                                                                                                                                                                                                                                                                                 |
+| ------------------------------ | --------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | clothing-commerce-api          | `feat/pos-pin-provider`           | `87aedad` | `M .github/workflows/ci.yml, package.json, scripts/returns-test-resources.mjs, src/pos/supabase-offline-pos-repository.ts, 18 runner stubs`; `?? supabase-isolation-guard.mjs(+.d.mts), returns-test-resources.d.mts, test-offline-pos-{isolated,http-isolated}.mjs, migration 20261108120000, tests/{runner-safety,offline-pos-http-integration,offline-pos-multidevice}/`. Nothing committed/pushed. |
-| clothing-commerce-pos          | `feat/pos-pin-login`              | `3bbb6fe` | `M vite.config.mts`; `?? docs/offline-first-roadmap.md` (this doc), `pos-login.png`, `scripts/{capture-window.ps1,preview-storefront.mjs}`. No code change this phase; only this roadmap edited.             |
-| clothing-commerce-storefront   | `main`                            | `f4955ca` | unchanged (not touched this phase).                                                                                                                                                                          |
-| clothing-commerce-admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `c955019` | unchanged (not touched this phase).                                                                                                                                                                          |
+| clothing-commerce-pos          | `feat/pos-pin-login`              | `3bbb6fe` | `M vite.config.mts`; `?? docs/offline-first-roadmap.md` (this doc), `pos-login.png`, `scripts/{capture-window.ps1,preview-storefront.mjs}`. No code change this phase; only this roadmap edited.                                                                                                                                                                                                       |
+| clothing-commerce-storefront   | `main`                            | `f4955ca` | unchanged (not touched this phase).                                                                                                                                                                                                                                                                                                                                                                    |
+| clothing-commerce-admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `c955019` | unchanged (not touched this phase).                                                                                                                                                                                                                                                                                                                                                                    |
 
 No branch switch / reset / stash / commit / push / deploy. All pre-existing user changes preserved. All API
 changes are test-infra + the D-1 migration + the D-2 response-mapping fix; **no commercial policy changed**.
@@ -693,13 +693,13 @@ location fixture is the follow-up to assert cross-location grant independence.
 
 ### 11.4 Runner inventory (final)
 
-| Runner group                                                                                                               | Status                                  | Isolation mechanism                                   | Proof                                 |
-| -------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- | ----------------------------------------------------- | ------------------------------------- |
-| `test:pos:offline:integration` / `:rls` (→ `test-offline-pos-isolated.mjs`)                                                | ISOLATED                                | `rt-<hex>` Supabase, `--workdir`-pinned, env-sanitized | live run, 10 passed; guard tests      |
-| `test:pos:offline:http`, `test:pos:offline:multidevice` (→ `test-offline-pos-http-isolated.mjs`)                           | ISOLATED                                | same + real Next server on loopback                   | live runs, 8 + 4 passed               |
-| `test:returns:*`, `test:suppliers:*`, `test:staff:*`                                                                       | ISOLATED (pre-existing)                 | `returns-test-resources.mjs` `rt-<hex>`               | unchanged; boundary hardened          |
-| all `test:*:persistence`, `test:*:concurrency`, `test:catalog:management`, `test:management:persistence`                   | ISOLATED (pre-existing)                 | own disposable `postgres:<pid>` container             | unchanged                             |
-| `test:rls`, every `*:rls`, every `*:integration`, `authorization:integration`, `pos:sale:integration`, `dev:*`, `api:integration`, `inventory:write:integration`, `catalog:management:integration` (18) | **DISABLED / FAIL-CLOSED**              | `failClosedLegacyRunner()` throws pre-exec             | live: `node scripts/test-rls.mjs` → aborts, exit 1; guard tests |
+| Runner group                                                                                                                                                                                            | Status                     | Isolation mechanism                                    | Proof                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- | ------------------------------------------------------ | --------------------------------------------------------------- |
+| `test:pos:offline:integration` / `:rls` (→ `test-offline-pos-isolated.mjs`)                                                                                                                             | ISOLATED                   | `rt-<hex>` Supabase, `--workdir`-pinned, env-sanitized | live run, 10 passed; guard tests                                |
+| `test:pos:offline:http`, `test:pos:offline:multidevice` (→ `test-offline-pos-http-isolated.mjs`)                                                                                                        | ISOLATED                   | same + real Next server on loopback                    | live runs, 8 + 4 passed                                         |
+| `test:returns:*`, `test:suppliers:*`, `test:staff:*`                                                                                                                                                    | ISOLATED (pre-existing)    | `returns-test-resources.mjs` `rt-<hex>`                | unchanged; boundary hardened                                    |
+| all `test:*:persistence`, `test:*:concurrency`, `test:catalog:management`, `test:management:persistence`                                                                                                | ISOLATED (pre-existing)    | own disposable `postgres:<pid>` container              | unchanged                                                       |
+| `test:rls`, every `*:rls`, every `*:integration`, `authorization:integration`, `pos:sale:integration`, `dev:*`, `api:integration`, `inventory:write:integration`, `catalog:management:integration` (18) | **DISABLED / FAIL-CLOSED** | `failClosedLegacyRunner()` throws pre-exec             | live: `node scripts/test-rls.mjs` → aborts, exit 1; guard tests |
 
 Two-run concurrency: exercised at the **unit** level (guard test: disjoint ids/workdirs/labels/scopes) and at
 the **runtime** level by multiple live isolated runs that each cleaned only their own resources while the
@@ -708,26 +708,26 @@ load with three pre-existing projects on the host).
 
 ### 11.5 PASS / FAIL / NOT RUN matrix (this phase)
 
-| #   | Case                                                                          | Layer                                   | Verdict     |
-| --- | ----------------------------------------------------------------------------- | --------------------------------------- | ----------- |
-| A1  | Guard matrix (fail-closed, project/host/args/env, positive, two-run disjoint) | unit (DB-free)                          | **PASS** (21) |
-| A2  | Live isolated runs clean only their own resources; shared + `rt-*` untouched  | runtime (docker inspect)                | **PASS**    |
-| A3  | Disabled runner aborts before any destructive command                         | runtime                                 | **PASS**    |
-| B-D1a | Installment sale synced; deposit captured; debt row correct                  | full HTTP + disposable DB               | **PASS**    |
-| B-D1b | Installment exact replay idempotent (no second debt)                         | full HTTP + disposable DB               | **PASS**    |
-| B-D1c | Paydown reduces balance; paydown replay idempotent                           | full HTTP + disposable DB               | **PASS**    |
-| B-D1d | Unknown-customer installment fails closed, no write                          | full HTTP + disposable DB               | **PASS**    |
-| B-D2a | Card-only tender stored+reported as card (DB-verified)                       | full HTTP + disposable DB               | **PASS**    |
-| B-D2b | Cash+card split preserves both legs (DB-verified)                            | full HTTP + disposable DB               | **PASS**    |
-| B-D2c | Tender list not summing to total fails closed, no write                      | full HTTP + disposable DB               | **PASS**    |
-| B0  | Cash-only, commit-then-lost-response exactly-once, schema-version reject      | full HTTP + disposable DB               | **PASS**    |
-| C1  | Concurrent same-location bootstrap → one grant, one 409                        | full HTTP + disposable DB               | **PASS**    |
-| C2  | Loser retry refused (409)                                                      | full HTTP + disposable DB               | **PASS**    |
-| C3  | Denied device cannot craft an acceptable sale (3 craft vectors)               | full HTTP + disposable DB               | **PASS**    |
-| C4  | Cross-channel depletion → reconciliation, no oversell, exactly-once replay    | full HTTP + disposable DB               | **PASS**    |
-| —   | Two-physical-SQLite-store dual-Electron multi-device crash/restart             | packaged POS (not re-run as dual harness) | **NOT RUN** |
-| —   | Independent-locations grant/stock scoping (single-location fixture)           | —                                       | **NOT RUN** |
-| —   | Non-cash gateway capture/settlement semantics                                 | —                                       | **N/A** (no provider; recorded ≠ settled) |
+| #     | Case                                                                          | Layer                                     | Verdict                                   |
+| ----- | ----------------------------------------------------------------------------- | ----------------------------------------- | ----------------------------------------- |
+| A1    | Guard matrix (fail-closed, project/host/args/env, positive, two-run disjoint) | unit (DB-free)                            | **PASS** (21)                             |
+| A2    | Live isolated runs clean only their own resources; shared + `rt-*` untouched  | runtime (docker inspect)                  | **PASS**                                  |
+| A3    | Disabled runner aborts before any destructive command                         | runtime                                   | **PASS**                                  |
+| B-D1a | Installment sale synced; deposit captured; debt row correct                   | full HTTP + disposable DB                 | **PASS**                                  |
+| B-D1b | Installment exact replay idempotent (no second debt)                          | full HTTP + disposable DB                 | **PASS**                                  |
+| B-D1c | Paydown reduces balance; paydown replay idempotent                            | full HTTP + disposable DB                 | **PASS**                                  |
+| B-D1d | Unknown-customer installment fails closed, no write                           | full HTTP + disposable DB                 | **PASS**                                  |
+| B-D2a | Card-only tender stored+reported as card (DB-verified)                        | full HTTP + disposable DB                 | **PASS**                                  |
+| B-D2b | Cash+card split preserves both legs (DB-verified)                             | full HTTP + disposable DB                 | **PASS**                                  |
+| B-D2c | Tender list not summing to total fails closed, no write                       | full HTTP + disposable DB                 | **PASS**                                  |
+| B0    | Cash-only, commit-then-lost-response exactly-once, schema-version reject      | full HTTP + disposable DB                 | **PASS**                                  |
+| C1    | Concurrent same-location bootstrap → one grant, one 409                       | full HTTP + disposable DB                 | **PASS**                                  |
+| C2    | Loser retry refused (409)                                                     | full HTTP + disposable DB                 | **PASS**                                  |
+| C3    | Denied device cannot craft an acceptable sale (3 craft vectors)               | full HTTP + disposable DB                 | **PASS**                                  |
+| C4    | Cross-channel depletion → reconciliation, no oversell, exactly-once replay    | full HTTP + disposable DB                 | **PASS**                                  |
+| —     | Two-physical-SQLite-store dual-Electron multi-device crash/restart            | packaged POS (not re-run as dual harness) | **NOT RUN**                               |
+| —     | Independent-locations grant/stock scoping (single-location fixture)           | —                                         | **NOT RUN**                               |
+| —     | Non-cash gateway capture/settlement semantics                                 | —                                         | **N/A** (no provider; recorded ≠ settled) |
 
 ### 11.6 Remaining risks / owner decisions / next safe action
 
@@ -769,26 +769,26 @@ GoTrue. `[db.seed] enabled=false`, so a fresh `start` is equivalent to the old `
 
 ### 12.2 Per-suite result matrix (live, each on its own disposable `rt-<hex>`, then cleaned)
 
-| Suite (script)                              | Backend                 | Assertions | Verdict      |
-| ------------------------------------------- | ----------------------- | ---------- | ------------ |
-| `test:rls` (tenant)                         | pgTAP / disposable PG   | 87         | **PASS**     |
-| `test:catalog:rls`                          | pgTAP / disposable PG   | 43         | **PASS**     |
-| `test:inventory:rls`                        | pgTAP / disposable PG   | 30         | **PASS**     |
-| `test:inventory:operations:rls`             | pgTAP / disposable PG   | 11         | **PASS**     |
-| `test:orders:rls`                           | pgTAP / disposable PG   | 12         | **PASS**     |
-| `test:fulfillment:rls`                      | pgTAP / disposable PG   | 14         | **PASS**     |
-| `test:online:rls` (online + shared 6-file set) | pgTAP / disposable PG | 206        | **PASS**     |
-| `test:api:integration` (2F management)      | vitest + disposable API | 30         | **PASS**     |
-| `test:authorization:integration` (1D)       | vitest + disposable API | 20         | **PASS**     |
-| `test:fulfillment:integration` (2E)         | vitest + disposable API | 11         | **PASS**     |
-| `test:inventory:operations:integration` (2C)| vitest + disposable API | 9          | **PASS**     |
-| `test:inventory:write:integration` (2G)     | vitest + disposable API | 10         | **PASS**     |
-| `test:orders:integration` (2D)              | vitest + disposable API | 14         | **PASS**     |
-| `test:catalog:management:integration` (2J)  | vitest + disposable API | 10         | **PASS**     |
-| `test:pos:sale:integration` (2H)            | vitest + disposable API | 21         | **PASS**     |
-| `test:online:integration` (online-commerce) | real Next + disposable API | —       | **RESTORED-TO-RUN, FAILING** |
-| `test:dev:provisioning`                     | —                       | —          | **DISABLED (fail-closed)** |
-| `test:dev:commerce-fixture`                 | —                       | —          | **DISABLED (fail-closed)** |
+| Suite (script)                                 | Backend                    | Assertions | Verdict                      |
+| ---------------------------------------------- | -------------------------- | ---------- | ---------------------------- |
+| `test:rls` (tenant)                            | pgTAP / disposable PG      | 87         | **PASS**                     |
+| `test:catalog:rls`                             | pgTAP / disposable PG      | 43         | **PASS**                     |
+| `test:inventory:rls`                           | pgTAP / disposable PG      | 30         | **PASS**                     |
+| `test:inventory:operations:rls`                | pgTAP / disposable PG      | 11         | **PASS**                     |
+| `test:orders:rls`                              | pgTAP / disposable PG      | 12         | **PASS**                     |
+| `test:fulfillment:rls`                         | pgTAP / disposable PG      | 14         | **PASS**                     |
+| `test:online:rls` (online + shared 6-file set) | pgTAP / disposable PG      | 206        | **PASS**                     |
+| `test:api:integration` (2F management)         | vitest + disposable API    | 30         | **PASS**                     |
+| `test:authorization:integration` (1D)          | vitest + disposable API    | 20         | **PASS**                     |
+| `test:fulfillment:integration` (2E)            | vitest + disposable API    | 11         | **PASS**                     |
+| `test:inventory:operations:integration` (2C)   | vitest + disposable API    | 9          | **PASS**                     |
+| `test:inventory:write:integration` (2G)        | vitest + disposable API    | 10         | **PASS**                     |
+| `test:orders:integration` (2D)                 | vitest + disposable API    | 14         | **PASS**                     |
+| `test:catalog:management:integration` (2J)     | vitest + disposable API    | 10         | **PASS**                     |
+| `test:pos:sale:integration` (2H)               | vitest + disposable API    | 21         | **PASS**                     |
+| `test:online:integration` (online-commerce)    | real Next + disposable API | —          | **RESTORED-TO-RUN, FAILING** |
+| `test:dev:provisioning`                        | —                          | —          | **DISABLED (fail-closed)**   |
+| `test:dev:commerce-fixture`                    | —                          | —          | **DISABLED (fail-closed)**   |
 
 **16 of 18 restored green (528 assertions).** DB-free: `tests/runner-safety` = **29 passed** (21 existing
 guard + 8 new harness: plan-integrity, abort-before-Docker, exclude-set, empty-spec reject). `tsc`, `eslint`,
@@ -805,7 +805,7 @@ guard + 8 new harness: plan-integrity, abort-before-Docker, exclude-set, empty-s
   drift**: the suite only ever ran against the drifted shared dev project, never a canonical migration set.
   _Lost coverage:_ online guest checkout / quote / reservation-consumption / snapshot-replay over real HTTP.
   _Fix (follow-up, not done here to avoid guessing at assertions):_ reconcile `tests/online-commerce-
-  integration` fixtures/expectations to the canonical schema, then re-add to `test:all` + CI.
+integration` fixtures/expectations to the canonical schema, then re-add to `test:all` + CI.
 - **`test:dev:provisioning` / `test:dev:commerce-fixture`** — these spawn `scripts/provision-dev-identity.mjs`
   (and `provision-dev-commerce-fixture.mjs`), both **hardcoded** to the shared container
   `supabase_db_clothing-commerce-api`. Pointing vitest at an isolated DB does not redirect the spawned
@@ -867,12 +867,12 @@ engineering default — recorded in §13.4.
 
 ### 13.1 Verified repo state (live, 2026-11-11)
 
-| Repo | Branch | HEAD | Real (non-whitespace) uncommitted changes |
-| ---- | ------ | ---- | ----------------------------------------- |
-| clothing-commerce-pos | `feat/pos-pin-login` | `3bbb6fe` | `M vite.config.mts`; `?? docs/offline-first-roadmap.md` (this file), `.npmrc`, `pos-login.png`, `scripts/{capture-window.ps1,preview-storefront.mjs}`. No offline code change since 6D. |
-| clothing-commerce-api | `feat/pos-pin-provider` | `87aedad` | Real: `.github/workflows/ci.yml`, `package.json`, the 30+ isolation-rewritten `scripts/test-*.mjs`, `scripts/returns-test-resources.mjs`, `src/pos/supabase-offline-pos-repository.ts` (D-2). Untracked: ADR-041, `scripts/isolated-supabase-suite.mjs`+`.d.mts`, `scripts/supabase-isolation-guard.mjs`+`.d.mts`, `scripts/test-offline-pos-{isolated,http-isolated}.mjs`, migration `20261108120000` (D-1), `tests/{runner-safety,offline-pos-http-integration,offline-pos-multidevice}/`, `.npmrc`, seed-rich-*. |
-| clothing-commerce-storefront | `main` | `f4955ca` | UI-only edits (home hero/sections); no shared-contract change. |
-| clothing-commerce-admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `c955019` | `?? .npmrc, sf-test.txt, work/`. |
+| Repo                           | Branch                            | HEAD      | Real (non-whitespace) uncommitted changes                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------ | --------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| clothing-commerce-pos          | `feat/pos-pin-login`              | `3bbb6fe` | `M vite.config.mts`; `?? docs/offline-first-roadmap.md` (this file), `.npmrc`, `pos-login.png`, `scripts/{capture-window.ps1,preview-storefront.mjs}`. No offline code change since 6D.                                                                                                                                                                                                                                                                                                                             |
+| clothing-commerce-api          | `feat/pos-pin-provider`           | `87aedad` | Real: `.github/workflows/ci.yml`, `package.json`, the 30+ isolation-rewritten `scripts/test-*.mjs`, `scripts/returns-test-resources.mjs`, `src/pos/supabase-offline-pos-repository.ts` (D-2). Untracked: ADR-041, `scripts/isolated-supabase-suite.mjs`+`.d.mts`, `scripts/supabase-isolation-guard.mjs`+`.d.mts`, `scripts/test-offline-pos-{isolated,http-isolated}.mjs`, migration `20261108120000` (D-1), `tests/{runner-safety,offline-pos-http-integration,offline-pos-multidevice}/`, `.npmrc`, seed-rich-*. |
+| clothing-commerce-storefront   | `main`                            | `f4955ca` | UI-only edits (home hero/sections); no shared-contract change.                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| clothing-commerce-admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `c955019` | `?? .npmrc, sf-test.txt, work/`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 All four on upstream tip (0/0 divergence). No branch/reset/stash/commit/push/deploy performed.
 
@@ -903,23 +903,23 @@ Capability boundary fact: the durable `window.offline` bridge is consumed **only
 checkout path (`App.tsx`, `checkout/PayModal.tsx`, `auth/LocalLogin.tsx`, `settings/PosUsersManager.tsx`).
 Every management desk imports the connected SDK / `posSession` and has **no** offline durability.
 
-| Section (sidebar) | Action surface | Offline today | Evidence |
-| ----------------- | -------------- | ------------- | -------- |
-| **pos** (cashier) | cash sale, split/non-cash tender, installment, customer paydown, catalog/price/inventory/customer read, receipt, sync/ack, PIN gate | **OFFLINE (durable, queued, server-authoritative accept)** | `offline` bridge; `offline-service.ts`; `shared/offline.ts`; §7/§9/§11 |
-| **orders** | view/search orders, re-open order | **CACHED READ-ONLY** (cached order re-opens offline; silent refresh fails; no offline mutation) | `orders/OrdersDesk.tsx:28,172` |
-| **inventory** | receive / adjust / transfer / add product | **ONLINE-ONLY** (connected SDK; global ledger authority ADR-017/023) | `inventory/*`; 0 offline refs |
-| **customers** (desk) | management list / history | **ONLINE-ONLY** (cashier customer *capture* travels with the offline sale; the management desk does not) | `customers/CustomersDesk.tsx`; 0 offline refs |
-| **reports** | sales/activity reporting | **ONLINE-ONLY** (local pending-sync summary covers the cashier's operational need) | `reports/ReportsDesk.tsx`; 0 offline refs |
-| **vouchers** | voucher/promotion management | **ONLINE-ONLY + architecturally blocked for offline *application*** (ADR-026/037) | `vouchers/VouchersDesk.tsx`; `promotions/quote.ts` resets offline |
-| **suppliers** | purchases / dues / supplier payments | **ONLINE-ONLY** (back-office money) | `suppliers/SuppliersDesk.tsx`; 0 offline refs |
-| **staff** | staff mgmt, attendance clock-in/out | **ONLINE-ONLY** (local POS-user PIN admin via `posAuth` works offline; server staff mgmt + attendance do not) | `staff/*`, `pos/AttendanceClock.tsx`; 0 offline refs |
-| **activity** | operational activity log | **LOCAL (device-local ledger, works offline; not the server activity feed)** | `activity/*`; `main/activity/store.ts` |
-| **settings** | device/operational settings, POS users | **MIXED:** POS-user PIN admin OFFLINE (`posAuth`); device governance / server settings ONLINE-ONLY | `settings/*`; `PosUsersManager.tsx` |
-| (cross-cutting) **returns** | refund / exchange | **BLOCKED OFFLINE (fail-closed)** — `ReturnService` throws `CONNECTION_REQUIRED` at every stage; the local store is only connected-return crash recovery | `main/returns/service.ts:32-34` |
+| Section (sidebar)           | Action surface                                                                                                                      | Offline today                                                                                                                                            | Evidence                                                               |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| **pos** (cashier)           | cash sale, split/non-cash tender, installment, customer paydown, catalog/price/inventory/customer read, receipt, sync/ack, PIN gate | **OFFLINE (durable, queued, server-authoritative accept)**                                                                                               | `offline` bridge; `offline-service.ts`; `shared/offline.ts`; §7/§9/§11 |
+| **orders**                  | view/search orders, re-open order                                                                                                   | **CACHED READ-ONLY** (cached order re-opens offline; silent refresh fails; no offline mutation)                                                          | `orders/OrdersDesk.tsx:28,172`                                         |
+| **inventory**               | receive / adjust / transfer / add product                                                                                           | **ONLINE-ONLY** (connected SDK; global ledger authority ADR-017/023)                                                                                     | `inventory/*`; 0 offline refs                                          |
+| **customers** (desk)        | management list / history                                                                                                           | **ONLINE-ONLY** (cashier customer _capture_ travels with the offline sale; the management desk does not)                                                 | `customers/CustomersDesk.tsx`; 0 offline refs                          |
+| **reports**                 | sales/activity reporting                                                                                                            | **ONLINE-ONLY** (local pending-sync summary covers the cashier's operational need)                                                                       | `reports/ReportsDesk.tsx`; 0 offline refs                              |
+| **vouchers**                | voucher/promotion management                                                                                                        | **ONLINE-ONLY + architecturally blocked for offline _application_** (ADR-026/037)                                                                        | `vouchers/VouchersDesk.tsx`; `promotions/quote.ts` resets offline      |
+| **suppliers**               | purchases / dues / supplier payments                                                                                                | **ONLINE-ONLY** (back-office money)                                                                                                                      | `suppliers/SuppliersDesk.tsx`; 0 offline refs                          |
+| **staff**                   | staff mgmt, attendance clock-in/out                                                                                                 | **ONLINE-ONLY** (local POS-user PIN admin via `posAuth` works offline; server staff mgmt + attendance do not)                                            | `staff/*`, `pos/AttendanceClock.tsx`; 0 offline refs                   |
+| **activity**                | operational activity log                                                                                                            | **LOCAL (device-local ledger, works offline; not the server activity feed)**                                                                             | `activity/*`; `main/activity/store.ts`                                 |
+| **settings**                | device/operational settings, POS users                                                                                              | **MIXED:** POS-user PIN admin OFFLINE (`posAuth`); device governance / server settings ONLINE-ONLY                                                       | `settings/*`; `PosUsersManager.tsx`                                    |
+| (cross-cutting) **returns** | refund / exchange                                                                                                                   | **BLOCKED OFFLINE (fail-closed)** — `ReturnService` throws `CONNECTION_REQUIRED` at every stage; the local store is only connected-return crash recovery | `main/returns/service.ts:32-34`                                        |
 
 **So:** 1 of 10 sections is genuinely offline (the cashier). 2 are partial (activity local; settings' POS-user
 admin). The remaining 7 are online-only or read-cached. "The POS works fully offline" is **not** true for the
-full product; it **is** true for the core cashier *shift* if the owner confirms that is the goal.
+full product; it **is** true for the core cashier _shift_ if the owner confirms that is the goal.
 
 ### 13.4 OWNER DECISIONS REQUIRED (consolidated; nothing below is implemented or approved)
 
@@ -927,16 +927,16 @@ The decisive one is scope. ADR-041's "What is explicitly NOT proposed for offlin
 judgement, **not** an owner ruling. Each decision is reversible via feature flag; the safe default is
 status-quo (online-only / fail-closed).
 
-| # | Decision | Status | Safe recommendation | Blocks |
-| - | -------- | ------ | ------------------- | ------ |
-| **S** | **Scope**: is the goal "offline **cashier shift**" or "offline **whole POS** (incl. management desks)"? | OPEN (pivotal) | Offline cashier shift; keep global-authority desks online-only | Sizes the entire remaining program |
-| **A** | Offline **returns/refunds** — ADR-041 A (signed server return grant; settlement withheld to attestation) | PROPOSED, not approved | Implement **only if** refunds-while-disconnected are required; reuse offline-sale grant machinery; never client-compute refund money | Returns desk offline |
-| **B** | Offline **non-cash tender** semantics — ADR-041 B (preserve method, attested-not-settled) | Mapping bug (D-2) FIXED; the *product semantic* still owner-pending | Confirm "attested, not settled"; forbid any UI implying provider settlement until a gateway ADR | Correct tender mix; future gateway |
-| **C** | Offline **attendance** clock-in/out — ADR-041 C (append-only signed clock events) | PROPOSED, not approved | Implement if offline shifts needed (low risk; no money/stock) | Attendance offline |
-| **D** | Offline **promotions/vouchers** — ADR-041 D (bounded pre-authorized promo grant) | PROPOSED; default **no** | Keep fail-closed unless business explicitly wants offline discounts; then dedicated ADR | Offline discounts |
-| **E** | Offline **inventory ops** (receive/adjust/transfer) | Not proposed | Keep online-only (global append-only ledger authority, ADR-017/023); only a preallocated-authority envelope + reconciliation could change this | Inventory desk offline |
-| **F** | Offline **orders / customers / reports / suppliers management** | Not proposed | Keep online-only (read-cache is sufficient for a shift) | Those desks offline |
-| **G** | Offline **grant lease length / revocation window** for the target tenant | Operational (ops, not code) | Tune server lease to the acceptable revocation-latency risk | Residual revocation-window exposure |
+| #     | Decision                                                                                                 | Status                                                              | Safe recommendation                                                                                                                            | Blocks                              |
+| ----- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| **S** | **Scope**: is the goal "offline **cashier shift**" or "offline **whole POS** (incl. management desks)"?  | OPEN (pivotal)                                                      | Offline cashier shift; keep global-authority desks online-only                                                                                 | Sizes the entire remaining program  |
+| **A** | Offline **returns/refunds** — ADR-041 A (signed server return grant; settlement withheld to attestation) | PROPOSED, not approved                                              | Implement **only if** refunds-while-disconnected are required; reuse offline-sale grant machinery; never client-compute refund money           | Returns desk offline                |
+| **B** | Offline **non-cash tender** semantics — ADR-041 B (preserve method, attested-not-settled)                | Mapping bug (D-2) FIXED; the _product semantic_ still owner-pending | Confirm "attested, not settled"; forbid any UI implying provider settlement until a gateway ADR                                                | Correct tender mix; future gateway  |
+| **C** | Offline **attendance** clock-in/out — ADR-041 C (append-only signed clock events)                        | PROPOSED, not approved                                              | Implement if offline shifts needed (low risk; no money/stock)                                                                                  | Attendance offline                  |
+| **D** | Offline **promotions/vouchers** — ADR-041 D (bounded pre-authorized promo grant)                         | PROPOSED; default **no**                                            | Keep fail-closed unless business explicitly wants offline discounts; then dedicated ADR                                                        | Offline discounts                   |
+| **E** | Offline **inventory ops** (receive/adjust/transfer)                                                      | Not proposed                                                        | Keep online-only (global append-only ledger authority, ADR-017/023); only a preallocated-authority envelope + reconciliation could change this | Inventory desk offline              |
+| **F** | Offline **orders / customers / reports / suppliers management**                                          | Not proposed                                                        | Keep online-only (read-cache is sufficient for a shift)                                                                                        | Those desks offline                 |
+| **G** | Offline **grant lease length / revocation window** for the target tenant                                 | Operational (ops, not code)                                         | Tune server lease to the acceptable revocation-latency risk                                                                                    | Residual revocation-window exposure |
 
 ### 13.5 Tests actually run this phase
 
@@ -981,7 +981,7 @@ stays the global authority; renderer never gets keys/sql/signatures (locked by `
 ### 14.2 Offline attendance (Decision C) — implement FIRST (smaller, append-only, no money/stock)
 
 - **API:** new migration `offline_pos_private.record_offline_attendance(tenant, credential, command,
-  canonical, fingerprint, signature)`; idempotent by `syncCommandId`; validate device credential +
+canonical, fingerprint, signature)`; idempotent by `syncCommandId`; validate device credential +
   grant binding + schema version + `acceptedAt` skew window; **append-only** insert into the same
   attendance table the connected clock writes; return ingestion id. No reconciliation branch needed
   (append-only cannot oversell). RLS: same `offline_pos_writer` tenant-isolation pattern; add to the RLS
@@ -1056,17 +1056,18 @@ orders operations and every other desk are **reopened as in-scope for an offline
 record + defined sync/reconciliation), unless the owner later rules a specific action out. The owner **also
 authorizes fresh, uniquely isolated disposable API/database resources** for acceptance testing (removes the
 §14/§13.6 test-deferral blocker). "Offline" keeps its meaning from the top of this doc: durable local record
-+ exact accept/reject/reconcile on reconnect, server remains sole global authority; no fabricated business
-rules; nothing material enabled before its policy is explicit.
+
+- exact accept/reject/reconcile on reconnect, server remains sole global authority; no fabricated business
+  rules; nothing material enabled before its policy is explicit.
 
 ### 15.1 Live state re-verified this session (not from prior summaries)
 
-| Repo | Branch | HEAD | Status (verified `git status`) |
-| ---- | ------ | ---- | ------------------------------ |
-| clothing-commerce-api | `feat/pos-pin-provider` | `87aedad` | `M` ci.yml, next-env.d.ts, package.json, 30+ `scripts/test-*.mjs`, `src/pos/supabase-offline-pos-repository.ts`, 4 foundational migrations (**line-ending-only**, §13.1); **`D packages/sdk/*` — entire SDK source package still deleted on disk (`packages/sdk/` is empty)**; untracked isolation harnesses + migration `20261108120000`. |
-| clothing-commerce-pos | `feat/pos-pin-login` | `3bbb6fe` | `M vite.config.mts`; `?? docs/offline-first-roadmap.md` (this file), `.npmrc`, `pos-login.png`, `scripts/{capture-window.ps1,preview-storefront.mjs}`. |
-| clothing-commerce-storefront | `main` | `f4955ca` | UI-only edits; no shared-contract change. |
-| clothing-commerce-admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `c955019` | `?? .npmrc, sf-test.txt, work/`. |
+| Repo                           | Branch                            | HEAD      | Status (verified `git status`)                                                                                                                                                                                                                                                                                                             |
+| ------------------------------ | --------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| clothing-commerce-api          | `feat/pos-pin-provider`           | `87aedad` | `M` ci.yml, next-env.d.ts, package.json, 30+ `scripts/test-*.mjs`, `src/pos/supabase-offline-pos-repository.ts`, 4 foundational migrations (**line-ending-only**, §13.1); **`D packages/sdk/*` — entire SDK source package still deleted on disk (`packages/sdk/` is empty)**; untracked isolation harnesses + migration `20261108120000`. |
+| clothing-commerce-pos          | `feat/pos-pin-login`              | `3bbb6fe` | `M vite.config.mts`; `?? docs/offline-first-roadmap.md` (this file), `.npmrc`, `pos-login.png`, `scripts/{capture-window.ps1,preview-storefront.mjs}`.                                                                                                                                                                                     |
+| clothing-commerce-storefront   | `main`                            | `f4955ca` | UI-only edits; no shared-contract change.                                                                                                                                                                                                                                                                                                  |
+| clothing-commerce-admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `c955019` | `?? .npmrc, sf-test.txt, work/`.                                                                                                                                                                                                                                                                                                           |
 
 No branch/reset/stash/commit/push/deploy performed. Toolchain verified usable: Node v24.16.0, pnpm 10.33.1,
 Supabase CLI present, Docker 27.3.1; both API and POS `node_modules` present.
@@ -1078,7 +1079,7 @@ Supabase CLI present, Docker 27.3.1; both API and POS `node_modules` present.
 > committed `packages/sdk/*`). `pnpm sdk:build` then failed only in the cosmetic post-build
 > `packages/sdk/scripts/strip-bundle-banners.mjs`, which used `new URL(...).pathname` and left `%20` in the
 > spaced workspace path (`G:\Business Business\…`). **Fixed** that script to use `fileURLToPath`. `pnpm
-> sdk:build` is now **green** (ESM+CJS+DTS). The SDK contract spine + pack pipeline are functional again, so
+sdk:build` is now **green** (ESM+CJS+DTS). The SDK contract spine + pack pipeline are functional again, so
 > every new offline desk is unblocked. (Not committed/pushed. The two restored historical `.tgz` under
 > `packages/sdk/` are the committed ones.) The rest of 15.2 below is the original blocker analysis, retained.
 
@@ -1087,7 +1088,7 @@ Supabase CLI present, Docker 27.3.1; both API and POS `node_modules` present.
 The SDK is the contract spine. By design, each offline command's **canonicalization + signing payload shape
 lives in `@shifted/clothing-commerce-sdk`** (POS `offline-service.ts` / `sync-worker.ts` call
 `canonicalizeOffline*Command` and the `ingestOffline*` client methods via `createRequire`; the API verifies
-the *same* canonical bytes). Adding any new offline desk (attendance, returns, inventory, etc.) therefore
+the _same_ canonical bytes). Adding any new offline desk (attendance, returns, inventory, etc.) therefore
 requires: new command type + `canonicalizeOffline<X>Command` + `ingestOffline<X>` client method in the SDK →
 `pnpm openapi:generate && pnpm sdk:pack` → re-vendor the new `.tgz` into POS → bump `boundaries.test.ts` SHA.
 
@@ -1106,20 +1107,20 @@ records; test-harness scaffolding). All server-contract desks are blocked on it.
 Status legend as §2. "Gate" = what must be true before it can be built/enabled. Every server-contract row is
 additionally gated by **15.2 (SDK)**.
 
-| Desk / action | Current | Target offline behavior | Authority / data needed offline | Gate (owner policy / ADR) |
-| ------------- | ------- | ----------------------- | ------------------------------- | ------------------------- |
-| Cashier: cash/split/installment/paydown, catalog/stock/customer read, receipt, ack/sync, PIN gate | **OFFLINE/QUEUED (proven)** | keep | existing grant | none (done) |
-| Attendance clock-in/out/leave | ONLINE-only | append-only signed clock events, durable, queued, server-authoritative accept | offline-PIN operator + grant binding; device clock (bounded) | ADR-041-C direction approved; **C-i** operator attribution (recommend: offline-PIN roster operator) |
-| Returns / refunds / exchange | BLOCKED (fail-closed) | server-issued signed **return grant** (per-line eligible qty + max refundable, server-computed); queue immutable return intent; refund `status=pending`, **settle only after reconnect attestation**; drift → reconciliation | return grant bound to original order/device/register; eligible lines + amounts | ADR-041-A; **A-i** refund budget/max, **A-ii** grant window, **A-iii** refund-only vs exchange first (recommend refund-only) |
-| Non-cash tender (card/instapay/wallet) | recorded, **attested-not-settled** | keep + UI never implies provider settlement | — | ADR-041-B confirmed; forbids gateway-capture claim until a gateway ADR |
-| Inventory receive / adjust / transfer / issue / count | ONLINE-only | scoped **preauthorized/bounded** or **provisional append** commands; unmistakably-local projected ledger; reconcile; never hide oversell/shortfall | server-issued bounded allocation/authority envelope; location binding | **E** (reopened): oversell tolerance + allocation/preauth policy — **owner, not fabricable** |
-| Orders: view / update / fulfill / cancel / return | cached read-only | persist offline **intent**, never overwrite canonical status/history; explicit reconciliation result | cached order snapshot; signed intent command | which order ops are offline-permitted + conflict policy (owner) |
-| Customers: capture / profile change | capture travels w/ sale | safe local capture + **scoped** profile edits; duplicate-identity conflict handling on sync; PII-at-rest + retention | scoped customer-edit authority; local PII controls | retention/access policy; edit-scope (owner) |
-| Promotions / vouchers | BLOCKED (arch) | bounded server-issued **promotion/redemption grant** (eligibility, budget, expiry, stacking, shared-redemption contention) OR keep cache/queued-request; **never client-invent discounts** | pre-authorized promo budget grant | ADR-041-D (reopened): bounded promo-grant policy — **owner** |
-| Suppliers / purchases / dues / payments | ONLINE-only | scoped purchase/receiving grants or provisional append docs; separate goods-receipt from inventory posting, supplier-payment from recorded intent | purchasing/receiving authority; AP policy | supplier financial authority + AP settlement policy — **owner, not fabricable** |
-| Reports / activity | ONLINE (reports) / local (activity) | **useful offline reports stating coverage + freshness**; never label a partial local projection as company-wide | existing local IPC (pending sync, local sales, activity ledger) | **none** — SDK-free, implementable now |
-| Settings / device governance | mixed (POS-user PIN offline) | local prefs apply immediately; shared settings queued/provisional + versioned; honest **bounded-lease** revocation delay disclosure; no "globally revoked" claim before ack | versioned settings; lease/revocation semantics | device revocation lease semantics (**G**, owner/ops) |
-| Payroll | online (back-office) | derived from accepted attendance; acceptance under approved policy | — | payroll attribution/corrections policy — **owner** |
+| Desk / action                                                                                     | Current                             | Target offline behavior                                                                                                                                                                                                      | Authority / data needed offline                                                | Gate (owner policy / ADR)                                                                                                    |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| Cashier: cash/split/installment/paydown, catalog/stock/customer read, receipt, ack/sync, PIN gate | **OFFLINE/QUEUED (proven)**         | keep                                                                                                                                                                                                                         | existing grant                                                                 | none (done)                                                                                                                  |
+| Attendance clock-in/out/leave                                                                     | ONLINE-only                         | append-only signed clock events, durable, queued, server-authoritative accept                                                                                                                                                | offline-PIN operator + grant binding; device clock (bounded)                   | ADR-041-C direction approved; **C-i** operator attribution (recommend: offline-PIN roster operator)                          |
+| Returns / refunds / exchange                                                                      | BLOCKED (fail-closed)               | server-issued signed **return grant** (per-line eligible qty + max refundable, server-computed); queue immutable return intent; refund `status=pending`, **settle only after reconnect attestation**; drift → reconciliation | return grant bound to original order/device/register; eligible lines + amounts | ADR-041-A; **A-i** refund budget/max, **A-ii** grant window, **A-iii** refund-only vs exchange first (recommend refund-only) |
+| Non-cash tender (card/instapay/wallet)                                                            | recorded, **attested-not-settled**  | keep + UI never implies provider settlement                                                                                                                                                                                  | —                                                                              | ADR-041-B confirmed; forbids gateway-capture claim until a gateway ADR                                                       |
+| Inventory receive / adjust / transfer / issue / count                                             | ONLINE-only                         | scoped **preauthorized/bounded** or **provisional append** commands; unmistakably-local projected ledger; reconcile; never hide oversell/shortfall                                                                           | server-issued bounded allocation/authority envelope; location binding          | **E** (reopened): oversell tolerance + allocation/preauth policy — **owner, not fabricable**                                 |
+| Orders: view / update / fulfill / cancel / return                                                 | cached read-only                    | persist offline **intent**, never overwrite canonical status/history; explicit reconciliation result                                                                                                                         | cached order snapshot; signed intent command                                   | which order ops are offline-permitted + conflict policy (owner)                                                              |
+| Customers: capture / profile change                                                               | capture travels w/ sale             | safe local capture + **scoped** profile edits; duplicate-identity conflict handling on sync; PII-at-rest + retention                                                                                                         | scoped customer-edit authority; local PII controls                             | retention/access policy; edit-scope (owner)                                                                                  |
+| Promotions / vouchers                                                                             | BLOCKED (arch)                      | bounded server-issued **promotion/redemption grant** (eligibility, budget, expiry, stacking, shared-redemption contention) OR keep cache/queued-request; **never client-invent discounts**                                   | pre-authorized promo budget grant                                              | ADR-041-D (reopened): bounded promo-grant policy — **owner**                                                                 |
+| Suppliers / purchases / dues / payments                                                           | ONLINE-only                         | scoped purchase/receiving grants or provisional append docs; separate goods-receipt from inventory posting, supplier-payment from recorded intent                                                                            | purchasing/receiving authority; AP policy                                      | supplier financial authority + AP settlement policy — **owner, not fabricable**                                              |
+| Reports / activity                                                                                | ONLINE (reports) / local (activity) | **useful offline reports stating coverage + freshness**; never label a partial local projection as company-wide                                                                                                              | existing local IPC (pending sync, local sales, activity ledger)                | **none** — SDK-free, implementable now                                                                                       |
+| Settings / device governance                                                                      | mixed (POS-user PIN offline)        | local prefs apply immediately; shared settings queued/provisional + versioned; honest **bounded-lease** revocation delay disclosure; no "globally revoked" claim before ack                                                  | versioned settings; lease/revocation semantics                                 | device revocation lease semantics (**G**, owner/ops)                                                                         |
+| Payroll                                                                                           | online (back-office)                | derived from accepted attendance; acceptance under approved policy                                                                                                                                                           | —                                                                              | payroll attribution/corrections policy — **owner**                                                                           |
 
 ### 15.4 Dependency-ordered plan (all-desks), to execute once 15.2 is resolved
 
@@ -1144,15 +1145,15 @@ feature flag defaulting to today's fail-closed/online-only.
 
 ### 15.5 Owner decisions required (consolidated; #1 is pivotal and blocks all server work)
 
-| # | Decision | Recommendation | Blocks |
-| - | -------- | -------------- | ------ |
-| **1 (SDK)** | Restore `packages/sdk/*` source (or point me at the new SDK build location) so the contract can be rebuilt/packed. | Restore the deleted SDK source on `feat/pos-pin-provider` (or confirm its new home). Nothing new is buildable until then. | **Every** new offline desk |
-| **C-i** | Offline attendance operator attribution | the authenticated offline-PIN roster operator | Attendance |
-| **A-i/ii/iii** | Return refund budget/max · grant window · refund-only vs exchange first | bounded refund grant; short window; **refund-only first** | Returns |
-| **E** | Inventory offline oversell tolerance + allocation/preauth model | server-issued bounded allocation; no POS-private global truth; reconcile, never hide shortfall | Inventory |
-| **D** | Offline promotion/redemption authority | bounded server-issued promo grant **or** keep queued-request only; never client-invent discounts | Promotions/vouchers |
-| **AP** | Supplier purchasing/receiving/payment authority | scoped grants; separate goods-receipt from posting and payment from intent; no fabricated AP settlement | Suppliers |
-| **G** | Device revocation lease length / window | tune server lease to acceptable revocation-latency; disclose delay honestly in UI | Device governance |
+| #              | Decision                                                                                                           | Recommendation                                                                                                            | Blocks                     |
+| -------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| **1 (SDK)**    | Restore `packages/sdk/*` source (or point me at the new SDK build location) so the contract can be rebuilt/packed. | Restore the deleted SDK source on `feat/pos-pin-provider` (or confirm its new home). Nothing new is buildable until then. | **Every** new offline desk |
+| **C-i**        | Offline attendance operator attribution                                                                            | the authenticated offline-PIN roster operator                                                                             | Attendance                 |
+| **A-i/ii/iii** | Return refund budget/max · grant window · refund-only vs exchange first                                            | bounded refund grant; short window; **refund-only first**                                                                 | Returns                    |
+| **E**          | Inventory offline oversell tolerance + allocation/preauth model                                                    | server-issued bounded allocation; no POS-private global truth; reconcile, never hide shortfall                            | Inventory                  |
+| **D**          | Offline promotion/redemption authority                                                                             | bounded server-issued promo grant **or** keep queued-request only; never client-invent discounts                          | Promotions/vouchers        |
+| **AP**         | Supplier purchasing/receiving/payment authority                                                                    | scoped grants; separate goods-receipt from posting and payment from intent; no fabricated AP settlement                   | Suppliers                  |
+| **G**          | Device revocation lease length / window                                                                            | tune server lease to acceptable revocation-latency; disclose delay honestly in UI                                         | Device governance          |
 
 ### 15.6 Resume point / next safe action
 
@@ -1166,6 +1167,7 @@ committed/pushed/deployed.
 **Still open (owner):** C-i, A-i/ii/iii, E, D, AP, G (§15.5) — each gates only its own desk, not the program.
 
 **Next safe actions, in order:**
+
 1. **15.4 step 1 (SDK-free, no owner gate):** plumb the connectivity signal (`syncStatus.networkOnline`,
    already in `App.tsx`) into the connected-shell render branch (App.tsx ~line 1572) and give each management
    desk (orders/inventory/customers/vouchers/staff/suppliers/reports/settings) an honest offline state via a
@@ -1196,10 +1198,10 @@ limit (documented honestly as NOT RUN, with the test written and ready).
 
 ### 16.1 Live state re-verified (not from prior summaries)
 
-| Repo | Branch | HEAD | Verified |
-| ---- | ------ | ---- | -------- |
-| clothing-commerce-pos | `feat/pos-pin-login` | `3bbb6fe` | SDK source restored intact (§15.2); `strip-bundle-banners.mjs` uses `fileURLToPath`; new desk-status + attendance code present (see 16.4/16.5). |
-| clothing-commerce-api | `feat/pos-pin-provider` | `87aedad` | `packages/sdk/src` present; attendance migration + route + SDK method present. |
+| Repo                  | Branch                  | HEAD      | Verified                                                                                                                                        |
+| --------------------- | ----------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| clothing-commerce-pos | `feat/pos-pin-login`    | `3bbb6fe` | SDK source restored intact (§15.2); `strip-bundle-banners.mjs` uses `fileURLToPath`; new desk-status + attendance code present (see 16.4/16.5). |
+| clothing-commerce-api | `feat/pos-pin-provider` | `87aedad` | `packages/sdk/src` present; attendance migration + route + SDK method present.                                                                  |
 
 Report claims from the prior session **re-verified true**: SDK source restored; `pnpm sdk:build`/`sdk:pack`
 green → `artifacts/shifted-clothing-commerce-sdk-0.27.0.tgz`; all-desks scope in §15. No branch/reset/stash/
@@ -1265,19 +1267,19 @@ Also fixes the customer-payment lane. Covered by the new `attendance-sync.test.t
 
 ### 16.5 Tests actually run this phase
 
-| Suite | Result |
-| ----- | ------ |
-| POS `pnpm typecheck` (3 tsconfigs) | **clean** |
-| POS `pnpm lint` | **clean** |
-| POS `pnpm test` (vitest, real SQLite, DB-free) | **228 passed / 4 skipped / 0 failed** |
-| — incl. `attendance.test.ts` (capture atomicity, signature/canonical, local-state toggle, fail-closed) | 4 pass |
-| — incl. `attendance-sync.test.ts` (deliver→received, transient-retry no-dup, crash-lease restart exact replay) | 3 pass |
-| — incl. desk-status / OfflineDeskBanner / OfflineLocalReport | pass |
-| API `pnpm typecheck` + SDK typecheck | **clean** |
-| API `pnpm sdk:pack` (ESM+CJS+DTS) | **green**, 0.27.0, vendor byte-identical (sha `3cef2f42…`) |
-| API `pnpm test` (vitest DB-free) | **413 passed** |
-| API `pnpm test:openapi` (drift + structure) | **16 passed** |
-| API `pnpm test:api:contracts` | **22 passed** |
+| Suite                                                                                                          | Result                                                     |
+| -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| POS `pnpm typecheck` (3 tsconfigs)                                                                             | **clean**                                                  |
+| POS `pnpm lint`                                                                                                | **clean**                                                  |
+| POS `pnpm test` (vitest, real SQLite, DB-free)                                                                 | **228 passed / 4 skipped / 0 failed**                      |
+| — incl. `attendance.test.ts` (capture atomicity, signature/canonical, local-state toggle, fail-closed)         | 4 pass                                                     |
+| — incl. `attendance-sync.test.ts` (deliver→received, transient-retry no-dup, crash-lease restart exact replay) | 3 pass                                                     |
+| — incl. desk-status / OfflineDeskBanner / OfflineLocalReport                                                   | pass                                                       |
+| API `pnpm typecheck` + SDK typecheck                                                                           | **clean**                                                  |
+| API `pnpm sdk:pack` (ESM+CJS+DTS)                                                                              | **green**, 0.27.0, vendor byte-identical (sha `3cef2f42…`) |
+| API `pnpm test` (vitest DB-free)                                                                               | **413 passed**                                             |
+| API `pnpm test:openapi` (drift + structure)                                                                    | **16 passed**                                              |
+| API `pnpm test:api:contracts`                                                                                  | **22 passed**                                              |
 
 **Real-API attendance HTTP acceptance — WRITTEN, NOT RUN (environment-limited).** Added 8 cases (A1–A8:
 received+pending_policy happy path with `attendance_entries` untouched, DB-verified; clock-out; exact-replay
@@ -1349,9 +1351,10 @@ broken. This is exactly the "source inspection / DB-free mocks ≠ server accept
 ### 16A.2 Migration defect & fix (`20261111120000_offline_attendance.sql`)
 
 The ownership block diverged from the proven offline-sale / offline-customer-payment pattern:
+
 - **Transferring a `public` table to `offline_pos_writer` requires that role to temporarily hold CREATE on
   schema `public`.** The sale/payment migrations `grant create on schema public … → alter … owner → revoke
-  create …`. Mine did the `alter … owner` with no surrounding grant/revoke → `42501`. **Fixed** to the
+create …`. Mine did the `alter … owner` with no surrounding grant/revoke → `42501`. **Fixed** to the
   grant→transfer→revoke pattern and added the `offline_writer_attendance_ingestions` all-access RLS policy
   (mirrors `offline_writer_payment_ingestions`).
 - The RPC did a redundant `select 1 from public.memberships` existence check that would require the writer to
@@ -1380,16 +1383,16 @@ project, **no reset of any existing DB**). The real Next.js server runs loopback
 DB; requests go over HTTP through the packed SDK. **16/16 tests passed** (8 pre-existing offline-sale/tender/
 installment cases + the 8 new attendance cases):
 
-| Case | Scenario | Evidence | Verdict |
-| ---- | -------- | -------- | ------- |
-| A1 | clock-in accepted as provisional `received` | HTTP `syncStatus:received`, `event.adjudication:pending_policy`; DB row in `offline_attendance_ingestions` (received/pending_policy, correct operator/device/register, 64-hex fingerprint); **`public.attendance_entries` count unchanged (no payroll write)** | **PASS** |
-| A2 | clock-out accepted, same operator | HTTP received; membership attributed | **PASS** |
-| A3 | exact replay idempotent; changed-intent same key → 409 | replay returns original `ingestionId`, row count unchanged; changed `eventType` same syncCommandId → HTTP 409; no new row | **PASS** |
-| A4 | grant-binding mismatch (wrong register) | HTTP ≥400; no row written | **PASS** |
-| A5 | unsupported schema version | HTTP 4xx; no row | **PASS** |
-| A6 | future `eventAt` outside grant/skew window | HTTP ≥400; no row (clock-rollback/skew defence) | **PASS** |
-| A7 | tampered command (signature mismatch) | HTTP 401; no row | **PASS** |
-| A8 | anon tenant RLS invisibility | anon PostgREST sees 0 rows of `offline_attendance_ingestions` | **PASS** |
+| Case | Scenario                                               | Evidence                                                                                                                                                                                                                                                       | Verdict  |
+| ---- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| A1   | clock-in accepted as provisional `received`            | HTTP `syncStatus:received`, `event.adjudication:pending_policy`; DB row in `offline_attendance_ingestions` (received/pending_policy, correct operator/device/register, 64-hex fingerprint); **`public.attendance_entries` count unchanged (no payroll write)** | **PASS** |
+| A2   | clock-out accepted, same operator                      | HTTP received; membership attributed                                                                                                                                                                                                                           | **PASS** |
+| A3   | exact replay idempotent; changed-intent same key → 409 | replay returns original `ingestionId`, row count unchanged; changed `eventType` same syncCommandId → HTTP 409; no new row                                                                                                                                      | **PASS** |
+| A4   | grant-binding mismatch (wrong register)                | HTTP ≥400; no row written                                                                                                                                                                                                                                      | **PASS** |
+| A5   | unsupported schema version                             | HTTP 4xx; no row                                                                                                                                                                                                                                               | **PASS** |
+| A6   | future `eventAt` outside grant/skew window             | HTTP ≥400; no row (clock-rollback/skew defence)                                                                                                                                                                                                                | **PASS** |
+| A7   | tampered command (signature mismatch)                  | HTTP 401; no row                                                                                                                                                                                                                                               | **PASS** |
+| A8   | anon tenant RLS invisibility                           | anon PostgREST sees 0 rows of `offline_attendance_ingestions`                                                                                                                                                                                                  | **PASS** |
 
 No payroll-final write, no partial write, correct reject/conflict states in every case.
 

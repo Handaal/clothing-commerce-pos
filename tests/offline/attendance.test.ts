@@ -88,7 +88,12 @@ describe("offline attendance capture", () => {
       type: "spki",
     });
     expect(
-      verify(null, Buffer.from(canonical, "utf8"), publicKey, Buffer.from(outbox.signature_base64, "base64")),
+      verify(
+        null,
+        Buffer.from(canonical, "utf8"),
+        publicKey,
+        Buffer.from(outbox.signature_base64, "base64"),
+      ),
     ).toBe(true);
   });
 
@@ -119,27 +124,31 @@ describe("offline attendance capture", () => {
     expect(() => harness.sales.recordAttendanceEvent({ eventType: "clock_in" })).toThrow();
     // No partial write: neither the local event nor an outbox row exists.
     expect(
-      (harness.database.connection
-        .prepare("SELECT COUNT(*) AS n FROM local_attendance_event")
-        .get() as { n: number }).n,
+      (
+        harness.database.connection
+          .prepare("SELECT COUNT(*) AS n FROM local_attendance_event")
+          .get() as { n: number }
+      ).n,
     ).toBe(0);
     expect(
-      (harness.database.connection
-        .prepare("SELECT COUNT(*) AS n FROM attendance_outbox")
-        .get() as { n: number }).n,
+      (
+        harness.database.connection
+          .prepare("SELECT COUNT(*) AS n FROM attendance_outbox")
+          .get() as { n: number }
+      ).n,
     ).toBe(0);
   });
 
   it("rejects a malformed event type", () => {
     const harness = makeHarness();
     harnesses.push(harness);
-    expect(() =>
-      harness.sales.recordAttendanceEvent({ eventType: "lunch" as never }),
-    ).toThrow();
+    expect(() => harness.sales.recordAttendanceEvent({ eventType: "lunch" as never })).toThrow();
     expect(
-      (harness.database.connection
-        .prepare("SELECT COUNT(*) AS n FROM attendance_outbox")
-        .get() as { n: number }).n,
+      (
+        harness.database.connection
+          .prepare("SELECT COUNT(*) AS n FROM attendance_outbox")
+          .get() as { n: number }
+      ).n,
     ).toBe(0);
   });
 });

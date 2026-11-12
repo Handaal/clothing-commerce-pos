@@ -154,7 +154,9 @@ export function readExactPersistedAttendanceRequest(
     item.idempotencyKey !== item.syncCommandId ||
     request.signature.credentialId !== item.credentialId
   ) {
-    throw new Error("The persisted offline attendance request failed its immutable identity check.");
+    throw new Error(
+      "The persisted offline attendance request failed its immutable identity check.",
+    );
   }
   return request;
 }

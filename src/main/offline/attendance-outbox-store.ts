@@ -46,7 +46,9 @@ export class AttendanceOutboxStore {
       leaseDurationMs < 1_000 ||
       leaseDurationMs > 600_000
     ) {
-      throw new Error("Attendance outbox lease duration must be between one second and ten minutes.");
+      throw new Error(
+        "Attendance outbox lease duration must be between one second and ten minutes.",
+      );
     }
     return this.database.transaction(() => {
       const now = this.now();
@@ -207,7 +209,9 @@ export class AttendanceOutboxStore {
   private transitionLease(sql: string, parameters: ReadonlyArray<string | null>): void {
     const result = this.database.connection.prepare(sql).run(...parameters);
     if (result.changes !== 1) {
-      throw new Error("The attendance outbox lease is missing, expired, or owned by another worker.");
+      throw new Error(
+        "The attendance outbox lease is missing, expired, or owned by another worker.",
+      );
     }
   }
 }

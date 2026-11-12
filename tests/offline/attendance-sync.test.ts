@@ -3,10 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AttendanceOutboxStore } from "../../src/main/offline/attendance-outbox-store";
 import { OutboxStore } from "../../src/main/offline/outbox-store";
-import {
-  OfflineSyncWorker,
-  type OfflineDeliveryClient,
-} from "../../src/main/offline/sync-worker";
+import { OfflineSyncWorker, type OfflineDeliveryClient } from "../../src/main/offline/sync-worker";
 import { makeHarness, type OfflineHarness } from "./fixtures";
 
 const { ApiNetworkError } = createRequire(__filename)("@shifted/clothing-commerce-sdk") as {
@@ -59,9 +56,13 @@ describe("offline attendance synchronization lane", () => {
         return attendanceResponse(item.localEventId);
       },
     };
-    const worker = new OfflineSyncWorker(new OutboxStore(harness.database, () => new Date()), delivery, {
-      attendanceOutbox,
-    });
+    const worker = new OfflineSyncWorker(
+      new OutboxStore(harness.database, () => new Date()),
+      delivery,
+      {
+        attendanceOutbox,
+      },
+    );
 
     await worker.requestRun();
 
@@ -120,9 +121,11 @@ describe("offline attendance synchronization lane", () => {
     const counts = attendanceOutbox.getStatusCounts();
     expect(counts).toMatchObject({ pending: 0, retryWait: 0, received: 1 });
     expect(
-      (harness.database.connection
-        .prepare("SELECT COUNT(*) AS n FROM local_attendance_event")
-        .get() as { n: number }).n,
+      (
+        harness.database.connection
+          .prepare("SELECT COUNT(*) AS n FROM local_attendance_event")
+          .get() as { n: number }
+      ).n,
     ).toBe(1);
   });
 
@@ -162,7 +165,11 @@ describe("offline attendance synchronization lane", () => {
     expect(replayed).not.toBeNull();
     expect(replayed!.idempotencyKey).toBe(accepted.syncCommandId);
     expect(replayed!.canonical).toBe(originalCanonical);
-    expect(attendanceOutbox.getStatusCounts()).toMatchObject({ leased: 0, pending: 0, received: 1 });
+    expect(attendanceOutbox.getStatusCounts()).toMatchObject({
+      leased: 0,
+      pending: 0,
+      received: 1,
+    });
   });
 });
 

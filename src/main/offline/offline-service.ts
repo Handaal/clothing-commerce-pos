@@ -452,10 +452,7 @@ export class OfflineSaleService {
    * offline-PIN roster operator (the grant operator — Decision C-i); payroll effects are never claimed.
    */
   recordAttendanceEvent(input: OfflineAttendanceEventInput): AcceptedOfflineAttendanceEvent {
-    if (
-      !input ||
-      (input.eventType !== "clock_in" && input.eventType !== "clock_out")
-    ) {
+    if (!input || (input.eventType !== "clock_in" && input.eventType !== "clock_out")) {
       throw new OfflineAcceptanceError("INPUT_INVALID", "The attendance input is invalid.");
     }
     return this.database.transaction(() => {
