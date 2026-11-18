@@ -9,9 +9,11 @@ export type SectionId =
   | "customers"
   | "reports"
   | "vouchers"
+  | "website"
   | "suppliers"
   | "staff"
   | "activity"
+  | "review"
   | "settings";
 
 // Coarse capability surface used for role-gating the sidebar. It is intentionally independent of
@@ -24,6 +26,8 @@ export interface Capabilities {
   customers: boolean;
   reports: boolean;
   vouchers: boolean;
+  /** Website Management (storefront content, sales, publication, checkout). */
+  website: boolean;
   suppliers: boolean;
   staff: boolean;
   activity: boolean;
@@ -46,9 +50,14 @@ export const SECTIONS: readonly SectionDef[] = [
   { id: "customers", labelKey: "nav.customers", icon: "customers", visible: (c) => c.customers },
   { id: "reports", labelKey: "nav.reports", icon: "reports", visible: (c) => c.reports },
   { id: "vouchers", labelKey: "nav.vouchers", icon: "vouchers", visible: (c) => c.vouchers },
+  // Inside the desk, `/me/context` further narrows each area to what the server allows this operator.
+  { id: "website", labelKey: "nav.website", icon: "website", visible: (c) => c.website },
   { id: "suppliers", labelKey: "nav.suppliers", icon: "suppliers", visible: (c) => c.suppliers },
   { id: "staff", labelKey: "nav.staff", icon: "staff", visible: (c) => c.staff },
   { id: "activity", labelKey: "nav.activity", icon: "activity", visible: (c) => c.activity },
+  // The offline sync review belongs to the till itself (whoever operates it must be able to see work
+  // the server refused), so it is visible to every signed-in operator. It reads only local state.
+  { id: "review", labelKey: "nav.review", icon: "activity", visible: () => true },
   { id: "settings", labelKey: "nav.settings", icon: "settings", visible: (c) => c.settings },
 ] as const;
 

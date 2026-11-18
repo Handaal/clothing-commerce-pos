@@ -12,6 +12,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
 import { AddStaffModal } from "./AddStaffModal";
+import { PayrollCyclePanel } from "./PayrollCyclePanel";
+import { StaffProfilesPanel } from "./StaffProfilesPanel";
 import { currencySymbol, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
 import { formatDateTime } from "../format";
 import { DatePicker } from "../shell/DatePicker";
@@ -153,10 +155,20 @@ export function StaffAttendance({
   }, [reload]);
   useEffect(() => {
     let active = true;
-    void client
-      .listStaff({ limit: 100 })
-      .then((r) => active && setStaff(r.items))
-      .catch(() => undefined);
+    void (async () => {
+      try {
+        const all: StaffSummary[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await client.listStaff({ limit: 100, cursor });
+          all.push(...page.items);
+          cursor = page.pageInfo.nextCursor ?? undefined;
+        } while (cursor && active);
+        if (active) setStaff(all);
+      } catch {
+        // The payroll and attendance reads report their own failures independently.
+      }
+    })();
     return () => {
       active = false;
     };
@@ -393,6 +405,16 @@ export function StaffAttendance({
           <strong>{money(payroll.totals.netPayMinor)}</strong>
         </div>
       </div>
+
+      <PayrollCyclePanel client={client} />
+      <StaffProfilesPanel
+        client={client}
+        staff={staff}
+        onChanged={() => {
+          setStaffNonce((value) => value + 1);
+          void reload();
+        }}
+      />
 
       {/* Payroll */}
       <section className="staff-card">

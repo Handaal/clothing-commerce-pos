@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 
 import { classifyCommerceError } from "../commerce/errors";
 import { AddProductModal } from "./AddProductModal";
+import { BarcodeLabelModal } from "./BarcodeLabelModal";
 import { BUSINESS_CURRENCY, formatMoney, minorToMajorInput, parseMajorToMinor } from "../money";
 import { AdminGate } from "../shell/AdminGate";
 import { Icons } from "../shell/icons";
@@ -90,10 +91,12 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [page, setPage] = useState(1);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
   const [draft, setDraft] = useState<Draft | null>(null);
   const [addingProduct, setAddingProduct] = useState(false);
+  const [labelRow, setLabelRow] = useState<StockRow | null>(null);
   // Stock valuation (selling value + cost value) is owner-only. Hidden until an admin unlocks it via
   // PIN; the reveal lasts for the session so the admin isn't re-prompted on every refresh.
   const [valuesRevealed, setValuesRevealed] = useState(false);
@@ -409,6 +412,9 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
         });
 
   const totalOnHand = visibleRows.reduce((sum, row) => sum + row.onHand, 0);
+  const pageCount = Math.max(1, Math.ceil(visibleRows.length / 20));
+  const currentPage = Math.min(page, pageCount);
+  const pageRows = visibleRows.slice((currentPage - 1) * 20, currentPage * 20);
   // Valuation over the visible rows: stock value uses cost basis, selling value uses the active price;
   // rows with an unset cost/price simply contribute nothing to that total.
   const totalStockValueMinor = visibleRows.reduce(
@@ -441,21 +447,33 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             <Select
               ariaLabel={t("inventory.location")}
               value={locationId ?? ""}
-              onChange={(value) => setLocationId(value)}
+              onChange={(value) => {
+                setLocationId(value);
+                setPage(1);
+              }}
               disabled={locations.length === 0}
               options={locations.map((loc) => ({ value: loc.id, label: loc.displayName }))}
             />
           </label>
           <label className="staff-filters__search">
             {t("inventory.searchLabel")}
-            <input value={query} onChange={(event) => setQuery(event.target.value)} />
+            <input
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(1);
+              }}
+            />
           </label>
           <label>
             {t("inventory.brand")}
             <Select
               ariaLabel={t("inventory.brand")}
               value={brandFilter}
-              onChange={setBrandFilter}
+              onChange={(value) => {
+                setBrandFilter(value);
+                setPage(1);
+              }}
               options={[
                 { value: "", label: t("inventory.allBrands") },
                 ...[...brandNames.entries()].map(([id, name]) => ({ value: id, label: name })),
@@ -467,7 +485,10 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             <Select
               ariaLabel={t("inventory.category")}
               value={categoryFilter}
-              onChange={setCategoryFilter}
+              onChange={(value) => {
+                setCategoryFilter(value);
+                setPage(1);
+              }}
               options={[
                 { value: "", label: t("inventory.allCategories") },
                 ...categoryNames.map((name) => ({ value: name, label: name })),
@@ -583,13 +604,14 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                 <th>{t("orders.product")}</th>
                 <th>{t("inventory.brand")}</th>
                 <th>{t("inventory.category")}</th>
+                <th>{t("inventory.barcode")}</th>
                 <th className="end">{t("inventory.onHand")}</th>
                 <th className="end">{t("inventory.version")}</th>
                 <th className="end">{t("staff.actions")}</th>
               </tr>
             </thead>
             <tbody>
-              {visibleRows.map((row) => (
+              {pageRows.map((row) => (
                 <tr key={row.variantId}>
                   <td>
                     <strong>{row.productName}</strong>
@@ -597,6 +619,14 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                   </td>
                   <td className="muted">{brandNames.get(row.brandId) ?? "—"}</td>
                   <td className="muted">{categoryLabel(row)}</td>
+                  <td className="muted">
+                    {row.barcode ?? "—"}
+                    {row.barcode ? (
+                      <button className="button button--quiet" onClick={() => setLabelRow(row)}>
+                        {t("inventory.printLabels")}
+                      </button>
+                    ) : null}
+                  </td>
                   <td className="end">
                     <strong>{row.onHand}</strong>
                   </td>
@@ -755,16 +785,28 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             {normalizedQuery === "" ? t("inventory.noStock") : t("inventory.noMatch", { query })}
           </p>
         ) : null}
-        {list?.pageInfo.hasMore ? (
-          <div className="staff-card__head">
-            <button
-              className="button button--quiet"
-              onClick={() => void loadMore()}
-              disabled={busy}
-            >
-              {t("inventory.loadMore")}
-            </button>
-          </div>
+        {visibleRows.length > 20 || list?.pageInfo.hasMore ? (
+          <nav className="inventory-pagination" aria-label={t("inventory.pages")}>
+            {Array.from({ length: pageCount }, (_, index) => index + 1).map((number) => (
+              <button
+                key={number}
+                type="button"
+                className={`button button--quiet${currentPage === number ? " inventory-pagination__active" : ""}`}
+                aria-current={currentPage === number ? "page" : undefined}
+                onClick={() => setPage(number)}
+              >
+                {number}
+              </button>
+            ))}
+            {list?.pageInfo.hasMore ? (
+              <button
+                className="button button--quiet"
+                onClick={() => void loadMore().then(() => setPage(pageCount + 1))}
+              >
+                {t("inventory.nextPage")}
+              </button>
+            ) : null}
+          </nav>
         ) : null}
       </section>
 
@@ -783,6 +825,15 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
             // refresh it too — otherwise a product created WITH a category shows as "Uncategorized".
             void loadCategories().catch(() => {});
           }}
+        />
+      ) : null}
+      {labelRow?.barcode ? (
+        <BarcodeLabelModal
+          name={labelRow.productName}
+          sku={labelRow.sku}
+          barcode={labelRow.barcode}
+          priceMinor={labelRow.sellingPriceMinor}
+          onClose={() => setLabelRow(null)}
         />
       ) : null}
 

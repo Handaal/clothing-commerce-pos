@@ -1,4 +1,3 @@
-import { useAuth, useClerk, useUser } from "@clerk/react";
 import type {
   CommerceClient,
   CreatePosSaleResponse,
@@ -23,6 +22,8 @@ import {
   updateQuantity,
   type CartLine,
 } from "./cart/cart";
+import { HeldCartsPanel } from "./cart/HeldCartsPanel";
+import { holdCart, listHeldCarts, removeHeldCart, type HeldCart } from "./cart/held";
 import {
   groupByCategory,
   loadSellableCatalog,
@@ -41,8 +42,9 @@ import { OfflineRunwayNote } from "./offline/OfflineRunwayNote";
 import { needsCommissioning } from "./offline/commissioning";
 import { shouldAutoRefreshOffline } from "./offline/runway";
 import { AttendanceClock } from "./pos/AttendanceClock";
+import { TeamClock } from "./pos/TeamClock";
 import { resolveRegisters, type PosRegister } from "./pos/context";
-import { StaffAttendance } from "./staff/StaffAttendance";
+import { StaffWorkspace } from "./staff/StaffWorkspace";
 import {
   receiptIdentity,
   type BusinessIdentity,
@@ -64,11 +66,14 @@ import { VouchersDesk } from "./vouchers/VouchersDesk";
 import { SuppliersDesk } from "./suppliers/SuppliersDesk";
 import { ReportsDesk } from "./reports/ReportsDesk";
 import { SettingsDesk } from "./settings/SettingsDesk";
+import { WebsiteDesk } from "./website/WebsiteDesk";
 import { OfflineDeskBanner } from "./offline/OfflineDeskBanner";
 import { DESK_OFFLINE_PROFILES } from "./offline/desk-capabilities";
+import { ReviewCenter } from "./review/ReviewCenter";
+import { ServerSyncConflicts } from "./review/ServerSyncConflicts";
+
 import { ReturnDesk } from "./returns/ReturnDesk";
 import type { ReturnsBridge } from "../shared/returns";
-import { StaffPinSignIn } from "./auth/StaffPinSignIn";
 import { OfflineStaffPinSignIn } from "./auth/OfflineStaffPinSignIn";
 import { LocalLogin } from "./auth/LocalLogin";
 import { capabilitiesForOperator } from "./auth/posCapabilities";
@@ -81,9 +86,12 @@ import type {
 } from "../shared/pos-session";
 import { AppShell } from "./shell/AppShell";
 import { useI18n } from "./shell/i18n";
+import { Icons } from "./shell/icons";
 import { PlaceholderSection } from "./shell/PlaceholderSection";
 import { Select } from "./shell/Select";
 import { accessibleSections, SECTIONS, type Capabilities, type SectionId } from "./shell/sections";
+
+const POS_ONLY_SECTIONS = SECTIONS.filter((item) => item.id === "pos");
 
 // i18n keys for captured tender methods, shown on the cart and receipt; resolved through `t`.
 const TENDER_LABEL_KEYS: Record<"cash" | "card" | "instapay" | "wallet", string> = {
@@ -117,10 +125,6 @@ interface PosApplicationProps {
   posSessionBridge?: PosSessionBridge;
   sessionOperator?: PosUser | null;
   onSignIn?: (username: string, pin: string) => Promise<PosSessionLoginResult>;
-  // Owner provisioning (Clerk) affordance: entered from the floor login to create the first accounts on a
-  // fresh till, exited back to the floor. Clerk never appears on the floor path itself.
-  onEnterOwnerMode?: () => void;
-  onExitOwnerMode?: () => void;
 }
 
 type LoadPhase = "idle" | "loading" | "ready" | "choosing" | "empty" | "error";
@@ -143,20 +147,13 @@ export function App() {
   return <PosRoot />;
 }
 
-// Root auth broker. The floor signs in with username + PIN against the POS-native (pos_pin) provider,
-// whose access token the main process owns and feeds to the SDK client through `getToken`. Clerk is kept
-// solely as an owner-only provisioning mode (create the first accounts on a fresh till); the floor flow
-// never renders it.
+// Root auth broker (ADR-043). The till signs in with username + PIN against the POS-native (pos_pin) provider,
+// whose access token the main process owns and feeds to the SDK client through `getToken`. There is no Clerk in
+// the POS: first accounts are provisioned by the owner in the Admin app, then managed by POS admins in Team.
 function PosRoot() {
   const sessionBridge = typeof window === "undefined" ? undefined : window.posSession;
   const [snapshot, setSnapshot] = useState<PosSessionSnapshot | null>(null);
   const [sessionLoaded, setSessionLoaded] = useState(false);
-  const [ownerMode, setOwnerMode] = useState(false);
-
-  // Clerk hooks stay mounted (ClerkProvider wraps the app) but are only consulted in owner mode.
-  const { isLoaded, isSignedIn, userId, sessionId, getToken } = useAuth();
-  const { user } = useUser();
-  const clerk = useClerk();
 
   useEffect(() => {
     if (!sessionBridge) {
@@ -203,32 +200,6 @@ function PosRoot() {
     [sessionBridge],
   );
 
-  if (ownerMode) {
-    const displayName =
-      user?.fullName ?? user?.primaryEmailAddress?.emailAddress ?? user?.username ?? undefined;
-    return (
-      <PosApplication
-        auth={{
-          isLoaded,
-          isSignedIn: isSignedIn === true,
-          userId: userId ?? null,
-          sessionId: sessionId ?? null,
-          displayName,
-          getToken: async () => (await getToken()) ?? null,
-          signOut: async () => {
-            await clerk.signOut();
-            setOwnerMode(false);
-          },
-        }}
-        signedOutContent={<StaffPinSignIn />}
-        onExitOwnerMode={() => {
-          void clerk.signOut();
-          setOwnerMode(false);
-        }}
-      />
-    );
-  }
-
   const operator = snapshot ? sessionOperatorToPosUser(snapshot.operator) : null;
   return (
     <PosApplication
@@ -247,7 +218,6 @@ function PosRoot() {
       posSessionBridge={sessionBridge}
       sessionOperator={operator}
       onSignIn={signIn}
-      onEnterOwnerMode={() => setOwnerMode(true)}
     />
   );
 }
@@ -263,8 +233,6 @@ export function PosApplication({
   posSessionBridge,
   sessionOperator = null,
   onSignIn,
-  onEnterOwnerMode,
-  onExitOwnerMode,
 }: PosApplicationProps) {
   const { t, locale } = useI18n();
   const tokenRef = useRef(auth.getToken);
@@ -329,12 +297,17 @@ export function PosApplication({
 
   const [catalogPhase, setCatalogPhase] = useState<LoadPhase>("idle");
   const [products, setProducts] = useState<readonly SellableProduct[]>([]);
+  const [connectedStock, setConnectedStock] = useState<ReadonlyMap<string, number>>(new Map());
+  const [stockLoaded, setStockLoaded] = useState(false);
   const [catalogError, setCatalogError] = useState<CommerceErrorView | null>(null);
   const [catalogNonce, setCatalogNonce] = useState(0);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
 
   const [cart, setCart] = useState<readonly CartLine[]>([]);
+  const [heldCarts, setHeldCarts] = useState<readonly HeldCart[]>([]);
+  const [heldCartsOpen, setHeldCartsOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
   const [quoteController] = useState(() => new QuoteController());
@@ -396,10 +369,10 @@ export function PosApplication({
   );
   const [offlineActionPending, setOfflineActionPending] = useState(false);
   const [offlineActionMessage, setOfflineActionMessage] = useState<string | null>(null);
-  // Pre-authentication offline path: when Clerk is unreachable, a cashier unlocks the till with a
+  // Pre-authentication offline path: when the server is unreachable, a cashier unlocks the till with a
   // local PIN (verified in main against the cached roster). `authMode` toggles the signed-out card
   // between the connected sign-in and the offline PIN pad; `offlineOperator` holds the verified
-  // cashier so the offline cashier can render without a Clerk session.
+  // cashier so the offline cashier can render without a server session.
   const [authMode, setAuthMode] = useState<"connected" | "offline">("connected");
   const [offlineOperator, setOfflineOperator] = useState<OfflineStaffIdentity | null>(null);
   const lastAutoRefreshRef = useRef<number | null>(null);
@@ -434,7 +407,7 @@ export function PosApplication({
   }, []);
   useEffect(() => {
     // Prefer the local operator (the human actually at the till) for audit attribution; fall back to
-    // the Clerk identity when no local gate is in play.
+    // the injected auth identity when no session operator is in play (test host).
     if (operator) setActivityActor({ id: operator.id, name: operator.name });
     else setActivityActor({ id: auth.userId, name: auth.displayName ?? null });
   }, [operator, auth.userId, auth.displayName]);
@@ -500,7 +473,7 @@ export function PosApplication({
 
   // Offline state is local and tokenless, so it is polled whenever the bridge exists — including on
   // the signed-out screen, so the app knows whether to offer offline PIN sign-in, and while an
-  // offline operator is working without a Clerk session.
+  // offline operator is working without a server session.
   useEffect(() => {
     if (!offlineBridge) return;
     const initial = window.setTimeout(() => void refreshOfflineState(), 0);
@@ -554,7 +527,7 @@ export function PosApplication({
   }, []);
 
   /* eslint-disable react-hooks/set-state-in-effect -- These effects deliberately expose loading and
-     reset transitions for external Clerk/API state machines before their asynchronous results settle. */
+     reset transitions for external session/API state machines before their asynchronous results settle. */
   useEffect(() => {
     if (!auth.isLoaded || !auth.isSignedIn || !client) {
       setTenantPhase("idle");
@@ -677,6 +650,26 @@ export function PosApplication({
   }, [tenantClient, register, catalogNonce]);
 
   useEffect(() => {
+    if (!tenantClient || !register) return;
+    let active = true;
+    setStockLoaded(false);
+    const loadStock = async () => {
+      const response = await tenantClient.getPosAvailability(register.registerId);
+      const quantities = new Map(response.items.map((item) => [item.variantId, item.onHand]));
+      if (active) setConnectedStock(quantities);
+      if (active) setStockLoaded(true);
+    };
+    void loadStock().catch((error) => {
+      console.error("[catalog] inventory availability failed", error);
+      if (active) setConnectedStock(new Map());
+      if (active) setStockLoaded(false);
+    });
+    return () => {
+      active = false;
+    };
+  }, [tenantClient, register, catalogNonce, saleState.phase]);
+
+  useEffect(() => {
     if (saleState.phase === "success") {
       setCart([]);
       setPayOpen(false);
@@ -733,13 +726,53 @@ export function PosApplication({
       resetTransaction();
       setProducts([]);
       setSelectedProductId(null);
+      setSelectedCategory(null);
     }
     setRegisterId(selectedRegisterId);
     setContextPhase("ready");
   }
 
   function addToCart(variant: SellableVariant) {
-    changeCart((current) => addVariant(current, variant));
+    changeCart((current) => {
+      const alreadySelected =
+        current.find((line) => line.variantId === variant.variantId)?.quantity ?? 0;
+      if (stockLoaded && alreadySelected >= (connectedStock.get(variant.variantId) ?? 0))
+        return current;
+      return addVariant(current, variant);
+    });
+  }
+
+  function holdCurrentCart() {
+    if (!registerId || cart.length === 0 || locked) return;
+    try {
+      holdCart(registerId, cart);
+      setHeldCarts(listHeldCarts(registerId));
+      resetTransaction();
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : t("cashier.holdFailed"));
+    }
+  }
+
+  function resumeHeldCart(held: HeldCart) {
+    if (!registerId || cart.length > 0 || locked) return;
+    try {
+      const restored = refreshCartPrices(held.lines, products);
+      if (
+        restored.length !== held.lines.length ||
+        (stockLoaded &&
+          restored.some((line) => (connectedStock.get(line.variantId) ?? 0) < line.quantity))
+      ) {
+        setLocalError(t("cashier.heldUnavailable"));
+        return;
+      }
+      resetTransaction();
+      changeCart(() => restored);
+      removeHeldCart(registerId, held.id);
+      setHeldCarts(listHeldCarts(registerId));
+      setHeldCartsOpen(false);
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : t("cashier.holdFailed"));
+    }
   }
 
   function applyPromotionCode() {
@@ -803,8 +836,8 @@ export function PosApplication({
     setTenantId(null);
     setTenants([]);
     // Clearing the pos_pin session drops the operator (derived from it) back to the floor login, so the
-    // next cashier signs in with their own PIN. With no server session (Clerk owner mode) this is the
-    // Clerk sign-out.
+    // next cashier signs in with their own PIN. With no server session (test host) this is the
+    // injected sign-out.
     await auth.signOut();
   }
 
@@ -891,7 +924,7 @@ export function PosApplication({
   // with their username + PIN, verified by the server (`onSignIn`) or, when the server is unreachable,
   // against the cached offline roster. On success the server-resolved operator drives the connected
   // desks. Inactive in the non-Electron test host (no posSession bridge), which keeps the injected-`auth`
-  // behaviour. Clerk never appears here — it is reachable only via the owner setup affordance.
+  // behaviour. There is no Clerk anywhere in the POS (ADR-043).
   if (posSessionBridge && posAuthBridge && !operator && !offlineOperator) {
     return (
       <main className="auth-shell">
@@ -906,18 +939,39 @@ export function PosApplication({
             onSignIn={onSignIn ?? (async () => ({ ok: false, reason: "ERROR" }))}
             offlineBridge={offlineLoginReady ? offlineBridge : undefined}
             onOfflineSignedIn={setOfflineOperator}
-            onOwnerSetup={onEnterOwnerMode}
           />
         </section>
       </main>
     );
   }
 
+  // Offline selling renders inside the same app frame as the connected register (sidebar + header),
+  // so the cashier screen looks identical whether or not the link is up. Only the POS section is
+  // listed: the management desks need the connected session this branch does not have.
+  const offlineShell =
+    (userName: string, onShellSignOut: () => void) =>
+    (headerStart: ReactNode, headerActions: ReactNode, body: ReactNode) => (
+      <AppShell
+        sections={POS_ONLY_SECTIONS}
+        active="pos"
+        onNavigate={() => undefined}
+        userName={userName}
+        onSignOut={onShellSignOut}
+        headerStart={headerStart}
+        headerActions={headerActions}
+      >
+        {body}
+      </AppShell>
+    );
+
   if (!auth.isSignedIn) {
     // A cashier who unlocked the till offline sells directly through the offline cashier with no
-    // Clerk session. Signing out (or reconnecting) returns to the connected sign-in card.
+    // server session. Signing out (or reconnecting) returns to the connected sign-in card.
     if (offlineOperator && offlineBridge && offlineReadiness.ready) {
       const leaveOffline = () => {
+        // ADR-043 §5.1: end the main-process offline staff session so later sales are not stamped with this
+        // cashier. Best-effort: an online sign-in also ends it in the main process.
+        void offlineBridge.endStaffSession?.().catch(() => undefined);
         setOfflineOperator(null);
         setAuthMode("connected");
       };
@@ -931,6 +985,9 @@ export function PosApplication({
           onRefresh={refreshOfflineState}
           onUseConnected={leaveOffline}
           onSignOut={async () => leaveOffline()}
+          registerName={register?.registerName}
+          branchName={register?.branchName}
+          renderShell={offlineShell(offlineOperator.displayName, leaveOffline)}
         />
       );
     }
@@ -961,11 +1018,6 @@ export function PosApplication({
         </section>
         <section className="auth-card">
           {signedOutContent}
-          {onExitOwnerMode ? (
-            <button type="button" className="button button--quiet" onClick={onExitOwnerMode}>
-              ‹ {t("local.backToTill")}
-            </button>
-          ) : null}
           {offlineLoginReady ? (
             <button
               type="button"
@@ -991,6 +1043,36 @@ export function PosApplication({
         onRefresh={refreshOfflineState}
         onUseConnected={() => setSellingMode("connected")}
         onSignOut={signOut}
+        registerName={register?.registerName}
+        branchName={register?.branchName}
+        renderShell={offlineShell(
+          operator?.name ?? auth.displayName ?? t("pos.operator"),
+          () => void signOut(),
+        )}
+        extraActions={
+          tenantClient && register ? (
+            <>
+              <AttendanceClock
+                client={tenantClient}
+                branchId={register.branchId}
+                offline={typeof window === "undefined" ? undefined : window.offline}
+                networkOnline={syncStatus.networkOnline}
+                offlineReady={offlineReadiness.ready}
+              />
+              {capabilities.staff && tenantId ? (
+                <TeamClock
+                  client={tenantClient}
+                  tenantId={tenantId}
+                  disabled={false}
+                  branchId={register.branchId}
+                  offline={typeof window === "undefined" ? undefined : window.offline}
+                  networkOnline={syncStatus.networkOnline}
+                  offlineReady={offlineReadiness.ready}
+                />
+              ) : null}
+            </>
+          ) : null
+        }
       />
     );
   }
@@ -1078,9 +1160,15 @@ export function PosApplication({
   // Per-variant remaining (projected) quantity, surfaced in the variant dialog. The projection is the
   // offline-advisory on-hand minus anything pending sync; when it is empty the dialog shows the
   // variant without a stock figure rather than blocking the sale.
-  const stockByVariant = new Map(
-    projectedInventory.map((item) => [item.variantId, item.projectedAvailable]),
-  );
+  const stockByVariant = stockLoaded
+    ? new Map(
+        products.flatMap((product) =>
+          product.variants.map(
+            (variant) => [variant.variantId, connectedStock.get(variant.variantId) ?? 0] as const,
+          ),
+        ),
+      )
+    : new Map(projectedInventory.map((item) => [item.variantId, item.projectedAvailable]));
 
   // Search matches product name, brand, style code, and any variant name or SKU. A barcode scanner
   // types the SKU then sends Enter: an exact SKU match adds that variant straight to the cart.
@@ -1096,18 +1184,24 @@ export function PosApplication({
             product.variants.some(
               (variant) =>
                 variant.sku.toLowerCase().includes(normalizedQuery) ||
+                (variant.barcode?.toLowerCase().includes(normalizedQuery) ?? false) ||
                 (variant.variantName?.toLowerCase().includes(normalizedQuery) ?? false),
             ),
         );
   // Group the visible products by category so the floor browses by category first (Zara jackets,
   // shirts, …). A product in multiple collections appears under each; uncategorized items sort last.
   const groupedCatalog = groupByCategory(filteredProducts, t("pos.uncategorized"));
+  const visibleCategory = groupedCatalog.find((group) => group.category === selectedCategory);
 
   function submitCatalogSearch() {
     if (normalizedQuery === "" || locked) return;
     const exactSku = products
       .flatMap((product) => product.variants)
-      .find((variant) => variant.sku.toLowerCase() === normalizedQuery);
+      .find(
+        (variant) =>
+          variant.sku.toLowerCase() === normalizedQuery ||
+          variant.barcode?.toLowerCase() === normalizedQuery,
+      );
     if (exactSku) {
       addToCart(exactSku);
       setSelectedProductId(exactSku.productId);
@@ -1127,82 +1221,101 @@ export function PosApplication({
   const promotion = quote?.promotion ?? null;
   const codeStatus = quote?.codeStatus ?? "none";
 
+  const offlineDetail = offlineReadiness.ready
+    ? t("pos.offlineReadyStrip", {
+        status: t(syncLabel(syncStatus)),
+        count: waitingSyncCount(syncStatus),
+      })
+    : t("pos.offlineUnavailable", { message: offlineReadiness.message });
+  // The register identity + connection state live in the app header row (no separate strip), so the
+  // catalog and cart get the full height. Long status details are kept in tooltips.
+  const posHeaderStart = (
+    <div className="register-bar">
+      <div
+        className="register-bar__identity"
+        title={`${register.branchName} · ${register.defaultInventoryLocationName}`}
+      >
+        <strong>{register.registerName}</strong>
+        <span>{register.branchName}</span>
+      </div>
+      <span
+        className={`status-chip ${syncStatus.networkOnline ? "status-chip--good" : "status-chip--bad"}`}
+      >
+        <span className="status-chip__dot" aria-hidden="true" />
+        {syncStatus.networkOnline ? t("pos.connected") : t("pos.disconnected")}
+      </span>
+      <span
+        className={`status-chip ${offlineReadiness.ready ? "status-chip--quiet" : "status-chip--warn"}`}
+        title={offlineDetail}
+        role="status"
+        aria-label={offlineDetail}
+      >
+        {offlineReadiness.ready ? (
+          <>
+            {offlineDetail}
+            <OfflineRunwayNote readiness={offlineReadiness} />
+          </>
+        ) : (
+          t("pos.offlineOff")
+        )}
+      </span>
+    </div>
+  );
+  const posHeaderActions = (
+    <div className="operator-actions">
+      <AttendanceClock
+        client={tenantClient}
+        branchId={register.branchId}
+        disabled={returnLocked}
+        offline={typeof window === "undefined" ? undefined : window.offline}
+        networkOnline={syncStatus.networkOnline}
+        offlineReady={offlineReadiness.ready}
+      />
+      {capabilities.staff ? (
+        <TeamClock
+          client={tenantClient}
+          tenantId={tenantId!}
+          branchId={register.branchId}
+          disabled={returnLocked}
+          offline={typeof window === "undefined" ? undefined : window.offline}
+          networkOnline={syncStatus.networkOnline}
+          offlineReady={offlineReadiness.ready}
+        />
+      ) : null}
+      {registers.length > 1 ? (
+        <Select
+          ariaLabel={t("pos.register")}
+          className="operator-actions__select"
+          value={register.registerId}
+          onChange={(value) => chooseRegister(value)}
+          disabled={locked || returnLocked}
+          options={registers.map((item) => ({
+            value: item.registerId,
+            label: item.registerName,
+          }))}
+        />
+      ) : null}
+      {offlineReadiness.ready ? (
+        <button
+          className="button button--quiet"
+          onClick={switchToOffline}
+          disabled={locked || returnLocked}
+        >
+          {t("pos.workOffline")}
+        </button>
+      ) : null}
+      <button
+        className="button button--quiet"
+        disabled={returnLocked || submitting}
+        onClick={() => setShowReturns((value) => !value)}
+      >
+        {showReturns ? t("pos.closeReturns") : t("pos.returns")}
+      </button>
+    </div>
+  );
+
   const posContent = (
     <main className="pos-shell">
-      <header className="topbar">
-        <div className="register-identity">
-          <p className="eyebrow">{t("pos.register")}</p>
-          <strong>{register.registerName}</strong>
-          <span>
-            {register.branchName} · {register.defaultInventoryLocationName}
-          </span>
-        </div>
-        <div className="topbar-status">
-          <strong>{t("pos.connected")}</strong>
-          <span>
-            {offlineReadiness.ready
-              ? ` · ${t("pos.offlineReadyStrip", {
-                  status: t(syncLabel(syncStatus)),
-                  count: waitingSyncCount(syncStatus),
-                })}`
-              : ` · ${t("pos.offlineUnavailable", { message: offlineReadiness.message })}`}
-          </span>
-          {offlineReadiness.ready ? <OfflineRunwayNote readiness={offlineReadiness} /> : null}
-        </div>
-        <div className="operator-actions">
-          <AttendanceClock
-            client={tenantClient}
-            branchId={register.branchId}
-            disabled={returnLocked}
-            offline={typeof window === "undefined" ? undefined : window.offline}
-            networkOnline={syncStatus.networkOnline}
-            offlineReady={offlineReadiness.ready}
-          />
-          {registers.length > 1 ? (
-            <Select
-              ariaLabel={t("pos.register")}
-              className="operator-actions__select"
-              value={register.registerId}
-              onChange={(value) => chooseRegister(value)}
-              disabled={locked || returnLocked}
-              options={registers.map((item) => ({
-                value: item.registerId,
-                label: item.registerName,
-              }))}
-            />
-          ) : null}
-          {offlineReadiness.ready ? (
-            <button
-              className="button button--quiet"
-              onClick={switchToOffline}
-              disabled={locked || returnLocked}
-            >
-              {t("pos.workOffline")}
-            </button>
-          ) : null}
-          <button
-            className="button button--quiet"
-            disabled={offlineActionPending}
-            onClick={() => void runOfflineBootstrap()}
-          >
-            {offlineActionPending
-              ? t("pos.updatingOffline")
-              : offlineReadiness.ready
-                ? t("pos.refreshOffline")
-                : needsCommissioning(offlineReadiness)
-                  ? t("pos.commissionOffline")
-                  : t("pos.enableOffline")}
-          </button>
-          <button
-            className="button button--quiet"
-            disabled={returnLocked || submitting}
-            onClick={() => setShowReturns((value) => !value)}
-          >
-            {showReturns ? t("pos.closeReturns") : t("pos.returns")}
-          </button>
-        </div>
-      </header>
-
       {needsCommissioning(offlineReadiness) ? (
         <div className="commissioning-strip" role="status">
           {t("pos.commissionOfflinePrompt")}
@@ -1228,16 +1341,14 @@ export function PosApplication({
           onLocked={setReturnLocked}
           getToken={auth.getToken}
           bridge={returnsBridge}
+          offline={offlineBridge}
         />
       ) : null}
 
       <div className="workspace">
         <section className="catalog-panel">
           <div className="section-heading">
-            <div>
-              <p className="eyebrow">{t("pos.catalog")}</p>
-              <h2>{t("pos.products")}</h2>
-            </div>
+            <h2>{t("pos.products")}</h2>
             <span className="currency-pill">
               {currencySymbol(register.sellingCurrency, locale)}
             </span>
@@ -1287,33 +1398,88 @@ export function PosApplication({
           {catalogPhase === "ready" && filteredProducts.length === 0 && normalizedQuery !== "" ? (
             <InlineState>{t("pos.noMatch", { query: catalogQuery })}</InlineState>
           ) : null}
-          {groupedCatalog.map((group) => (
-            <div className="catalog-group" key={group.category}>
-              <p className="catalog-group__heading">{group.category}</p>
+          {normalizedQuery === "" && !visibleCategory ? (
+            <div className="product-grid" aria-label={t("pos.categories")}>
+              {groupedCatalog.map((group) => (
+                <button
+                  key={group.category}
+                  className="product-card category-card"
+                  onClick={() => setSelectedCategory(group.category)}
+                >
+                  <span>{group.category}</span>
+                  <small>{t("cashier.productCount", { count: group.products.length })}</small>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="catalog-group">
+              {normalizedQuery === "" || visibleCategory ? (
+                <div className="catalog-group__bar">
+                  {normalizedQuery === "" ? (
+                    <button
+                      type="button"
+                      className="back-chip"
+                      onClick={() => setSelectedCategory(null)}
+                    >
+                      <Icons.chevronBack />
+                      {t("pos.backToCategories")}
+                    </button>
+                  ) : null}
+                  {visibleCategory ? (
+                    <p className="catalog-group__heading">{visibleCategory.category}</p>
+                  ) : null}
+                </div>
+              ) : null}
               <div className="product-grid">
-                {group.products.map((product) => (
-                  <button
-                    key={product.productId}
-                    className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
-                    onClick={() => setSelectedProductId(product.productId)}
-                  >
-                    <span>{product.productName}</span>
-                    {product.brandName ? (
-                      <span className="product-card__brand">{product.brandName}</span>
-                    ) : null}
-                    <small>
-                      {product.styleCode ??
-                        t("cashier.variantCount", { count: product.variants.length })}
-                    </small>
-                  </button>
-                ))}
+                {(normalizedQuery ? filteredProducts : (visibleCategory?.products ?? [])).map(
+                  (product) => (
+                    <button
+                      key={product.productId}
+                      className={`product-card${product.variants.every((variant) => (stockByVariant.get(variant.variantId) ?? Infinity) <= 0) ? " product-card--out" : ""}${selectedProductId === product.productId ? " product-card--selected" : ""}`}
+                      disabled={product.variants.every(
+                        (variant) => (stockByVariant.get(variant.variantId) ?? Infinity) <= 0,
+                      )}
+                      onClick={() => setSelectedProductId(product.productId)}
+                    >
+                      <span>{product.productName}</span>
+                      {product.brandName ? (
+                        <span className="product-card__brand">{product.brandName}</span>
+                      ) : null}
+                      <small>
+                        {product.styleCode ??
+                          t("cashier.variantCount", { count: product.variants.length })}
+                      </small>
+                      <small>
+                        {product.variants.every((variant) => stockByVariant.has(variant.variantId))
+                          ? t("cashier.remainingCount", {
+                              count: product.variants.reduce(
+                                (sum, variant) =>
+                                  sum + (stockByVariant.get(variant.variantId) ?? 0),
+                                0,
+                              ),
+                            })
+                          : t("cashier.stockUnknown")}
+                      </small>
+                    </button>
+                  ),
+                )}
               </div>
             </div>
-          ))}
+          )}
           {selectedProduct ? (
             <VariantDialog
               product={selectedProduct}
-              stockByVariant={stockByVariant}
+              stockByVariant={
+                new Map(
+                  [...stockByVariant].map(([id, quantity]) => [
+                    id,
+                    Math.max(
+                      0,
+                      quantity - (cart.find((line) => line.variantId === id)?.quantity ?? 0),
+                    ),
+                  ]),
+                )
+              }
               submitting={submitting}
               onAdd={addToCart}
               onClose={() => setSelectedProductId(null)}
@@ -1322,12 +1488,29 @@ export function PosApplication({
         </section>
 
         <aside className="checkout-panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">{t("pos.currentSale")}</p>
+          <div className="cart-head">
+            <div className="cart-head__title">
               <h2>{t("cashier.cart")}</h2>
+              <span className="cart-head__count">{t("cashier.lines", { count: cart.length })}</span>
             </div>
-            <span>{t("cashier.lines", { count: cart.length })}</span>
+            <div className="cart-head__actions">
+              <button
+                className="chip-button"
+                disabled={cart.length === 0 || locked}
+                onClick={holdCurrentCart}
+              >
+                {t("cashier.holdCart")}
+              </button>
+              <button
+                className="chip-button"
+                onClick={() => {
+                  if (registerId) setHeldCarts(listHeldCarts(registerId));
+                  setHeldCartsOpen(true);
+                }}
+              >
+                {t("cashier.heldCarts")}
+              </button>
+            </div>
           </div>
           <div className="cart-body">
             {cart.length === 0 ? (
@@ -1335,65 +1518,108 @@ export function PosApplication({
             ) : (
               <div className="cart-lines">
                 {cart.map((line) => (
-                  <div className="cart-line" key={line.variantId}>
-                    <div className="cart-line__description">
-                      <strong>{line.label}</strong>
-                      <span>{t("cashier.sku", { sku: line.sku })}</span>
-                      <span>
-                        {t("cashier.each", {
-                          price: formatMoney(
-                            line.displayedUnitPriceMinor,
-                            register.sellingCurrency,
-                            locale,
-                          ),
-                        })}
-                      </span>
-                    </div>
-                    <label>
-                      {t("cashier.qty")}
-                      <input
-                        aria-label={t("cashier.qtyFor", { label: line.label })}
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={line.quantity}
+                  <div className="cart-item" key={line.variantId}>
+                    <div className="cart-item__top">
+                      <strong title={t("cashier.sku", { sku: line.sku })}>{line.label}</strong>
+                      <button
+                        className="cart-item__remove"
+                        aria-label={t("pos.removeLine", { label: line.label })}
+                        title={t("cashier.remove")}
                         disabled={submitting}
-                        // Prevent the scroll wheel from silently changing the quantity while the
-                        // cashier scrolls the page.
-                        onWheel={(event) => event.currentTarget.blur()}
-                        onChange={(event) =>
-                          changeCart((current) =>
-                            updateQuantity(current, line.variantId, Number(event.target.value)),
-                          )
-                        }
-                      />
-                    </label>
-                    <strong>
-                      {formatMoney(
-                        line.quantity * line.displayedUnitPriceMinor,
-                        register.sellingCurrency,
-                        locale,
-                      )}
-                    </strong>
-                    <button
-                      className="remove-button"
-                      aria-label={t("pos.removeLine", { label: line.label })}
-                      disabled={submitting}
-                      onClick={() => changeCart((current) => removeLine(current, line.variantId))}
-                    >
-                      {t("cashier.remove")}
-                    </button>
+                        onClick={() => changeCart((current) => removeLine(current, line.variantId))}
+                      >
+                        <Icons.trash />
+                      </button>
+                    </div>
+                    <div className="cart-item__bottom">
+                      <div className="qty-stepper">
+                        <button
+                          type="button"
+                          aria-label={t("cashier.decreaseQty", { label: line.label })}
+                          disabled={submitting || line.quantity <= 1}
+                          onClick={() =>
+                            changeCart((current) =>
+                              updateQuantity(current, line.variantId, line.quantity - 1),
+                            )
+                          }
+                        >
+                          <Icons.minus />
+                        </button>
+                        <input
+                          aria-label={t("cashier.qtyFor", { label: line.label })}
+                          type="number"
+                          min="1"
+                          max={stockLoaded ? (connectedStock.get(line.variantId) ?? 0) : undefined}
+                          step="1"
+                          value={line.quantity}
+                          disabled={submitting}
+                          // Prevent the scroll wheel from silently changing the quantity while the
+                          // cashier scrolls the page.
+                          onWheel={(event) => event.currentTarget.blur()}
+                          onChange={(event) => {
+                            const next = Number(event.target.value);
+                            if (stockLoaded && next > (connectedStock.get(line.variantId) ?? 0))
+                              return;
+                            changeCart((current) => updateQuantity(current, line.variantId, next));
+                          }}
+                        />
+                        <button
+                          type="button"
+                          aria-label={t("cashier.increaseQty", { label: line.label })}
+                          disabled={
+                            submitting ||
+                            (stockLoaded &&
+                              line.quantity >= (connectedStock.get(line.variantId) ?? 0))
+                          }
+                          onClick={() =>
+                            changeCart((current) =>
+                              updateQuantity(current, line.variantId, line.quantity + 1),
+                            )
+                          }
+                        >
+                          <Icons.plus />
+                        </button>
+                      </div>
+                      <span className="cart-item__unit">
+                        ×{" "}
+                        {formatMoney(
+                          line.displayedUnitPriceMinor,
+                          register.sellingCurrency,
+                          locale,
+                        )}
+                      </span>
+                      <strong className="cart-item__total">
+                        {formatMoney(
+                          line.quantity * line.displayedUnitPriceMinor,
+                          register.sellingCurrency,
+                          locale,
+                        )}
+                      </strong>
+                    </div>
                   </div>
                 ))}
               </div>
             )}
           </div>
+          {heldCartsOpen ? (
+            <HeldCartsPanel
+              carts={heldCarts}
+              currency={register.sellingCurrency}
+              canResume={cart.length === 0 && !locked}
+              onResume={resumeHeldCart}
+              onDelete={(id) => {
+                removeHeldCart(register.registerId, id);
+                setHeldCarts(listHeldCarts(register.registerId));
+              }}
+              onClose={() => setHeldCartsOpen(false)}
+            />
+          ) : null}
           <div className="promotion-panel">
             <div className="promotion-code-row">
               <label className="promotion-code-field">
-                {t("pos.promotionCode")}
                 <input
                   aria-label={t("pos.promotionCode")}
+                  placeholder={t("pos.promotionCode")}
                   type="text"
                   autoComplete="off"
                   value={codeDraft}
@@ -1429,21 +1655,30 @@ export function PosApplication({
                 <span>
                   {quoteState.error.kind === "network"
                     ? t("pos.promotionsNeedConnection")
-                    : t("pos.pricingUnavailable")}
+                    : quoteState.error.code === "BRAND_NOT_AVAILABLE_AT_BRANCH"
+                      ? t("pos.brandNotAvailableAtBranch")
+                      : quoteState.error.message || t("pos.pricingUnavailable")}
                 </span>
-                <div className="button-row">
-                  <button
-                    className="button button--quiet"
-                    onClick={() => setQuoteNonce((value) => value + 1)}
-                  >
-                    {t("pos.reconnect")}
-                  </button>
-                  {offlineReadiness.ready ? (
-                    <button className="button button--quiet" onClick={switchToOffline}>
-                      {t("pos.continueOfflinePrices")}
-                    </button>
-                  ) : null}
-                </div>
+                {quoteState.error.retryable ||
+                (quoteState.error.kind === "network" && offlineReadiness.ready) ? (
+                  <div className="button-row">
+                    {quoteState.error.retryable ? (
+                      <button
+                        className="button button--quiet"
+                        onClick={() => setQuoteNonce((value) => value + 1)}
+                      >
+                        {quoteState.error.kind === "network"
+                          ? t("pos.reconnect")
+                          : t("pos.retryPricing")}
+                      </button>
+                    ) : null}
+                    {quoteState.error.kind === "network" && offlineReadiness.ready ? (
+                      <button className="button button--quiet" onClick={switchToOffline}>
+                        {t("pos.continueOfflinePrices")}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {appliedCode !== null && quoteReady && codeStatus === "invalid" ? (
@@ -1578,6 +1813,8 @@ export function PosApplication({
       sync={syncStatus}
     />
   ) : null;
+  // ADR-042 §9: generic offline requests (inventory, suppliers, staff, settings) are out of scope and no
+  // longer offered on any desk.
   return (
     <AppShell
       sections={visibleSections}
@@ -1586,6 +1823,8 @@ export function PosApplication({
       userName={operator?.name ?? auth.displayName ?? t("pos.operator")}
       onSignOut={() => void signOut()}
       signOutDisabled={locked || returnLocked}
+      headerStart={section === "pos" ? posHeaderStart : undefined}
+      headerActions={section === "pos" ? posHeaderActions : undefined}
     >
       {deskBanner}
       {section === "pos" ? (
@@ -1602,18 +1841,49 @@ export function PosApplication({
         />
       ) : section === "vouchers" ? (
         <VouchersDesk client={tenantClient} currency={register.sellingCurrency} />
+      ) : section === "website" ? (
+        // Online-only: the desk reads/writes the server-authoritative storefront, so it is not offered offline.
+        syncStatus.networkOnline ? (
+          <WebsiteDesk
+            client={tenantClient}
+            onOpenVouchers={capabilities.vouchers ? () => handleNavigate("vouchers") : undefined}
+          />
+        ) : (
+          <div className="notice" role="status" data-testid="website-offline-disabled">
+            {t("desk.websiteOffline")}
+          </div>
+        )
       ) : section === "staff" ? (
-        <StaffAttendance
+        <StaffWorkspace
           client={tenantClient}
           currency={register.sellingCurrency}
           branchId={register.branchId}
+          rosterBridge={posAuthBridge}
+          operator={operator}
         />
       ) : section === "suppliers" ? (
-        <SuppliersDesk client={tenantClient} />
+        // ADR-042 §2: the Suppliers section is disabled offline (no reads or writes are attempted).
+        syncStatus.networkOnline ? (
+          <SuppliersDesk client={tenantClient} />
+        ) : (
+          <div className="notice" role="status" data-testid="suppliers-offline-disabled">
+            {t("desk.suppliersOffline")}
+          </div>
+        )
       ) : section === "reports" ? (
         <ReportsDesk client={tenantClient} />
       ) : section === "activity" ? (
         <ActivityDesk />
+      ) : section === "review" ? (
+        <>
+          {/* ADR-042 §13.5: server conflict report first, then this till's local outbox review. */}
+          <ServerSyncConflicts
+            client={tenantClient}
+            registerId={registerId}
+            syncStatus={syncStatus}
+          />
+          <ReviewCenter bridge={offlineBridge} />
+        </>
       ) : section === "settings" ? (
         <SettingsDesk
           client={tenantClient}

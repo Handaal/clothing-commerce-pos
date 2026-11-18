@@ -15,6 +15,7 @@ const AUTO_REFRESHABLE_REASONS: ReadonlySet<string> = new Set([
   "GRANT_EXPIRED",
   "CATALOG_EXPIRED",
   "GRANT_MISSING",
+  "DEVICE_NOT_ENROLLED",
 ]);
 
 export interface OfflineRunway {
@@ -54,7 +55,7 @@ export function runwayLabel(millisRemaining: number): RunwayLabel {
 
 export interface AutoRefreshInput {
   readonly readiness: OfflineReadiness;
-  /** Signed in to Clerk with a tenant and register resolved, so an operator token is obtainable. */
+  /** Signed in (POS-native session) with a tenant and register resolved, so an operator token is obtainable. */
   readonly connected: boolean;
   readonly networkOnline: boolean;
   /** A bootstrap (manual or automatic) is already in flight. */

@@ -14,6 +14,7 @@ import { useI18n, type TVars } from "../shell/i18n";
 import { SkeletonLines } from "../shell/Skeleton";
 
 type OrderListItem = OrderListResponse["items"][number];
+type FulfillmentStatus = "unfulfilled" | "partially_fulfilled" | "fulfilled" | "error";
 type T = (key: string, vars?: TVars) => string;
 
 interface CachedOrderDetail {
@@ -69,6 +70,10 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [orderView, setOrderView] = useState<"all" | "pos" | "online" | "fulfillment">("all");
+  const [fulfillmentById, setFulfillmentById] = useState<ReadonlyMap<string, FulfillmentStatus>>(
+    new Map(),
+  );
   // Date-range filter mirrors the Reports desk's From/To. The orders list API has no date params,
   // so (like the order-number search above) this filters the already-loaded pages client-side on
   // each order's placedAt. It starts empty — no range — so every loaded order shows by default.
@@ -85,15 +90,20 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
   const loadFirstPage = useCallback(async () => {
     setListLoading(true);
     setListError(null);
+    setFulfillmentById(new Map());
     try {
-      // No channel/status filter: the Orders page lists every order the operator may read.
-      setList(await client.listOrders({ limit: 50 }));
+      setList(
+        await client.listOrders({
+          limit: 50,
+          ...(orderView === "all" ? {} : { channel: orderView === "pos" ? "pos" : "online" }),
+        }),
+      );
     } catch (err) {
       setListError(classifyCommerceError(err).message);
     } finally {
       setListLoading(false);
     }
-  }, [client]);
+  }, [client, orderView]);
 
   // Initial load deliberately exposes the loading transition before the async result settles.
   useEffect(() => {
@@ -107,13 +117,45 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
     try {
       const next = await client.listOrders({
         limit: 50,
+        ...(orderView === "all" ? {} : { channel: orderView === "pos" ? "pos" : "online" }),
         cursor: list.pageInfo.nextCursor ?? undefined,
       });
       setList({ ...next, items: [...list.items, ...next.items] });
     } catch (err) {
       setListError(classifyCommerceError(err).message);
     }
-  }, [client, list]);
+  }, [client, list, orderView]);
+
+  useEffect(() => {
+    if (orderView !== "fulfillment" || !list) return;
+    let active = true;
+    const unknown = list.items.filter(
+      (item) =>
+        item.channel === "online" && item.status === "placed" && !fulfillmentById.has(item.id),
+    );
+    const load = async () => {
+      const statuses = new Map(fulfillmentById);
+      for (let index = 0; index < unknown.length; index += 5) {
+        const results = await Promise.allSettled(
+          unknown.slice(index, index + 5).map((item) => client.getOrder(item.id)),
+        );
+        results.forEach((result, offset) => {
+          if (result.status === "fulfilled")
+            statuses.set(unknown[index + offset].id, result.value.fulfillmentProgress.status);
+          else {
+            statuses.set(unknown[index + offset].id, "error");
+            setListError(classifyCommerceError(result.reason).message);
+          }
+        });
+        if (!active) return;
+        setFulfillmentById(new Map(statuses));
+      }
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [client, list, orderView, fulfillmentById]);
 
   // Tracks the most recently requested order so a slow response for a previously-clicked order can
   // never overwrite the detail the operator is actually looking at.
@@ -188,6 +230,12 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
       : list.items.filter((item) => {
           if (normalizedQuery && !item.orderNumber.toLowerCase().includes(normalizedQuery))
             return false;
+          if (
+            orderView === "fulfillment" &&
+            (item.status !== "placed" ||
+              !["unfulfilled", "partially_fulfilled"].includes(fulfillmentById.get(item.id) ?? ""))
+          )
+            return false;
           if (fromTime !== null || toTime !== null) {
             const placed = new Date(item.placedAt).getTime();
             if (fromTime !== null && placed < fromTime) return false;
@@ -196,6 +244,13 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
           return true;
         });
   const hasDateFilter = fromTime !== null || toTime !== null;
+  const checkingFulfillment =
+    orderView === "fulfillment" &&
+    (list?.items.some(
+      (item) =>
+        item.status === "placed" && item.channel === "online" && !fulfillmentById.has(item.id),
+    ) ??
+      false);
 
   return (
     <main className="orders-shell">
@@ -219,6 +274,22 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
             onFromChange={setStartDate}
             onToChange={setEndDate}
           />
+          <label>
+            {t("orders.view")}
+            <select
+              value={orderView}
+              onChange={(event) => {
+                setOrderView(event.target.value as typeof orderView);
+                setSelectedId(null);
+                setList(null);
+              }}
+            >
+              <option value="all">{t("orders.view.all")}</option>
+              <option value="pos">{t("orders.view.pos")}</option>
+              <option value="online">{t("orders.view.online")}</option>
+              <option value="fulfillment">{t("orders.view.fulfillment")}</option>
+            </select>
+          </label>
           {hasDateFilter ? (
             <button
               className="button button--quiet"
@@ -253,7 +324,10 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
           </div>
           <div className="orders-list__body">
             {listLoading ? <SkeletonLines lines={6} label={t("orders.loadingOrders")} /> : null}
-            {!listLoading && visibleItems.length === 0 ? (
+            {!listLoading && checkingFulfillment ? (
+              <p className="staff-empty">{t("orders.checkingFulfillment")}</p>
+            ) : null}
+            {!listLoading && !checkingFulfillment && visibleItems.length === 0 ? (
               <p className="staff-empty">
                 {normalizedQuery !== ""
                   ? t("orders.noMatch", { query })

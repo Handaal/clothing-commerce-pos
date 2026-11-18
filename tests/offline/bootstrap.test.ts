@@ -56,7 +56,7 @@ describe("authenticated enrollment and offline bootstrap foundation", () => {
       tenantId: ids.tenant,
       registerId: ids.register,
       displayName: "Front Register",
-      accessToken: "clerk-test-token-must-not-persist",
+      accessToken: "pos-session-test-token-must-not-persist",
     };
     await expect(service.bootstrap(input)).resolves.toMatchObject({
       deviceId: ids.device,
@@ -74,7 +74,7 @@ describe("authenticated enrollment and offline bootstrap foundation", () => {
       2,
     );
     for (const call of calls) {
-      expect(call.headers.get("Authorization")).toBe("Bearer clerk-test-token-must-not-persist");
+      expect(call.headers.get("Authorization")).toBe("Bearer pos-session-test-token-must-not-persist");
       expect(call.headers.get("X-Tenant-Id")).toBe(ids.tenant);
       expect(call.headers.get("Idempotency-Key")).toMatch(/^[a-f0-9-]{36}$/);
     }
@@ -87,7 +87,7 @@ describe("authenticated enrollment and offline bootstrap foundation", () => {
         )`,
       )
       .get() as { values_text: string | null };
-    expect(serializedRows.values_text ?? "").not.toContain("clerk-test-token-must-not-persist");
+    expect(serializedRows.values_text ?? "").not.toContain("pos-session-test-token-must-not-persist");
     expect(harness.sales.getReadiness()).toMatchObject({ ready: true, deviceId: ids.device });
   });
 });

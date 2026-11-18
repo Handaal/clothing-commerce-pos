@@ -23,14 +23,19 @@ export const DESK_OFFLINE_PROFILES: Partial<Record<SectionId, DeskOfflineProfile
   customers: { capability: "online-only", reasonKey: "desk.reason.customers" },
   // Company-wide reports are server-built; the on-device summary is rendered separately below.
   reports: { capability: "online-only", reasonKey: "desk.reason.reports" },
-  // Server-computed discount money; applying promotions offline is architecturally forbidden.
+  // Voucher management is online-only. Offline the cashier can apply only vouchers this till holds
+  // reserved quota for (ADR-042 §5).
   vouchers: { capability: "online-only", reasonKey: "desk.reason.vouchers" },
-  // Back-office AP money — needs a connection.
+  // Website management writes straight to the server-authoritative storefront — no offline path.
+  website: { capability: "online-only", reasonKey: "desk.reason.website" },
+  // Back-office AP money — the section is disabled offline (ADR-042 §2).
   suppliers: { capability: "online-only", reasonKey: "desk.reason.suppliers" },
   // Staff management is online-only; offline attendance capture (Deliverable B) lives in the cashier.
   staff: { capability: "online-only", reasonKey: "desk.reason.staff" },
   // Device-local activity ledger — fully available offline (not the server activity feed).
   activity: { capability: "local-only" },
+  // The sync review center reads only durable local state (outboxes + review audit), so it works offline.
+  review: { capability: "local-only" },
   // Local POS-user/PIN prefs apply immediately; device/shared governance needs a connection.
   settings: { capability: "online-only", reasonKey: "desk.reason.settings" },
 };

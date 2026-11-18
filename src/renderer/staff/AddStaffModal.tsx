@@ -4,7 +4,7 @@ import type {
   EligibleIdentity,
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { classifyCommerceError } from "../commerce/errors";
 import { useI18n } from "../shell/i18n";
@@ -28,6 +28,12 @@ export function AddStaffModal({
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
 
   const [email, setEmail] = useState("");
+  const [mode, setMode] = useState<"withoutLogin" | "existingLogin">("withoutLogin");
+  const [displayName, setDisplayName] = useState("");
+  const [position, setPosition] = useState("");
+  const [phone, setPhone] = useState("");
+  const creationKey = useRef(crypto.randomUUID());
+  const profileKey = useRef(crypto.randomUUID());
   const [looking, setLooking] = useState(false);
   const [candidates, setCandidates] = useState<EligibleIdentity[] | null>(null);
   const [identityId, setIdentityId] = useState("");
@@ -79,10 +85,26 @@ export function AddStaffModal({
   }
 
   async function submit() {
-    if (identityId === "") return;
+    if (mode === "existingLogin" && identityId === "") return;
+    if (mode === "withoutLogin" && displayName.trim() === "") return;
     setBusy(true);
     setError(null);
     try {
+      if (mode === "withoutLogin") {
+        const member = await client.createStaffWithoutLogin({
+          idempotencyKey: creationKey.current,
+          displayName: displayName.trim(),
+        });
+        await client.updateStaffProfile({
+          idempotencyKey: profileKey.current,
+          membershipId: member.membershipId,
+          displayName: displayName.trim(),
+          position: position.trim() || null,
+          phone: phone.trim() || null,
+        });
+        onCreated(member.displayName ?? displayName.trim());
+        return;
+      }
       const member = await client.createStaff({
         idempotencyKey: crypto.randomUUID(),
         identityId,
@@ -112,80 +134,123 @@ export function AddStaffModal({
       <div className="staff-modal" ref={dialogRef} onClick={(e) => e.stopPropagation()}>
         <h3>{t("staff.add.title")}</h3>
         <div className="staff-modal__body">
-          <p className="muted">{t("staff.add.hint")}</p>
-          <div className="add-product-custom">
-            <input
-              type="email"
-              inputMode="email"
-              autoFocus
-              placeholder={t("staff.add.emailPlaceholder")}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") {
-                  e.preventDefault();
-                  void find();
-                }
-              }}
+          <label className="field">
+            {t("staff.add.accountType")}
+            <Select
+              ariaLabel={t("staff.add.accountType")}
+              value={mode}
+              onChange={(value) => setMode(value as typeof mode)}
+              options={[
+                { value: "withoutLogin", label: t("staff.add.withoutLogin") },
+                { value: "existingLogin", label: t("staff.add.existingLogin") },
+              ]}
             />
-            <button
-              type="button"
-              className="button button--quiet"
-              onClick={() => void find()}
-              disabled={looking || email.trim() === ""}
-            >
-              {looking ? t("staff.add.searching") : t("staff.add.find")}
-            </button>
-          </div>
-
-          {candidates !== null && candidates.length === 0 ? (
-            <p className="staff-empty">{t("staff.add.noMatch")}</p>
-          ) : null}
-
-          {candidates && candidates.length > 0 ? (
-            <div className="staff-identity-list">
-              {candidates.map((identity) => (
-                <label className="staff-identity" key={identity.identityId}>
-                  <input
-                    type="radio"
-                    name="identity"
-                    checked={identityId === identity.identityId}
-                    onChange={() => setIdentityId(identity.identityId)}
-                  />
-                  <span>
-                    <strong>{identityLabel(identity)}</strong>
-                    {identity.primaryEmail ? <small>{identity.primaryEmail}</small> : null}
-                  </span>
-                </label>
-              ))}
-            </div>
-          ) : null}
-
-          {identityId !== "" && roles.length > 0 && scopes.length > 0 ? (
+          </label>
+          {mode === "withoutLogin" ? (
             <>
               <label className="field">
-                {t("staff.add.role")}
-                <Select
-                  ariaLabel={t("staff.add.role")}
-                  placeholder={t("staff.add.noRole")}
-                  value={roleId}
-                  onChange={setRoleId}
-                  options={roles.map((r) => ({ value: r.roleId, label: r.roleName }))}
+                {t("staff.col.employee")}
+                <input
+                  value={displayName}
+                  maxLength={120}
+                  onChange={(event) => setDisplayName(event.target.value)}
                 />
               </label>
               <label className="field">
-                {t("staff.add.scope")}
-                <Select
-                  ariaLabel={t("staff.add.scope")}
-                  placeholder={t("staff.add.chooseScope")}
-                  value={accessScopeId}
-                  onChange={setAccessScopeId}
-                  options={scopes.map((s) => ({ value: s.accessScopeId, label: s.scopeName }))}
+                {t("staff.profile.position")}
+                <input
+                  value={position}
+                  maxLength={80}
+                  onChange={(event) => setPosition(event.target.value)}
                 />
               </label>
-              <p className="muted">{t("staff.add.roleOptional")}</p>
+              <label className="field">
+                {t("staff.profile.phone")}
+                <input
+                  value={phone}
+                  maxLength={30}
+                  onChange={(event) => setPhone(event.target.value)}
+                />
+              </label>
             </>
-          ) : null}
+          ) : (
+            <>
+              <p className="muted">{t("staff.add.hint")}</p>
+              <div className="add-product-custom">
+                <input
+                  type="email"
+                  inputMode="email"
+                  autoFocus
+                  placeholder={t("staff.add.emailPlaceholder")}
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      void find();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="button button--quiet"
+                  onClick={() => void find()}
+                  disabled={looking || email.trim() === ""}
+                >
+                  {looking ? t("staff.add.searching") : t("staff.add.find")}
+                </button>
+              </div>
+
+              {candidates !== null && candidates.length === 0 ? (
+                <p className="staff-empty">{t("staff.add.noMatch")}</p>
+              ) : null}
+
+              {candidates && candidates.length > 0 ? (
+                <div className="staff-identity-list">
+                  {candidates.map((identity) => (
+                    <label className="staff-identity" key={identity.identityId}>
+                      <input
+                        type="radio"
+                        name="identity"
+                        checked={identityId === identity.identityId}
+                        onChange={() => setIdentityId(identity.identityId)}
+                      />
+                      <span>
+                        <strong>{identityLabel(identity)}</strong>
+                        {identity.primaryEmail ? <small>{identity.primaryEmail}</small> : null}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              ) : null}
+
+              {identityId !== "" && roles.length > 0 && scopes.length > 0 ? (
+                <>
+                  <label className="field">
+                    {t("staff.add.role")}
+                    <Select
+                      ariaLabel={t("staff.add.role")}
+                      placeholder={t("staff.add.noRole")}
+                      value={roleId}
+                      onChange={setRoleId}
+                      options={roles.map((r) => ({ value: r.roleId, label: r.roleName }))}
+                    />
+                  </label>
+                  <label className="field">
+                    {t("staff.add.scope")}
+                    <Select
+                      ariaLabel={t("staff.add.scope")}
+                      placeholder={t("staff.add.chooseScope")}
+                      value={accessScopeId}
+                      onChange={setAccessScopeId}
+                      options={scopes.map((s) => ({ value: s.accessScopeId, label: s.scopeName }))}
+                    />
+                  </label>
+                  <p className="muted">{t("staff.add.roleOptional")}</p>
+                </>
+              ) : null}
+            </>
+          )}
 
           {error ? (
             <div className="notice notice--error" role="alert">
@@ -200,7 +265,9 @@ export function AddStaffModal({
           <button
             className="button"
             onClick={() => void submit()}
-            disabled={busy || identityId === ""}
+            disabled={
+              busy || (mode === "withoutLogin" ? displayName.trim() === "" : identityId === "")
+            }
           >
             {busy ? t("staff.add.adding") : t("staff.add.add")}
           </button>

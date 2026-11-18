@@ -1,12 +1,12 @@
 // POS-native (pos_pin) connected session: a username + numeric PIN authenticates against the Commerce
 // API, which issues a short-lived access token the POS feeds to its own SDK client. The Electron main
 // process owns that token (OS-encrypted on disk via safeStorage); the renderer only ever receives the
-// operator to render plus the raw bearer for its own SDK client — exactly as the Clerk JWT crossed the
-// boundary before the pos_pin cutover. This is the connected floor login that REPLACES Clerk for POS
-// staff. Clerk is retained solely for owner/admin account provisioning (see PosUsersManager).
+// operator to render plus the raw bearer for its own SDK client. ADR-043: this is the ONLY connected POS
+// login — the POS has no Clerk at all; the first POS admin is provisioned by the owner in the Admin app and
+// later accounts by POS admins in the Team desk (PosUsersManager), both against the API.
 //
 // When this bridge is absent (e.g. a non-Electron test host) the renderer behaves as a signed-out,
-// offline-only shell exactly as it did when the Clerk bridge was absent.
+// offline-only shell (no session).
 
 export type PosOperatorRole = "admin" | "cashier";
 

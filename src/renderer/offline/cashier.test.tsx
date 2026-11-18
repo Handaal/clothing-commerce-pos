@@ -61,6 +61,8 @@ const receipt: LocalReceipt = {
   customerName: null,
   amountPaidMinor: 2_599,
   outstandingMinor: 0,
+  tenders: [{ method: "cash", amountMinor: 2_599, confirmation: "recorded_locally" }],
+  reconciliationHold: null,
   lines: [
     {
       lineNumber: 1,
@@ -82,6 +84,13 @@ function bridge(): OfflineBridge {
     getCachedCatalog: vi.fn(),
     getProjectedInventory: vi.fn(),
     getOfflineCustomers: vi.fn(async () => []),
+    previewOfflineVoucher: vi.fn(),
+    addOfflineCustomer: vi.fn(async () => ({
+      localCustomerId: "lc-1",
+      name: "Omar",
+      phone: "+201005550101",
+      acceptedAt: "2026-11-14T00:00:00.000Z",
+    })),
     recordCustomerPayment: vi.fn(),
     acceptCashSale: vi.fn(async () => ({
       lifecycle: "accepted_pending_sync" as const,
@@ -98,6 +107,10 @@ function bridge(): OfflineBridge {
     })),
     recordAttendanceEvent: vi.fn(),
     getLocalAttendance: vi.fn(async () => ({ lastEvent: null, pending: 0, recent: [] })),
+    prepareReturnGrant: vi.fn(),
+    getReturnGrants: vi.fn(async () => []),
+    recordReturn: vi.fn(),
+    getLocalReturns: vi.fn(async () => ({ pending: 0, recent: [] })),
     getLocalReceipt: vi.fn(async () => receipt),
     getUnacknowledgedSales: vi.fn(async () => []),
     acknowledgeSale: vi.fn(async () => ({
@@ -110,6 +123,12 @@ function bridge(): OfflineBridge {
     requestSync: vi.fn(async () => status),
     bootstrap: vi.fn(),
     verifyStaffPin: vi.fn(async () => ({ ok: false as const, reason: "UNAVAILABLE" as const })),
+    endStaffSession: vi.fn(async () => undefined),
+    recordIntent: vi.fn(),
+    getLocalIntents: vi.fn(async () => ({ enabledOperations: [], pending: 0, recent: [] })),
+    getReviewItems: vi.fn(async () => []),
+    reviewRetry: vi.fn(),
+    reviewRequestResolution: vi.fn(),
   };
 }
 
@@ -154,6 +173,7 @@ describe("offline cashier", () => {
         onSignOut={vi.fn(async () => undefined)}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: /Tees/ }));
     fireEvent.click(screen.getByRole("button", { name: /Foundation Tee/ }));
     fireEvent.click(screen.getByRole("button", { name: "Add" }));
     fireEvent.click(screen.getByRole("button", { name: "Take payment" }));

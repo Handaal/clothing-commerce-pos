@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 
 import type {
   OfflineAttendanceCommand,
+  OfflineCustomerCommand,
   OfflineCustomerPaymentCommand,
   OfflineSaleCommand,
 } from "@shifted/clothing-commerce-sdk" with {
@@ -22,12 +23,23 @@ import type {
   OfflineCustomerPaymentInput,
   OfflineLocalReport,
   OfflineReadiness,
+  AcceptedOfflineCustomer,
+  OfflineNewCustomerInput,
   OfflineSaleInput,
+  OfflineVoucherPreview,
+  OfflineVoucherPreviewInput,
   PendingSyncSummary,
   ProjectedInventoryItem,
 } from "../../shared/offline";
 import { LocalDatabase } from "./database";
 import { DeviceKeyStore } from "./device-key";
+import type { OverrideAssertion, OverrideRosterStore } from "./override-roster";
+import { offlineVoucherDiscount, type OfflineVoucherTerms } from "./voucher-discount";
+import {
+  voucherCodeFingerprint,
+  voucherPolicyIntegrity,
+  type VoucherPolicyIntegrityFields,
+} from "./voucher-policy";
 
 const CLOCK_ROLLBACK_TOLERANCE_MS = 5 * 60 * 1_000;
 
@@ -46,10 +58,12 @@ const {
   canonicalizeOfflineSaleCommand,
   canonicalizeOfflineCustomerPaymentCommand,
   canonicalizeOfflineAttendanceCommand,
+  canonicalizeOfflineCustomerCommand,
 } = createRequire(__filename)("@shifted/clothing-commerce-sdk") as {
   canonicalizeOfflineSaleCommand(command: OfflineSaleCommand): string;
   canonicalizeOfflineCustomerPaymentCommand(command: OfflineCustomerPaymentCommand): string;
   canonicalizeOfflineAttendanceCommand(command: OfflineAttendanceCommand): string;
+  canonicalizeOfflineCustomerCommand(command: OfflineCustomerCommand): string;
 };
 
 interface AuthorityRow {
@@ -95,7 +109,7 @@ interface SaleLineFact {
   priceVersion: string;
 }
 
-export type OfflineSaleWriteStage = "sale" | "lines" | "tender" | "outbox";
+export type OfflineSaleWriteStage = "sale" | "lines" | "tender" | "dependency" | "outbox";
 
 export interface OfflineSaleTestSeam {
   afterStage?(stage: OfflineSaleWriteStage): void;
@@ -111,13 +125,49 @@ export class OfflineAcceptanceError extends Error {
   }
 }
 
+/**
+ * ADR-042 §6.3: one-use admin assertion for a command, or a deterministic acceptance error. The password
+ * is only passed through to the main-process roster check; it is never stored, logged or signed.
+ */
+export function approverAssertion(
+  roster: OverrideRosterStore | undefined,
+  approver: { readonly username: string; readonly password: string },
+  permission: "promotions.manage" | "payments.refund",
+  commandId: string,
+): OverrideAssertion {
+  const result = roster?.check({ ...approver, permission, commandId }) ?? {
+    ok: false as const,
+    reason: "UNAVAILABLE" as const,
+  };
+  if (result.ok) return result.assertion;
+  const messages = {
+    INVALID: "The admin username or override password is wrong.",
+    THROTTLED: "Too many wrong attempts. Try again in a few minutes.",
+    NOT_AUTHORIZED: "This admin's permissions don't cover this action at this till.",
+    UNAVAILABLE: "Admin credentials can't be checked on this till until it reconnects.",
+  } as const;
+  throw new OfflineAcceptanceError(`ADMIN_CREDENTIALS_${result.reason}`, messages[result.reason]);
+}
+
 export class OfflineSaleService {
   constructor(
     private readonly database: LocalDatabase,
     private readonly keys: DeviceKeyStore,
     private readonly now: () => Date = () => new Date(),
     private readonly testSeam?: OfflineSaleTestSeam,
+    private readonly overrideRoster?: OverrideRosterStore,
   ) {}
+
+  /**
+   * ADR-043 §5.1: who is operating the till right now, as known to the MAIN process only (the member who
+   * unlocked offline with a verified PIN, else the signed-in online operator). Stamped into each signed sale so
+   * the server can attribute it to the person who actually sold; the renderer can never supply this value.
+   */
+  private operatorResolver: () => string | null = () => null;
+
+  setOperatorResolver(resolver: () => string | null): void {
+    this.operatorResolver = resolver;
+  }
 
   getReadiness(): OfflineReadiness {
     const device = this.database.connection
@@ -217,11 +267,12 @@ export class OfflineSaleService {
     return Number(row.total);
   }
 
+  // Offline PIN v2: enrollments the latest online bootstrap authorises on this device.
   private countStaffRoster(): number {
     const row = this.database.connection
       .prepare(
         `SELECT COUNT(*) AS count
-         FROM staff_roster r
+         FROM offline_pin_authorization r
          JOIN catalog_snapshot c ON c.snapshot_id = r.snapshot_id AND c.state = 'active'`,
       )
       .get() as { count: number };
@@ -298,7 +349,7 @@ export class OfflineSaleService {
   }
 
   getOfflineCustomers(): ReadonlyArray<OfflineCustomer> {
-    return this.database.connection
+    const snapshot: OfflineCustomer[] = this.database.connection
       .prepare(
         `SELECT c.customer_id, c.name, c.phone, c.snapshot_outstanding_minor,
           COALESCE((
@@ -328,6 +379,96 @@ export class OfflineSaleService {
           projectedOutstandingMinor: Math.max(0, projected),
         };
       });
+    // Customers created on this till while offline (name + phone only) can carry an installment / paydown
+    // before they sync; the sale/payment then depends on the customer command (see local schema v19).
+    const created = this.database.connection
+      .prepare(
+        `SELECT lc.local_customer_id, lc.name, lc.phone, o.state AS outbox_state,
+          COALESCE((
+            SELECT SUM(s.outstanding_minor) FROM local_sale s
+            WHERE s.customer_id = lc.local_customer_id AND s.projection_released_at IS NULL
+          ), 0) AS pending_debt,
+          COALESCE((
+            SELECT SUM(p.amount_minor) FROM local_customer_payment p
+            WHERE p.customer_id = lc.local_customer_id AND p.projection_released_at IS NULL
+          ), 0) AS pending_paid
+         FROM local_customer lc JOIN customer_outbox o ON o.local_customer_id = lc.local_customer_id
+         WHERE o.state <> 'blocked'
+         ORDER BY lc.name, lc.local_customer_id`,
+      )
+      .all()
+      .map((raw) => {
+        const row = raw as Record<string, string | number>;
+        return {
+          customerId: String(row.local_customer_id),
+          name: String(row.name),
+          phone: String(row.phone),
+          projectedOutstandingMinor: Math.max(
+            0,
+            Number(row.pending_debt) - Number(row.pending_paid),
+          ),
+          createdOffline: true as const,
+          pendingSync: String(row.outbox_state) !== "delivered",
+        };
+      });
+    const known = new Set(snapshot.map((item) => item.customerId));
+    return [...snapshot, ...created.filter((item) => !known.has(item.customerId))];
+  }
+
+  /**
+   * A customer this till created offline that may still need to reach the server: its local profile and
+   * customer command. Undefined for snapshot customers, unknown ids, and customers the server rejected.
+   */
+  private offlineCreatedCustomer(customerId: string):
+    | {
+        readonly localCustomerId: string;
+        readonly customerSyncCommandId: string;
+        readonly name: string;
+        readonly phone: string;
+        readonly delivered: boolean;
+      }
+    | undefined {
+    const row = this.database.connection
+      .prepare(
+        `SELECT lc.local_customer_id, lc.name, lc.phone, o.sync_command_id, o.state
+         FROM local_customer lc JOIN customer_outbox o ON o.local_customer_id = lc.local_customer_id
+         WHERE lc.local_customer_id = ? AND o.state <> 'blocked'`,
+      )
+      .get(customerId) as Record<string, string> | undefined;
+    if (!row) return undefined;
+    return {
+      localCustomerId: row.local_customer_id,
+      customerSyncCommandId: row.sync_command_id,
+      name: row.name,
+      phone: row.phone,
+      delivered: row.state === "delivered",
+    };
+  }
+
+  /** Record, in the caller's transaction, that a dependent command must wait for its new customer. */
+  private recordCustomerDependency(
+    lane: "sale" | "payment",
+    dependentSyncCommandId: string,
+    customer: NonNullable<ReturnType<OfflineSaleService["offlineCreatedCustomer"]>>,
+    acceptedAt: string,
+  ): void {
+    if (customer.delivered) return; // already accepted server-side under the same id: nothing to wait for
+    this.database.connection
+      .prepare(
+        `INSERT INTO local_customer_dependency(
+          dependent_lane, dependent_sync_command_id, local_customer_id, customer_sync_command_id,
+          customer_display_name, customer_phone_last4, state, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 'waiting', ?)`,
+      )
+      .run(
+        lane,
+        dependentSyncCommandId,
+        customer.localCustomerId,
+        customer.customerSyncCommandId,
+        customer.name,
+        customer.phone.slice(-4),
+        acceptedAt,
+      );
   }
 
   recordCustomerPayment(input: OfflineCustomerPaymentInput): AcceptedOfflinePayment {
@@ -349,7 +490,13 @@ export class OfflineSaleService {
       const customer = this.getOfflineCustomers().find(
         (item) => item.customerId === input.customerId,
       );
-      if (!customer || !this.snapshotCustomerExists(authority.snapshot_id, input.customerId)) {
+      const createdCustomer = this.snapshotCustomerExists(authority.snapshot_id, input.customerId)
+        ? undefined
+        : this.offlineCreatedCustomer(input.customerId);
+      if (
+        !customer ||
+        (!this.snapshotCustomerExists(authority.snapshot_id, input.customerId) && !createdCustomer)
+      ) {
         throw new OfflineAcceptanceError(
           "CUSTOMER_UNKNOWN",
           "The customer is not in the snapshot.",
@@ -404,6 +551,9 @@ export class OfflineSaleService {
           acceptedAt,
           acceptedAt,
         );
+      if (createdCustomer) {
+        this.recordCustomerDependency("payment", syncCommandId, createdCustomer, acceptedAt);
+      }
       this.database.connection
         .prepare(
           `INSERT INTO payment_outbox(
@@ -445,6 +595,105 @@ export class OfflineSaleService {
   }
 
   /**
+   * ADR-042 §5: price a voucher for the current cart without accepting anything, so the cashier takes
+   * payment for the net total. Approval is checked only at acceptance (it is bound to that command).
+   */
+  previewVoucher(input: OfflineVoucherPreviewInput): OfflineVoucherPreview {
+    const readiness = this.getReadiness();
+    if (!readiness.ready) throw new OfflineAcceptanceError(readiness.reason, readiness.message);
+    const authority = this.getAuthority();
+    if (!authority) throw new OfflineAcceptanceError("GRANT_MISSING", "No active grant exists.");
+    const lines = input.lines.map((line) => this.resolveLine(authority, line));
+    const gross = lines.reduce((sum, line) => sum + line.lineTotalMinor, 0);
+    const voucher = this.resolveVoucher(authority, { code: input.code }, lines, gross, "", {
+      skipApproval: true,
+    });
+    return {
+      label: voucher.label,
+      discountTotalMinor: voucher.discountTotalMinor,
+      netTotalMinor: gross - voucher.discountTotalMinor,
+      requiresApproval: voucher.requiresApproval,
+      ...(voucher.policy ? { policy: voucher.policy } : {}),
+    };
+  }
+
+  /**
+   * ADR-042 §8: capture a NEW customer (name + phone) offline. One SQLite transaction writes the local
+   * profile and its signed command to the customer outbox; the server flags (never merges) duplicates.
+   */
+  acceptNewCustomer(input: OfflineNewCustomerInput): AcceptedOfflineCustomer {
+    const name = input.name.trim();
+    const phone = input.phone.replace(/[\s()-]/g, "");
+    if (name.length < 1 || name.length > 200) {
+      throw new OfflineAcceptanceError("INPUT_INVALID", "Enter the customer's name.");
+    }
+    if (!/^\+[1-9][0-9]{6,14}$/.test(phone)) {
+      throw new OfflineAcceptanceError(
+        "PHONE_INVALID",
+        "Enter the phone with its country code, for example +201001234567.",
+      );
+    }
+    return this.database.transaction(() => {
+      const readiness = this.getReadiness();
+      if (!readiness.ready) throw new OfflineAcceptanceError(readiness.reason, readiness.message);
+      const authority = this.getAuthority();
+      if (!authority) throw new OfflineAcceptanceError("GRANT_MISSING", "No active grant exists.");
+      const acceptedAt = this.now().toISOString();
+      const localCustomerId = randomUUID();
+      const syncCommandId = randomUUID();
+      const command: OfflineCustomerCommand = {
+        schemaVersion: 1,
+        syncCommandId,
+        localCustomerId,
+        grantId: authority.grant_id,
+        deviceId: authority.device_id,
+        registerId: authority.grant_register_id,
+        acceptedAt,
+        name,
+        phone,
+      };
+      const canonicalCommand = canonicalizeOfflineCustomerCommand(command);
+      const signature = this.keys.signCanonical(canonicalCommand);
+      const request = {
+        command,
+        signature: {
+          algorithm: "Ed25519" as const,
+          credentialId: authority.credential_id,
+          value: signature,
+        },
+      };
+      this.database.connection
+        .prepare(
+          `INSERT INTO local_customer(local_customer_id, grant_id, name, phone, lifecycle, created_at)
+           VALUES (?, ?, ?, ?, 'accepted_pending_sync', ?)`,
+        )
+        .run(localCustomerId, authority.grant_id, name, phone, acceptedAt);
+      this.database.connection
+        .prepare(
+          `INSERT INTO customer_outbox(
+            sync_command_id, local_customer_id, tenant_id, idempotency_key, canonical_command, payload_hash,
+            signature_base64, credential_id, request_json, state, next_attempt_at, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+        )
+        .run(
+          syncCommandId,
+          localCustomerId,
+          authority.grant_tenant_id,
+          syncCommandId,
+          canonicalCommand,
+          createHash("sha256").update(canonicalCommand, "utf8").digest("hex"),
+          signature,
+          authority.credential_id,
+          JSON.stringify(request),
+          acceptedAt,
+          acceptedAt,
+          acceptedAt,
+        );
+      return { localCustomerId, name, phone, acceptedAt };
+    });
+  }
+
+  /**
    * Capture an attendance clock event offline. It is APPEND-ONLY and PROVISIONAL: a signed, immutable
    * command is persisted to the local event table + attendance outbox inside ONE SQLite transaction
    * before any network, exactly like the sale/payment path. The event time is the device clock, bounded
@@ -463,6 +712,7 @@ export class OfflineSaleService {
       const acceptedAt = this.now().toISOString();
       const localEventId = randomUUID();
       const syncCommandId = randomUUID();
+      const membershipId = input.membershipId ?? authority.operator_membership_id;
       const command: OfflineAttendanceCommand = {
         schemaVersion: 1,
         localEventId,
@@ -471,6 +721,7 @@ export class OfflineSaleService {
         deviceId: authority.device_id,
         registerId: authority.grant_register_id,
         operatorMembershipId: authority.operator_membership_id,
+        ...(input.membershipId ? { membershipId } : {}),
         eventType: input.eventType,
         // The device clock is the trustworthy time evidence available from the lease model; it equals
         // acceptedAt here and the server re-bounds both against the grant window + skew allowance.
@@ -491,14 +742,15 @@ export class OfflineSaleService {
       this.database.connection
         .prepare(
           `INSERT INTO local_attendance_event(
-            local_event_id, grant_id, operator_membership_id, event_type, event_at, accepted_at,
+            local_event_id, grant_id, operator_membership_id, membership_id, event_type, event_at, accepted_at,
             lifecycle, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
         )
         .run(
           localEventId,
           authority.grant_id,
           authority.operator_membership_id,
+          membershipId,
           input.eventType,
           acceptedAt,
           acceptedAt,
@@ -529,6 +781,7 @@ export class OfflineSaleService {
         localEventId,
         syncCommandId,
         operatorMembershipId: authority.operator_membership_id,
+        membershipId,
         eventType: input.eventType,
         eventAt: acceptedAt,
         acceptedAt,
@@ -540,18 +793,22 @@ export class OfflineSaleService {
    * Device-local attendance state for the active offline operator: the latest event (drives the next
    * clock action), how many events are still queued, and a short recent history. Not the server feed.
    */
-  getLocalAttendance(): LocalAttendanceState {
+  getLocalAttendance(membershipId?: string): LocalAttendanceState {
+    const target = membershipId ?? this.getAuthority()?.operator_membership_id;
+    if (!target) return { lastEvent: null, pending: 0, recent: [] };
     const rows = this.database.connection
       .prepare(
-        `SELECT local_event_id, operator_membership_id, event_type, event_at, lifecycle
+        `SELECT local_event_id, operator_membership_id, membership_id, event_type, event_at, lifecycle
          FROM local_attendance_event
+         WHERE membership_id = ?
          ORDER BY event_at DESC, local_event_id DESC
          LIMIT 20`,
       )
-      .all() as Array<Record<string, string>>;
+      .all(target) as Array<Record<string, string>>;
     const recent: LocalAttendanceEvent[] = rows.map((row) => ({
       localEventId: String(row.local_event_id),
       operatorMembershipId: String(row.operator_membership_id),
+      membershipId: String(row.membership_id),
       eventType: row.event_type as LocalAttendanceEvent["eventType"],
       eventAt: String(row.event_at),
       lifecycle: row.lifecycle as LocalAttendanceEvent["lifecycle"],
@@ -621,7 +878,58 @@ export class OfflineSaleService {
         sale.amount_paid_minor === null ? Number(sale.total_minor) : Number(sale.amount_paid_minor),
       outstandingMinor: Number(sale.outstanding_minor),
       lines,
+      tenders: this.receiptTenders(localSaleId, sale),
+      reconciliationHold: this.receiptHoldState(localSaleId),
     };
+  }
+
+  /**
+   * ADR-042 §13.3: the tenders exactly as signed. The POS has no payment gateway: every tender (cash,
+   * card/Visa, InstaPay, wallet) was handled by the cashier and recorded on this till. Until the sale has
+   * synced it is 'recorded_locally'; once the server ledger holds it, 'recorded_in_server_ledger'.
+   */
+  private receiptTenders(
+    localSaleId: string,
+    sale: Record<string, string | number | null>,
+  ): LocalReceipt["tenders"] {
+    const outbox = this.database.connection
+      .prepare("SELECT canonical_command FROM outbox WHERE local_sale_id = ?")
+      .get(localSaleId) as { canonical_command: string } | undefined;
+    const command = outbox
+      ? (JSON.parse(outbox.canonical_command) as {
+          tenders?: Array<{ method: "cash" | "card" | "instapay" | "wallet"; amountMinor: number }>;
+        })
+      : {};
+    const tenders = command.tenders ?? [
+      {
+        method: "cash" as const,
+        amountMinor:
+          sale.amount_paid_minor === null
+            ? Number(sale.total_minor)
+            : Number(sale.amount_paid_minor),
+      },
+    ];
+    const inServerLedger = sale.lifecycle === "synced" || sale.lifecycle === "needs_reconciliation";
+    return tenders.map((tender) => ({
+      method: tender.method,
+      amountMinor: tender.amountMinor,
+      confirmation: inServerLedger
+        ? ("recorded_in_server_ledger" as const)
+        : ("recorded_locally" as const),
+    }));
+  }
+
+  /** ADR-042 §4.6: state of the terminal hold of a sale whose new customer was rejected (null if none). */
+  private receiptHoldState(localSaleId: string): LocalReceipt["reconciliationHold"] {
+    const hold = this.database.connection
+      .prepare("SELECT state FROM sale_hold_outbox WHERE local_sale_id = ?")
+      .get(localSaleId) as { state: string } | undefined;
+    if (!hold) return null;
+    return hold.state === "acknowledged"
+      ? "held_for_reconciliation"
+      : hold.state === "blocked"
+        ? "hold_refused"
+        : "hold_pending";
   }
 
   /**
@@ -745,7 +1053,11 @@ export class OfflineSaleService {
     const authority = this.getAuthority();
     if (!authority) throw new OfflineAcceptanceError("GRANT_MISSING", "No active grant exists.");
     const lineFacts = input.lines.map((line) => this.resolveLine(authority, line));
-    const totalMinor = lineFacts.reduce((sum, line) => {
+    // ADR-042 §13: ONE shared stock pool. resolveLine already enforced this till's local ESTIMATE
+    // (advisory snapshot minus unsynced local lines); there is no per-till stock grant.
+    // Generated up front: an admin approval (ADR-042 §6.3) is bound to this exact command.
+    const syncCommandId = randomUUID();
+    const grossMinor = lineFacts.reduce((sum, line) => {
       const total = sum + line.lineTotalMinor;
       if (!Number.isSafeInteger(total)) {
         throw new OfflineAcceptanceError(
@@ -755,6 +1067,11 @@ export class OfflineSaleService {
       }
       return total;
     }, 0);
+    // ADR-042 §5: an offline voucher against this till's reserved quota. totalMinor is the net paid.
+    const voucher = input.voucher
+      ? this.resolveVoucher(authority, input.voucher, lineFacts, grossMinor, syncCommandId)
+      : null;
+    const totalMinor = grossMinor - (voucher?.discountTotalMinor ?? 0);
     if (totalMinor > authority.max_sale_amount_minor) {
       throw new OfflineAcceptanceError(
         "SALE_LIMIT_EXCEEDED",
@@ -792,7 +1109,8 @@ export class OfflineSaleService {
       }
       if (
         !input.customerId ||
-        !this.snapshotCustomerExists(authority.snapshot_id, input.customerId)
+        (!this.snapshotCustomerExists(authority.snapshot_id, input.customerId) &&
+          !this.offlineCreatedCustomer(input.customerId))
       ) {
         throw new OfflineAcceptanceError(
           "INSTALLMENT_CUSTOMER_REQUIRED",
@@ -840,7 +1158,6 @@ export class OfflineSaleService {
 
     const acceptedAt = this.now().toISOString();
     const localSaleId = randomUUID();
-    const syncCommandId = randomUUID();
     const localReceiptId = this.allocateReceipt();
     // For a split sale, the top-level cash fields describe the cash tender only (change comes from it);
     // a cashless split records zero cash received and zero change.
@@ -850,6 +1167,7 @@ export class OfflineSaleService {
       ? (cashTender?.cashReceivedMinor ?? cashTender?.amountMinor ?? 0)
       : input.cashReceivedMinor;
     const changeMinor = cashReceivedMinor - cashAmountMinor;
+    const unlockedByMembershipId = this.operatorResolver() ?? null;
     const command: OfflineSaleCommand = {
       schemaVersion: 1,
       localSaleId,
@@ -884,6 +1202,8 @@ export class OfflineSaleService {
         : {}),
       offlineSaleOrdinal,
       cumulativeExposureMinor,
+      ...(voucher ? { voucher: voucher.command } : {}),
+      ...(unlockedByMembershipId ? { unlockedByMembershipId } : {}),
     };
     const canonicalCommand = canonicalizeOfflineSaleCommand(command);
     const signature = this.keys.signCanonical(canonicalCommand);
@@ -903,8 +1223,9 @@ export class OfflineSaleService {
           local_sale_id, local_receipt_id, grant_id, snapshot_id, device_id, register_id,
           inventory_location_id, operator_membership_id, accepted_at, currency, total_minor,
           offline_sale_ordinal, cumulative_exposure_minor, customer_id, amount_paid_minor,
-          outstanding_minor, lifecycle, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
+          outstanding_minor, voucher_grant_id, discount_total_minor, voucher_label,
+          voucher_policy_issuance_id, voucher_code_id, unlocked_by_membership_id, lifecycle, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted_pending_sync', ?)`,
       )
       .run(
         localSaleId,
@@ -923,6 +1244,12 @@ export class OfflineSaleService {
         isInstallment ? input.customerId! : null,
         isInstallment ? amountPaidMinor : null,
         outstandingMinor,
+        voucher?.voucherGrantId ?? null,
+        voucher?.discountTotalMinor ?? 0,
+        voucher?.label ?? null,
+        voucher?.policyIssuanceId ?? null,
+        voucher?.codeId ?? null,
+        unlockedByMembershipId,
         acceptedAt,
       );
     this.testSeam?.afterStage?.("sale");
@@ -958,6 +1285,15 @@ export class OfflineSaleService {
       )
       .run(localSaleId, cashAmountMinor, cashReceivedMinor, changeMinor, acceptedAt);
     this.testSeam?.afterStage?.("tender");
+    // An installment for a customer created offline waits for that customer's command (same transaction).
+    const dependsOnCustomer =
+      isInstallment && !this.snapshotCustomerExists(authority.snapshot_id, input.customerId!)
+        ? this.offlineCreatedCustomer(input.customerId!)
+        : undefined;
+    if (dependsOnCustomer) {
+      this.recordCustomerDependency("sale", syncCommandId, dependsOnCustomer, acceptedAt);
+      this.testSeam?.afterStage?.("dependency");
+    }
     this.database.connection
       .prepare(
         `INSERT INTO outbox(
@@ -992,6 +1328,266 @@ export class OfflineSaleService {
       amountPaidMinor,
       outstandingMinor,
     };
+  }
+
+  /** ADR-042 §5/§6.3: resolve an offline voucher against this till's reserved quota and caps. */
+  private resolveVoucher(
+    authority: AuthorityRow,
+    input: NonNullable<OfflineSaleInput["voucher"]>,
+    lines: ReadonlyArray<SaleLineFact>,
+    grossMinor: number,
+    commandId: string,
+    options: { readonly skipApproval?: boolean } = {},
+  ): ResolvedVoucher {
+    const code = input.code?.trim().toUpperCase() ?? "";
+    // ADR-042 §13.6: an existing voucher from the lease's cached policy (no reservation) comes first.
+    if (code !== "") {
+      const cached = this.resolveCachedVoucher(authority, code, lines, grossMinor);
+      if (cached) return cached;
+    }
+    const row = this.database.connection
+      .prepare(
+        `SELECT voucher_grant_id, promotion_id, code_id, code, allowed_count,
+           max_discount_per_redemption_minor, max_discount_per_grant_minor,
+           requires_admin_credentials, expires_at, terms_json
+         FROM offline_voucher_grant
+         WHERE snapshot_id = ? AND (voucher_grant_id = ? OR (code IS NOT NULL AND code = ?))`,
+      )
+      .get(authority.snapshot_id, input.voucherGrantId ?? "", code) as
+      Record<string, string | number | null> | undefined;
+    if (!row) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_NOT_AVAILABLE",
+        "This voucher can't be used offline on this till.",
+      );
+    }
+    const terms = JSON.parse(String(row.terms_json)) as OfflineVoucherTerms & {
+      name: string;
+      code: string | null;
+      endsAt: string | null;
+    };
+    const now = this.now().valueOf();
+    if (
+      now > Date.parse(String(row.expires_at)) ||
+      (terms.endsAt && now > Date.parse(terms.endsAt))
+    ) {
+      throw new OfflineAcceptanceError("VOUCHER_EXPIRED", "This voucher has expired.");
+    }
+    const used = this.database.connection
+      .prepare(
+        `SELECT COUNT(*) AS count, COALESCE(SUM(discount_total_minor), 0) AS discount
+         FROM local_sale WHERE grant_id = ? AND voucher_grant_id = ?`,
+      )
+      .get(authority.grant_id, String(row.voucher_grant_id)) as { count: number; discount: number };
+    if (Number(used.count) >= Number(row.allowed_count)) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_QUOTA_USED",
+        "This till has used all of its offline uses of this voucher.",
+      );
+    }
+    const discount = offlineVoucherDiscount(
+      terms,
+      lines.map((line) => ({
+        variantId: line.variantId,
+        productId: line.productId,
+        lineTotalMinor: line.lineTotalMinor,
+      })),
+    );
+    if (discount <= 0 || discount >= grossMinor) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_NOT_APPLICABLE",
+        "This voucher does not apply to this sale.",
+      );
+    }
+    if (
+      discount > Number(row.max_discount_per_redemption_minor) ||
+      Number(used.discount) + discount > Number(row.max_discount_per_grant_minor)
+    ) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_CAP_REACHED",
+        "This discount is above the offline limit set for this voucher.",
+      );
+    }
+    let assertion: OverrideAssertion | undefined;
+    if (Number(row.requires_admin_credentials) === 1 && !options.skipApproval) {
+      if (!input.approver) {
+        throw new OfflineAcceptanceError(
+          "ADMIN_CREDENTIALS_REQUIRED",
+          "This voucher requires an admin's POS username and override password.",
+        );
+      }
+      assertion = this.checkApprover(input.approver, "promotions.manage", commandId);
+    }
+    const codeId = row.code_id === null ? undefined : String(row.code_id);
+    return {
+      voucherGrantId: String(row.voucher_grant_id),
+      policyIssuanceId: null,
+      codeId: codeId ?? null,
+      discountTotalMinor: discount,
+      label: terms.code ?? terms.name,
+      requiresApproval: Number(row.requires_admin_credentials) === 1,
+      command: {
+        voucherGrantId: String(row.voucher_grant_id),
+        promotionId: String(row.promotion_id),
+        ...(codeId ? { codeId } : {}),
+        discountTotalMinor: discount,
+        ...(assertion ? { adminAssertion: assertion } : {}),
+      },
+    };
+  }
+
+  /**
+   * ADR-042 §13.6: price an existing voucher from the lease's cached policy. Returns null when this lease has
+   * no cached policy for the code (the caller then tries the superseded reserved grant, which no current
+   * server issues, and finally reports "not available offline"). Throws for a known voucher the till must
+   * refuse. The local ceiling is best-effort only: this till's own uses since the fetch must stay below the
+   * shared remaining usage the server reported; the server still decides at sync.
+   */
+  private resolveCachedVoucher(
+    authority: AuthorityRow,
+    code: string,
+    lines: ReadonlyArray<SaleLineFact>,
+    grossMinor: number,
+  ): ResolvedVoucher | null {
+    const row = this.database.connection
+      .prepare(
+        `SELECT policy_issuance_id, promotion_id, code_id, code_fingerprint, channel_policy_version,
+           policy_digest, calculation_version, observed_remaining, max_discount_per_redemption_minor,
+           requires_admin_credentials, fetched_at, expires_at, terms_json, integrity_sha256
+         FROM offline_voucher_policy WHERE snapshot_id = ? AND code_fingerprint = ?`,
+      )
+      .get(authority.snapshot_id, voucherCodeFingerprint(authority.grant_tenant_id, code)) as
+      (VoucherPolicyIntegrityFields & { integrity_sha256: string }) | undefined;
+    if (!row) return null;
+    const normalized: VoucherPolicyIntegrityFields = {
+      policy_issuance_id: String(row.policy_issuance_id),
+      promotion_id: String(row.promotion_id),
+      code_id: String(row.code_id),
+      code_fingerprint: String(row.code_fingerprint),
+      channel_policy_version: Number(row.channel_policy_version),
+      policy_digest: String(row.policy_digest),
+      calculation_version: String(row.calculation_version),
+      observed_remaining: row.observed_remaining === null ? null : Number(row.observed_remaining),
+      max_discount_per_redemption_minor:
+        row.max_discount_per_redemption_minor === null
+          ? null
+          : Number(row.max_discount_per_redemption_minor),
+      requires_admin_credentials: Number(row.requires_admin_credentials),
+      fetched_at: String(row.fetched_at),
+      expires_at: String(row.expires_at),
+      terms_json: String(row.terms_json),
+    };
+    if (
+      voucherPolicyIntegrity(normalized, {
+        snapshotId: authority.snapshot_id,
+        grantId: authority.grant_id,
+      }) !== String(row.integrity_sha256)
+    ) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_SNAPSHOT_INVALID",
+        "This voucher's offline data is damaged. Use it when the till is back online.",
+      );
+    }
+    if (normalized.requires_admin_credentials !== 0) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_ONLINE_ONLY",
+        "This voucher needs admin approval and can only be used online.",
+      );
+    }
+    const terms = JSON.parse(normalized.terms_json) as OfflineVoucherTerms & {
+      name: string;
+      endsAt: string | null;
+    };
+    const now = this.now().valueOf();
+    if (
+      now > Date.parse(normalized.expires_at) ||
+      now > Date.parse(authority.accepted_until) ||
+      (terms.endsAt !== null && now >= Date.parse(terms.endsAt))
+    ) {
+      throw new OfflineAcceptanceError("VOUCHER_EXPIRED", "This voucher has expired.");
+    }
+    const localUses = this.localVoucherUsesSince(normalized.code_id, normalized.fetched_at);
+    if (normalized.observed_remaining !== null && localUses >= normalized.observed_remaining) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_LOCAL_LIMIT_REACHED",
+        "This voucher reached its last known usage limit on this till. Use it when the till is back online.",
+      );
+    }
+    const discount = offlineVoucherDiscount(
+      terms,
+      lines.map((line) => ({
+        variantId: line.variantId,
+        productId: line.productId,
+        lineTotalMinor: line.lineTotalMinor,
+      })),
+    );
+    if (discount <= 0 || discount >= grossMinor) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_NOT_APPLICABLE",
+        "This voucher does not apply to this sale.",
+      );
+    }
+    if (
+      normalized.max_discount_per_redemption_minor !== null &&
+      discount > normalized.max_discount_per_redemption_minor
+    ) {
+      throw new OfflineAcceptanceError(
+        "VOUCHER_CAP_REACHED",
+        "This discount is above the offline limit set for this voucher.",
+      );
+    }
+    const observedRemaining =
+      normalized.observed_remaining === null ? null : normalized.observed_remaining - localUses;
+    return {
+      voucherGrantId: null,
+      policyIssuanceId: normalized.policy_issuance_id,
+      codeId: normalized.code_id,
+      discountTotalMinor: discount,
+      label: terms.name,
+      requiresApproval: false,
+      policy: {
+        fetchedAt: normalized.fetched_at,
+        expiresAt: normalized.expires_at,
+        remainingAtFetch: normalized.observed_remaining,
+        localUsesSinceFetch: localUses,
+        provisional: true,
+      },
+      command: {
+        policyIssuanceId: normalized.policy_issuance_id,
+        promotionId: normalized.promotion_id,
+        codeId: normalized.code_id,
+        policyDigest: normalized.policy_digest,
+        observedRemaining,
+        discountTotalMinor: discount,
+      },
+    };
+  }
+
+  /**
+   * Durable local usage counter, derived from the sales themselves (same transaction as the sale): this till's
+   * uses of the code that the server had NOT yet received when the policy was fetched. Both timestamps are
+   * server time (`server_received_at` from the sync response, `fetched_at` from the issuance), so the count
+   * does not depend on this till's clock. A sale accepted after the fetch cannot have been received before
+   * it, so it is always counted. Conservative: it may over-count, never under-count.
+   */
+  private localVoucherUsesSince(codeId: string, fetchedAt: string): number {
+    const row = this.database.connection
+      .prepare(
+        `SELECT COUNT(*) AS count FROM local_sale
+         WHERE voucher_code_id = ?
+           AND (server_received_at IS NULL OR julianday(server_received_at) >= julianday(?))`,
+      )
+      .get(codeId, fetchedAt) as { count: number };
+    return Number(row.count);
+  }
+
+  /** ADR-042 §6.3: check an approver's POS username + override password in the main process. */
+  checkApprover(
+    approver: { readonly username: string; readonly password: string },
+    permission: "promotions.manage" | "payments.refund",
+    commandId: string,
+  ): OverrideAssertion {
+    return approverAssertion(this.overrideRoster, approver, permission, commandId);
   }
 
   private snapshotCustomerExists(snapshotId: string, customerId: string): boolean {
@@ -1177,4 +1773,16 @@ export class OfflineSaleService {
   ) {
     return { ready: false as const, reason, message };
   }
+}
+
+/** A voucher resolved for one offline sale (cached policy, or the superseded reserved grant). */
+interface ResolvedVoucher {
+  readonly voucherGrantId: string | null;
+  readonly policyIssuanceId: string | null;
+  readonly codeId: string | null;
+  readonly discountTotalMinor: number;
+  readonly label: string;
+  readonly requiresApproval: boolean;
+  readonly policy?: NonNullable<OfflineVoucherPreview["policy"]>;
+  readonly command: NonNullable<OfflineSaleCommand["voucher"]>;
 }

@@ -26,8 +26,14 @@ describe("offline grant authority boundary", () => {
         "maxQuantityPerLine",
         "maxSaleAmountMinor",
         "operatorLeaseSeconds",
+        // Opt-in list of PROVISIONAL request operations (received pending review server-side). It grants
+        // no configuration authority: nothing it names is ever applied on the device.
+        "intentOperations",
       ].sort(),
     );
+    for (const operation of grant.policy.intentOperations) {
+      expect(operation).toMatch(/^(inventory|suppliers|staff|settings|customers|review)\.[a-z_]+$/);
+    }
   });
 
   it("does not carry business/branch receipt identity (identity is refreshed only online)", () => {

@@ -1,36 +1,21 @@
-import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { randomBytes, scryptSync } from "node:crypto";
 
 import type { OfflineStaffPinInput, OfflineStaffPinResult } from "../../shared/offline";
 import { LocalDatabase } from "./database";
+import type { OfflinePinEnrollmentStore } from "./offline-pin-enrollment";
 
-// Per-username failure throttle. Verification is local and the PIN space is small, so a stolen or
-// shoulder-surfed device could otherwise be brute-forced offline; after a short burst of failures we
-// lock that username for a cooldown. State is in-memory (per main-process lifetime) by design — a
-// restart is itself a meaningful reset, and no secret is persisted to widen an attack surface.
+// Offline PIN v2: persistent per-username lockout, survives restarts. After MAX_FAILURES wrong PINs the
+// username is locked for LOCKOUT_MS; the counter resets on success. Kept in SQLite (`offline_pin_lockout`)
+// AND in the OS-sealed enrollment file; the stricter copy wins, so deleting the SQLite row does not reset it.
 const MAX_FAILURES = 5;
-const LOCKOUT_MS = 30_000;
+const LOCKOUT_MS = 15 * 60_000;
 
-// Timing-equalisation parameters for the unknown-username path: a throwaway scrypt derivation so a
-// probe cannot distinguish "no such user" (fast) from "wrong PIN" (slow) by response latency.
-const DUMMY_SALT = Buffer.alloc(16, 7);
-const DUMMY_KEY_LENGTH = 32;
-const DUMMY_SCRYPT = { N: 16_384, r: 8, p: 1 } as const;
-
-interface RosterRow {
+interface AuthorizationRow {
   membership_id: string;
   username: string;
   display_name: string;
-  pin_salt_base64: string;
-  pin_hash_base64: string;
-  scrypt_n: number;
-  scrypt_r: number;
-  scrypt_p: number;
-  key_length: number;
-}
-
-interface ThrottleState {
-  failures: number;
-  lockedUntil: number;
+  enrollment_id: string;
+  verifier_version: number;
 }
 
 function normalizeUsername(value: string): string {
@@ -42,69 +27,80 @@ function scryptMaxMem(n: number, r: number): number {
   return 256 * n * r + 1024 * 1024;
 }
 
+/**
+ * Offline (no-connection) till unlock. v2: the latest online bootstrap says WHO may unlock this device and at
+ * which enrollment version (`offline_pin_authorization`); the verifier itself is device-local and OS-sealed
+ * (OfflinePinEnrollmentStore). Server-minted verifiers from KEK-sealed PINs are retired (local schema v23).
+ * Verification happens only here, in the main process; the renderer only ever sees the result.
+ */
 export class StaffRosterStore {
-  private readonly attempts = new Map<string, ThrottleState>();
-
   constructor(
     private readonly database: LocalDatabase,
     private readonly now: () => Date = () => new Date(),
+    private readonly enrollments?: OfflinePinEnrollmentStore,
   ) {}
 
-  /** Count of roster entries attached to the currently active grant snapshot. */
+  /** Authorised enrollments on the active snapshot that also have a local sealed verifier. */
   countActive(): number {
-    const row = this.database.connection
+    if (!this.enrollments?.isAvailable()) return 0;
+    const enrolled = new Set(this.enrollments.enrolledMemberships());
+    const rows = this.database.connection
       .prepare(
-        `SELECT COUNT(*) AS count
-         FROM staff_roster r
-         JOIN catalog_snapshot c ON c.snapshot_id = r.snapshot_id AND c.state = 'active'`,
+        `SELECT a.membership_id FROM offline_pin_authorization a
+         JOIN catalog_snapshot c ON c.snapshot_id = a.snapshot_id AND c.state = 'active'`,
       )
-      .get() as { count: number };
-    return Number(row.count);
+      .all() as Array<{ membership_id: string }>;
+    return rows.filter((row) => enrolled.has(row.membership_id)).length;
+  }
+
+  /**
+   * After an online bootstrap: drop every local verifier the server no longer authorises for this device
+   * (revoked, superseded, membership/permission removed). Exact enrollment id + version must match.
+   */
+  pruneToAuthorized(): void {
+    if (!this.enrollments?.isAvailable()) return;
+    const rows = this.database.connection
+      .prepare(
+        `SELECT a.membership_id, a.enrollment_id, a.verifier_version FROM offline_pin_authorization a
+         JOIN catalog_snapshot c ON c.snapshot_id = a.snapshot_id AND c.state = 'active'`,
+      )
+      .all() as Array<{ membership_id: string; enrollment_id: string; verifier_version: number }>;
+    this.enrollments.retainOnly(
+      rows.map((row) => ({
+        membershipId: row.membership_id,
+        enrollmentId: row.enrollment_id,
+        verifierVersion: Number(row.verifier_version),
+      })),
+    );
   }
 
   verifyPin(input: OfflineStaffPinInput): OfflineStaffPinResult {
     const username = normalizeUsername(input.username);
     const pin = input.pin;
     if (username.length === 0 || pin.length === 0) return { ok: false, reason: "INVALID" };
+    if (!this.enrollments?.isAvailable()) return { ok: false, reason: "UNAVAILABLE" };
 
     const now = this.now().valueOf();
-    const throttle = this.attempts.get(username);
-    if (throttle && now < throttle.lockedUntil) return { ok: false, reason: "THROTTLED" };
-
+    const lock = this.lockout(username);
+    if (lock.lockedUntil !== null && now < Date.parse(lock.lockedUntil)) {
+      return { ok: false, reason: "THROTTLED" };
+    }
     const deviceId = this.activeDeviceId();
-    if (!deviceId) return { ok: false, reason: "UNAVAILABLE" };
+    if (!deviceId || !this.leaseActive(now)) return { ok: false, reason: "UNAVAILABLE" };
 
     const row = this.lookup(username);
-    if (!row) {
-      // Equalise timing against the found-user path, then fail with the same collapsed reason.
-      scryptSync(pin, DUMMY_SALT, DUMMY_KEY_LENGTH, {
-        ...DUMMY_SCRYPT,
-        maxmem: scryptMaxMem(DUMMY_SCRYPT.N, DUMMY_SCRYPT.r),
-      });
-      this.recordFailure(username, now);
-      return { ok: false, reason: "INVALID" };
-    }
-
-    // Device binding: the server derives the verifier over (salt || deviceId), so a roster copied to
-    // another install cannot be verified there even with the correct PIN.
-    const salt = Buffer.concat([
-      Buffer.from(row.pin_salt_base64, "base64"),
-      Buffer.from(deviceId, "utf8"),
-    ]);
-    const derived = scryptSync(pin, salt, row.key_length, {
-      N: row.scrypt_n,
-      r: row.scrypt_r,
-      p: row.scrypt_p,
-      maxmem: scryptMaxMem(row.scrypt_n, row.scrypt_r),
+    const match = this.enrollments.matches({
+      membershipId: row?.membership_id ?? "",
+      enrollmentId: row?.enrollment_id ?? "",
+      verifierVersion: row ? Number(row.verifier_version) : 0,
+      deviceId,
+      pin,
     });
-    const expected = Buffer.from(row.pin_hash_base64, "base64");
-    const match = derived.length === expected.length && timingSafeEqual(derived, expected);
-    if (!match) {
-      this.recordFailure(username, now);
+    if (!row || !match) {
+      this.recordFailure(username, lock.failures, now);
       return { ok: false, reason: "INVALID" };
     }
-
-    this.attempts.delete(username);
+    this.clearLockout(username);
     return {
       ok: true,
       operator: {
@@ -115,16 +111,30 @@ export class StaffRosterStore {
     };
   }
 
-  private lookup(username: string): RosterRow | undefined {
+  private lookup(username: string): AuthorizationRow | undefined {
     return this.database.connection
       .prepare(
-        `SELECT r.membership_id, r.username, r.display_name, r.pin_salt_base64, r.pin_hash_base64,
-          r.scrypt_n, r.scrypt_r, r.scrypt_p, r.key_length
-         FROM staff_roster r
-         JOIN catalog_snapshot c ON c.snapshot_id = r.snapshot_id AND c.state = 'active'
-         WHERE r.username = ?`,
+        `SELECT a.membership_id, a.username, a.display_name, a.enrollment_id, a.verifier_version
+         FROM offline_pin_authorization a
+         JOIN catalog_snapshot c ON c.snapshot_id = a.snapshot_id AND c.state = 'active'
+         WHERE a.username = ?`,
       )
-      .get(username) as RosterRow | undefined;
+      .get(username) as AuthorizationRow | undefined;
+  }
+
+  /** Offline unlock never outlives the lease the authorization came with. */
+  private leaseActive(now: number): boolean {
+    const row = this.database.connection
+      .prepare(
+        `SELECT g.accepted_until, g.operator_expires_at FROM catalog_snapshot c
+         JOIN offline_grant g ON g.grant_id = c.grant_id WHERE c.state = 'active'`,
+      )
+      .get() as { accepted_until: string; operator_expires_at: string } | undefined;
+    return (
+      row !== undefined &&
+      now <= Date.parse(row.accepted_until) &&
+      now <= Date.parse(row.operator_expires_at)
+    );
   }
 
   private activeDeviceId(): string | undefined {
@@ -134,14 +144,51 @@ export class StaffRosterStore {
     return row?.device_id ?? undefined;
   }
 
-  private recordFailure(username: string, now: number): void {
-    const current = this.attempts.get(username) ?? { failures: 0, lockedUntil: 0 };
-    const failures = current.failures + 1;
-    if (failures >= MAX_FAILURES) {
-      this.attempts.set(username, { failures: 0, lockedUntil: now + LOCKOUT_MS });
-    } else {
-      this.attempts.set(username, { failures, lockedUntil: 0 });
+  private lockout(username: string): { failures: number; lockedUntil: string | null } {
+    const row = this.database.connection
+      .prepare("SELECT failures, locked_until FROM offline_pin_lockout WHERE username = ?")
+      .get(username) as { failures: number; locked_until: string | null } | undefined;
+    const sealed = this.enrollments?.lockout(username) ?? null;
+    const failures = Math.max(Number(row?.failures ?? 0), Number(sealed?.failures ?? 0));
+    const candidates = [row?.locked_until ?? null, sealed?.lockedUntil ?? null].filter(
+      (value): value is string => value !== null && !Number.isNaN(Date.parse(value)),
+    );
+    const lockedUntil =
+      candidates.length === 0
+        ? null
+        : candidates.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b));
+    return { failures, lockedUntil };
+  }
+
+  private clearLockout(username: string): void {
+    this.database.connection
+      .prepare("DELETE FROM offline_pin_lockout WHERE username = ?")
+      .run(username);
+    this.enrollments?.setLockout(username, null);
+  }
+
+  private recordFailure(username: string, previous: number, now: number): void {
+    const failures = previous + 1;
+    const locked = failures >= MAX_FAILURES;
+    // Sealed copy first: if it cannot be written the attempt still counts in SQLite below.
+    try {
+      this.enrollments?.setLockout(username, {
+        failures: locked ? 0 : failures,
+        lockedUntil: locked ? new Date(now + LOCKOUT_MS).toISOString() : null,
+      });
+    } catch {
+      /* OS key store unavailable: verifyPin already answers UNAVAILABLE in that case */
     }
+    this.database.connection
+      .prepare(
+        `INSERT INTO offline_pin_lockout(username, failures, locked_until) VALUES (?, ?, ?)
+         ON CONFLICT(username) DO UPDATE SET failures = excluded.failures, locked_until = excluded.locked_until`,
+      )
+      .run(
+        username,
+        locked ? 0 : failures,
+        locked ? new Date(now + LOCKOUT_MS).toISOString() : null,
+      );
   }
 }
 

@@ -35,6 +35,11 @@ const unexpectedAttendance: OfflineDeliveryClient["deliverAttendance"] = async (
   throw new Error("deliverAttendance was not expected in this test");
 };
 
+// No returnOutbox is wired either, so the offline-return lane is never drained.
+const unexpectedReturn: OfflineDeliveryClient["deliverReturn"] = async () => {
+  throw new Error("deliverReturn was not expected in this test");
+};
+
 const harnesses: OfflineHarness[] = [];
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -88,6 +93,7 @@ describe("offline synchronization worker", () => {
       deliver,
       deliverPayment: unexpectedPayment,
       deliverAttendance: unexpectedAttendance,
+      deliverReturn: unexpectedReturn,
     });
     await worker.runOnce();
     expect(deliver).toHaveBeenCalledTimes(1);
@@ -119,6 +125,7 @@ describe("offline synchronization worker", () => {
         deliver: async () => Promise.reject(new ApiNetworkError("offline")),
         deliverPayment: unexpectedPayment,
         deliverAttendance: unexpectedAttendance,
+        deliverReturn: unexpectedReturn,
       },
       { now: () => current },
     );
@@ -136,6 +143,7 @@ describe("offline synchronization worker", () => {
         ),
       deliverPayment: unexpectedPayment,
       deliverAttendance: unexpectedAttendance,
+      deliverReturn: unexpectedReturn,
     });
     await permanentWorker.runOnce();
     expect(permanent.outbox.getStatusCounts()).toMatchObject({ retryWait: 0, blocked: 1 });
@@ -148,7 +156,12 @@ describe("offline synchronization worker", () => {
     const deliver = vi.fn<OfflineDeliveryClient["deliver"]>();
     const worker = new OfflineSyncWorker(
       harness.outbox,
-      { deliver, deliverPayment: unexpectedPayment, deliverAttendance: unexpectedAttendance },
+      {
+        deliver,
+        deliverPayment: unexpectedPayment,
+        deliverAttendance: unexpectedAttendance,
+        deliverReturn: unexpectedReturn,
+      },
       { networkOnline: () => false },
     );
     await worker.runOnce();
@@ -177,6 +190,7 @@ describe("offline synchronization worker", () => {
       },
       deliverPayment: unexpectedPayment,
       deliverAttendance: unexpectedAttendance,
+      deliverReturn: unexpectedReturn,
     };
     const crashing = new OfflineSyncWorker(harness.outbox, delivery, {
       now: () => current,
@@ -218,7 +232,12 @@ describe("offline synchronization worker", () => {
     );
     const restarted = new OfflineSyncWorker(
       harness.outbox,
-      { deliver, deliverPayment: unexpectedPayment, deliverAttendance: unexpectedAttendance },
+      {
+        deliver,
+        deliverPayment: unexpectedPayment,
+        deliverAttendance: unexpectedAttendance,
+        deliverReturn: unexpectedReturn,
+      },
       { now: () => current },
     );
     await restarted.runOnce();
@@ -239,6 +258,7 @@ describe("offline synchronization worker", () => {
       deliver: async () => ingestionResponse(accepted.localSaleId),
       deliverPayment: unexpectedPayment,
       deliverAttendance: unexpectedAttendance,
+      deliverReturn: unexpectedReturn,
     });
     await syncedWorker.runOnce();
     expect(synced.sales.getProjectedInventory()[0].pendingQuantity).toBe(1);
@@ -263,6 +283,7 @@ describe("offline synchronization worker", () => {
       deliver: async () => ingestionResponse(governedSale.localSaleId, "needs_reconciliation"),
       deliverPayment: unexpectedPayment,
       deliverAttendance: unexpectedAttendance,
+      deliverReturn: unexpectedReturn,
     });
     await governedWorker.runOnce();
     expect(governed.outbox.getStatusCounts()).toMatchObject({ needsReconciliation: 1 });

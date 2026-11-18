@@ -70,6 +70,7 @@ export function PayModal({
   searchCustomers,
   disableFreeformCustomer = false,
   presetCustomer,
+  offlineTenderNotice = false,
 }: {
   netMinor: number;
   currency: string;
@@ -90,6 +91,9 @@ export function PayModal({
   // The already-selected snapshot customer (offline). Shows a read-only summary + running balance and
   // satisfies the installment customer requirement without collecting contact fields.
   presetCustomer?: { name: string; phone: string; balanceMinor: number };
+  // Offline sale: non-cash amounts are RECORDED as cashier-attested (approved on a standalone terminal);
+  // this till does not capture or settle them. Shown whenever a non-cash tender is selected.
+  offlineTenderNotice?: boolean;
 }) {
   const [rows, setRows] = useState<Row[]>([
     { method: "cash", amount: minorToMajorInput(netMinor) },
@@ -278,6 +282,12 @@ export function PayModal({
           <strong>{formatMoney(netMinor, currency, locale)}</strong>
         </div>
 
+        {offlineTenderNotice && rows.some((row) => row.method !== "cash") ? (
+          <p className="pay-offline-notice" role="note">
+            {t("pay.offlineNonCashNotice")}
+          </p>
+        ) : null}
+
         <div className="pay-rows">
           {rows.map((row, index) => (
             <div className="pay-row" key={index}>
@@ -411,6 +421,7 @@ export function PayModal({
                 placeholder={t("pay.phonePlaceholder")}
                 value={customerPhone}
                 disabled={submitting}
+                readOnly={matchedName !== null}
                 onChange={(event) => {
                   setCustomerPhone(event.target.value);
                   setCustomerQuery(event.target.value);
@@ -423,7 +434,7 @@ export function PayModal({
                 disabled={submitting}
                 onChange={(event) => {
                   setCustomerName(event.target.value);
-                  setCustomerQuery(event.target.value);
+                  if (!matchedName) setCustomerQuery(event.target.value);
                 }}
               />
             </div>
@@ -449,6 +460,19 @@ export function PayModal({
             ) : matchedName ? (
               <span className="pay-customer__status pay-customer__status--match">
                 {t("pay.existing", { name: matchedName })}
+                <button
+                  type="button"
+                  className="button button--quiet"
+                  disabled={submitting}
+                  onClick={() => {
+                    setCustomerPhone("");
+                    setCustomerName("");
+                    setMatchedName(null);
+                    setCustomerQuery("");
+                  }}
+                >
+                  {t("pay.changePhone")}
+                </button>
               </span>
             ) : customerPartial ? (
               <span className="pay-customer__status pay-customer__status--hint">

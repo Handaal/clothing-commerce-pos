@@ -7,6 +7,7 @@ import type {
 
 import { LocalDatabase } from "./database";
 import type { PublicDeviceKey } from "./device-key";
+import { isUsableVoucherPolicy, voucherPolicyIntegrity } from "./voucher-policy";
 
 export interface EnrollmentPreparation {
   readonly installationId: string;
@@ -307,6 +308,8 @@ export class OfflineAuthorityStore {
       this.installStaffRoster(bootstrap.snapshotId, bootstrap);
       this.installCustomers(bootstrap.snapshotId, bootstrap);
       this.installClassification(bootstrap.snapshotId, bootstrap);
+      this.installVoucherGrants(bootstrap.snapshotId, bootstrap);
+      this.installVoucherPolicies(bootstrap.snapshotId, bootstrap);
       this.database.connection
         .prepare("UPDATE catalog_snapshot SET state = 'complete' WHERE snapshot_id = ?")
         .run(bootstrap.snapshotId);
@@ -342,6 +345,92 @@ export class OfflineAuthorityStore {
   }
 
   /**
+   * ADR-042 §13.6: cached policies of existing vouchers for this lease (none ⇒ every voucher is online-only).
+   * Runs inside the bootstrap transaction, so the policies retire atomically with the snapshot they came with.
+   * A malformed or credential-gated entry is skipped (that voucher stays online-only).
+   */
+  private installVoucherPolicies(snapshotId: string, bootstrap: OfflineBootstrapResponse): void {
+    const policies = (bootstrap as unknown as { voucherPolicies?: unknown[] }).voucherPolicies;
+    if (!Array.isArray(policies)) return;
+    const insert = this.database.connection.prepare(
+      `INSERT OR IGNORE INTO offline_voucher_policy(
+        snapshot_id, policy_issuance_id, promotion_id, code_id, code_fingerprint, channel_policy_version,
+        policy_digest, calculation_version, observed_remaining, max_discount_per_redemption_minor,
+        requires_admin_credentials, fetched_at, expires_at, terms_json, integrity_sha256
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const policy of policies) {
+      if (!isUsableVoucherPolicy(policy)) continue;
+      const row = {
+        policy_issuance_id: policy.policyIssuanceId,
+        promotion_id: policy.promotionId,
+        code_id: policy.codeId,
+        code_fingerprint: policy.codeFingerprint,
+        channel_policy_version: policy.channelPolicyVersion,
+        policy_digest: policy.policyDigest,
+        calculation_version: policy.calculationVersion,
+        observed_remaining: policy.observedRemaining,
+        max_discount_per_redemption_minor: policy.maxDiscountPerRedemptionMinor,
+        requires_admin_credentials: 0,
+        fetched_at: policy.fetchedAt,
+        // Never trust a policy beyond the lease it came with.
+        expires_at:
+          Date.parse(policy.expiresAt) <= Date.parse(bootstrap.acceptedUntil)
+            ? policy.expiresAt
+            : bootstrap.acceptedUntil,
+        terms_json: JSON.stringify(policy.terms),
+      };
+      insert.run(
+        snapshotId,
+        row.policy_issuance_id,
+        row.promotion_id,
+        row.code_id,
+        row.code_fingerprint,
+        row.channel_policy_version,
+        row.policy_digest,
+        row.calculation_version,
+        row.observed_remaining,
+        row.max_discount_per_redemption_minor,
+        row.requires_admin_credentials,
+        row.fetched_at,
+        row.expires_at,
+        row.terms_json,
+        voucherPolicyIntegrity(row, { snapshotId, grantId: bootstrap.grantId }),
+      );
+    }
+  }
+
+  /** ADR-042 §5: reserved offline voucher quota for this grant (none ⇒ no offline vouchers). */
+  private installVoucherGrants(snapshotId: string, bootstrap: OfflineBootstrapResponse): void {
+    const grants = (bootstrap as unknown as { voucherGrants?: VoucherGrantPayload[] })
+      .voucherGrants;
+    if (!Array.isArray(grants)) return;
+    const insert = this.database.connection.prepare(
+      `INSERT INTO offline_voucher_grant(
+        snapshot_id, voucher_grant_id, promotion_id, code_id, code, allowed_count,
+        max_discount_per_redemption_minor, max_discount_per_grant_minor, requires_admin_credentials,
+        expires_at, terms_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    for (const grant of grants) {
+      if (grant.status !== "active") continue;
+      insert.run(
+        snapshotId,
+        grant.voucherGrantId,
+        grant.promotionId,
+        grant.codeId,
+        grant.terms.code === null ? null : grant.terms.code.toUpperCase(),
+        grant.allowedCount - grant.consumedCount - grant.releasedCount,
+        grant.maxDiscountPerRedemptionMinor,
+        grant.maxDiscountPerGrantMinor - grant.discountConsumedMinor,
+        grant.requiresAdminCredentials ? 1 : 0,
+        grant.expiresAt,
+        JSON.stringify(grant.terms),
+      );
+    }
+  }
+
+  /**
    * Install the authorized-staff roster delivered with the bootstrap, keyed to this snapshot so it
    * retires atomically with the catalog it was issued against. Forward-compatible: a bootstrap that
    * carries no `staffRoster` (an older server, or offline login not provisioned) installs nothing and
@@ -349,38 +438,44 @@ export class OfflineAuthorityStore {
    * Runs inside the caller's bootstrap transaction, so an invalid entry rolls the whole install back.
    */
   private installStaffRoster(snapshotId: string, bootstrap: OfflineBootstrapResponse): void {
-    const raw = (bootstrap as unknown as { staffRoster?: unknown }).staffRoster;
+    // Offline PIN v2: server-minted verifiers (legacy `staffRoster`) are retired and IGNORED, even if an older
+    // server still sends them. Only enrollment authorizations are installed.
+    void (bootstrap as unknown as { staffRoster?: unknown }).staffRoster;
+    const raw = (bootstrap as unknown as { offlinePinAuthorizations?: unknown })
+      .offlinePinAuthorizations;
     if (raw === undefined || raw === null) return;
-    if (!Array.isArray(raw)) throw new Error("The offline staff roster is not a list.");
+    if (!Array.isArray(raw)) throw new Error("The offline PIN authorizations are not a list.");
     const insert = this.database.connection.prepare(
-      `INSERT INTO staff_roster(
-        snapshot_id, membership_id, username, display_name, pin_kdf, pin_salt_base64,
-        pin_hash_base64, scrypt_n, scrypt_r, scrypt_p, key_length
-      ) VALUES (?, ?, ?, ?, 'scrypt', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO offline_pin_authorization(
+        snapshot_id, membership_id, username, display_name, enrollment_id, verifier_version
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
     );
-    const usernames = new Set<string>();
-    const memberships = new Set<string>();
+    const seen = new Set<string>();
     for (const value of raw) {
-      const entry = this.validateStaffRosterEntry(value);
-      if (memberships.has(entry.membershipId)) {
-        throw new Error("Duplicate membership in offline staff roster.");
+      const entry = value as Record<string, unknown>;
+      const username =
+        typeof entry.username === "string" ? entry.username.trim().toLowerCase() : "";
+      if (
+        typeof entry.membershipId !== "string" ||
+        typeof entry.displayName !== "string" ||
+        typeof entry.enrollmentId !== "string" ||
+        !Number.isSafeInteger(entry.verifierVersion) ||
+        (entry.verifierVersion as number) < 1 ||
+        username === "" ||
+        seen.has(username) ||
+        seen.has(entry.membershipId)
+      ) {
+        throw new Error("Invalid offline PIN authorization.");
       }
-      if (usernames.has(entry.username)) {
-        throw new Error("Duplicate username in offline staff roster.");
-      }
-      memberships.add(entry.membershipId);
-      usernames.add(entry.username);
+      seen.add(username);
+      seen.add(entry.membershipId);
       insert.run(
         snapshotId,
         entry.membershipId,
-        entry.username,
+        username,
         entry.displayName,
-        entry.saltBase64,
-        entry.hashBase64,
-        entry.n,
-        entry.r,
-        entry.p,
-        entry.keyLength,
+        entry.enrollmentId,
+        entry.verifierVersion as number,
       );
     }
   }
@@ -466,58 +561,6 @@ export class OfflineAuthorityStore {
     return { customerId, name, phone, outstandingMinor: Number(entry.outstandingMinor) };
   }
 
-  private validateStaffRosterEntry(value: unknown): {
-    membershipId: string;
-    username: string;
-    displayName: string;
-    saltBase64: string;
-    hashBase64: string;
-    n: number;
-    r: number;
-    p: number;
-    keyLength: number;
-  } {
-    if (!value || typeof value !== "object") throw new Error("A staff roster entry is invalid.");
-    const entry = value as Record<string, unknown>;
-    const pin = entry.pinVerifier;
-    if (!pin || typeof pin !== "object") throw new Error("A staff roster PIN verifier is invalid.");
-    const verifier = pin as Record<string, unknown>;
-    const string = (candidate: unknown, field: string): string => {
-      if (
-        typeof candidate !== "string" ||
-        candidate.trim().length === 0 ||
-        candidate.length > 400
-      ) {
-        throw new Error(`Staff roster ${field} is invalid.`);
-      }
-      return candidate;
-    };
-    const base64 = (candidate: unknown, field: string): string => {
-      const text = string(candidate, field);
-      if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text))
-        throw new Error(`Staff roster ${field} is invalid.`);
-      return text;
-    };
-    const positiveInt = (candidate: unknown, field: string, minimum: number): number => {
-      if (!Number.isSafeInteger(candidate) || Number(candidate) < minimum) {
-        throw new Error(`Staff roster ${field} is invalid.`);
-      }
-      return Number(candidate);
-    };
-    if (verifier.algorithm !== "scrypt") throw new Error("Unsupported staff roster PIN algorithm.");
-    return {
-      membershipId: string(entry.membershipId, "membershipId"),
-      username: string(entry.username, "username").trim().toLowerCase(),
-      displayName: string(entry.displayName, "displayName"),
-      saltBase64: base64(verifier.saltBase64, "pin salt"),
-      hashBase64: base64(verifier.hashBase64, "pin hash"),
-      n: positiveInt(verifier.n, "scrypt n", 2),
-      r: positiveInt(verifier.r, "scrypt r", 1),
-      p: positiveInt(verifier.p, "scrypt p", 1),
-      keyLength: positiveInt(verifier.keyLength, "key length", 16),
-    };
-  }
-
   private getDeviceRow(): DeviceRow {
     const row = this.database.connection
       .prepare(
@@ -586,4 +629,20 @@ export class OfflineAuthorityStore {
       }
     }
   }
+}
+
+interface VoucherGrantPayload {
+  readonly voucherGrantId: string;
+  readonly promotionId: string;
+  readonly codeId: string | null;
+  readonly status: string;
+  readonly allowedCount: number;
+  readonly consumedCount: number;
+  readonly releasedCount: number;
+  readonly maxDiscountPerRedemptionMinor: number;
+  readonly maxDiscountPerGrantMinor: number;
+  readonly discountConsumedMinor: number;
+  readonly requiresAdminCredentials: boolean;
+  readonly expiresAt: string;
+  readonly terms: { readonly code: string | null } & Record<string, unknown>;
 }

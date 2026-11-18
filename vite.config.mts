@@ -38,16 +38,12 @@ function resolveRendererOrigin(mode: string, cwd: string): string {
 
 export default defineConfig(({ mode }) => {
   const cwd = process.cwd();
-  const environment = loadEnv(mode, cwd, "");
   const commerceApiUrl = resolveRendererOrigin(mode, cwd);
 
   return {
     plugins: [react()],
     define: {
       "import.meta.env.COMMERCE_API_URL": JSON.stringify(commerceApiUrl),
-      "import.meta.env.VITE_CLERK_PUBLISHABLE_KEY": JSON.stringify(
-        environment.VITE_CLERK_PUBLISHABLE_KEY ?? "",
-      ),
     },
     build: {
       outDir: "dist",

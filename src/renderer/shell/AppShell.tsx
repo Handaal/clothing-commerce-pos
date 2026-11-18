@@ -12,6 +12,10 @@ interface AppShellProps {
   userName: string;
   onSignOut: () => void;
   signOutDisabled?: boolean;
+  /** Section-specific context shown at the start of the header row (e.g. the POS register + status). */
+  headerStart?: ReactNode;
+  /** Section-specific actions shown before the theme/language/user controls. */
+  headerActions?: ReactNode;
   children: ReactNode;
 }
 
@@ -22,6 +26,8 @@ export function AppShell({
   userName,
   onSignOut,
   signOutDisabled = false,
+  headerStart,
+  headerActions,
   children,
 }: AppShellProps) {
   const t = useT();
@@ -74,7 +80,11 @@ export function AppShell({
 
       <div className="shell-main">
         <header className="shell-header">
+          {headerStart ? <div className="shell-header__start">{headerStart}</div> : null}
           <div className="shell-header__actions">
+            {headerActions ? (
+              <div className="shell-header__section-actions">{headerActions}</div>
+            ) : null}
             <button
               type="button"
               className="icon-button"

@@ -6,7 +6,7 @@ export interface LocalMigration {
   readonly sql: string;
 }
 
-export const LOCAL_SCHEMA_VERSION = 13;
+export const LOCAL_SCHEMA_VERSION = 25;
 
 export const localMigrations: ReadonlyArray<LocalMigration> = [
   {
@@ -428,9 +428,9 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
     sql: `
       -- Locally-managed POS floor-staff logins (the shifted-cafe model). These are device-local
       -- accounts: created and edited in-app by an admin, authenticated entirely in the main process
-      -- with a salted scrypt PIN hash ("<saltHex>:<hashHex>"), independent of Clerk and the server
+      -- with a salted scrypt PIN hash ("<saltHex>:<hashHex>"), independent of the server
       -- staff_roster above. They gate who operates this terminal and which sections they may open;
-      -- the underlying API session (Clerk) is unchanged.
+      -- RETIRED by v24 (ADR-043): pos_users is now a display-only roster cache; hashes are erased.
       CREATE TABLE pos_users (
         id TEXT PRIMARY KEY,
         username TEXT NOT NULL UNIQUE,
@@ -644,6 +644,565 @@ export const localMigrations: ReadonlyArray<LocalMigration> = [
       BEGIN SELECT RAISE(ABORT, 'attendance outbox command is immutable'); END;
       CREATE TRIGGER immutable_attendance_outbox_delete BEFORE DELETE ON attendance_outbox
       BEGIN SELECT RAISE(ABORT, 'attendance outbox command is immutable'); END;
+    `,
+  },
+  {
+    version: 14,
+    name: "offline_returns",
+    sql: `
+      -- A server-issued, order-bound OFFLINE RETURN GRANT (ADR-041 Decision A), fetched ONLINE by the main
+      -- process with the operator's session and cached here so a return can be captured if the link drops.
+      -- It freezes per-line remaining-eligible quantities; the client may only choose quantities within it.
+      -- It carries NO refund money authority: the server recomputes the refund at ingestion and creates it
+      -- PENDING (withheld). Immutable once cached; display labels come from the server order read.
+      CREATE TABLE offline_return_grant (
+        return_grant_id TEXT PRIMARY KEY,
+        schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+        minimum_client_version TEXT NOT NULL,
+        tenant_id TEXT NOT NULL,
+        device_id TEXT NOT NULL,
+        register_id TEXT NOT NULL,
+        branch_id TEXT NOT NULL,
+        inventory_location_id TEXT NOT NULL,
+        operator_membership_id TEXT NOT NULL,
+        order_id TEXT NOT NULL,
+        order_number TEXT NOT NULL,
+        currency TEXT NOT NULL CHECK (length(currency) = 3),
+        issued_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL CHECK (expires_at > issued_at),
+        max_refundable_minor INTEGER NOT NULL CHECK (max_refundable_minor >= 0),
+        allowed_reasons_json TEXT,
+        grant_json TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX offline_return_grant_by_order ON offline_return_grant(order_id, expires_at);
+
+      CREATE TABLE offline_return_grant_line (
+        return_grant_id TEXT NOT NULL REFERENCES offline_return_grant(return_grant_id) ON DELETE RESTRICT,
+        order_line_id TEXT NOT NULL,
+        line_number INTEGER NOT NULL CHECK (line_number > 0),
+        variant_id TEXT NOT NULL,
+        eligible_quantity INTEGER NOT NULL CHECK (eligible_quantity >= 0),
+        unit_price_minor INTEGER NOT NULL CHECK (unit_price_minor >= 0),
+        product_name TEXT,
+        sku TEXT,
+        option_summary TEXT,
+        PRIMARY KEY (return_grant_id, order_line_id)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE TRIGGER immutable_return_grant BEFORE UPDATE ON offline_return_grant
+      BEGIN SELECT RAISE(ABORT, 'offline return grant is immutable'); END;
+      CREATE TRIGGER immutable_return_grant_delete BEFORE DELETE ON offline_return_grant
+      BEGIN SELECT RAISE(ABORT, 'offline return grant is immutable'); END;
+      CREATE TRIGGER immutable_return_grant_line BEFORE UPDATE ON offline_return_grant_line
+      BEGIN SELECT RAISE(ABORT, 'offline return grant line is immutable'); END;
+      CREATE TRIGGER immutable_return_grant_line_delete BEFORE DELETE ON offline_return_grant_line
+      BEGIN SELECT RAISE(ABORT, 'offline return grant line is immutable'); END;
+
+      -- A return captured OFFLINE under a cached grant. Append-only: the goods were received and a refund
+      -- was REQUESTED; nothing is settled offline (no cash handed back, no provider capture). On sync the
+      -- server either creates the canonical Return with a PENDING refund (synced) or withholds it
+      -- (needs_reconciliation). The server-computed refund figures are recorded only from its response.
+      CREATE TABLE local_return (
+        local_return_id TEXT PRIMARY KEY,
+        return_grant_id TEXT NOT NULL REFERENCES offline_return_grant(return_grant_id) ON DELETE RESTRICT,
+        order_id TEXT NOT NULL,
+        operator_membership_id TEXT NOT NULL,
+        currency TEXT NOT NULL,
+        accepted_at TEXT NOT NULL,
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('accepted_pending_sync', 'synced', 'needs_reconciliation')),
+        server_ingestion_id TEXT,
+        server_received_at TEXT,
+        server_return_id TEXT,
+        refund_id TEXT,
+        refund_amount_minor INTEGER,
+        refund_currency TEXT,
+        reconciliation_id TEXT,
+        reconciliation_reason TEXT,
+        synchronized_at TEXT,
+        created_at TEXT NOT NULL,
+        CHECK ((lifecycle = 'synced') = (refund_id IS NOT NULL AND refund_amount_minor IS NOT NULL)),
+        CHECK ((lifecycle = 'needs_reconciliation') = (reconciliation_id IS NOT NULL))
+      ) STRICT;
+
+      CREATE INDEX local_return_by_order ON local_return(order_id, accepted_at);
+
+      CREATE TABLE local_return_line (
+        local_return_id TEXT NOT NULL REFERENCES local_return(local_return_id) ON DELETE RESTRICT,
+        order_line_id TEXT NOT NULL,
+        quantity INTEGER NOT NULL CHECK (quantity > 0),
+        reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 500),
+        disposition TEXT NOT NULL CHECK (disposition IN ('restock', 'non_restock')),
+        PRIMARY KEY (local_return_id, order_line_id)
+      ) STRICT, WITHOUT ROWID;
+
+      CREATE TRIGGER immutable_return_facts BEFORE UPDATE OF
+        local_return_id, return_grant_id, order_id, operator_membership_id, currency, accepted_at, created_at
+        ON local_return
+      BEGIN SELECT RAISE(ABORT, 'accepted return facts are immutable'); END;
+      CREATE TRIGGER immutable_return_delete BEFORE DELETE ON local_return
+      BEGIN SELECT RAISE(ABORT, 'accepted return is immutable'); END;
+      CREATE TRIGGER immutable_return_line BEFORE UPDATE ON local_return_line
+      BEGIN SELECT RAISE(ABORT, 'accepted return line is immutable'); END;
+      CREATE TRIGGER immutable_return_line_delete BEFORE DELETE ON local_return_line
+      BEGIN SELECT RAISE(ABORT, 'accepted return line is immutable'); END;
+
+      -- Durable, leased delivery queue for offline return commands — sibling of attendance_outbox.
+      CREATE TABLE return_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        local_return_id TEXT NOT NULL UNIQUE REFERENCES local_return(local_return_id) ON DELETE RESTRICT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        canonical_command TEXT NOT NULL,
+        payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+        signature_base64 TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'delivered', 'blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        server_ingestion_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK ((state = 'leased') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+      ) STRICT;
+
+      CREATE INDEX return_outbox_due_work ON return_outbox(state, next_attempt_at, created_at);
+      CREATE INDEX return_outbox_expired_lease ON return_outbox(state, lease_expires_at);
+
+      CREATE TRIGGER immutable_return_outbox_command BEFORE UPDATE OF
+        sync_command_id, local_return_id, idempotency_key, canonical_command, payload_hash,
+        signature_base64, credential_id, request_json, created_at ON return_outbox
+      BEGIN SELECT RAISE(ABORT, 'return outbox command is immutable'); END;
+      CREATE TRIGGER immutable_return_outbox_delete BEFORE DELETE ON return_outbox
+      BEGIN SELECT RAISE(ABORT, 'return outbox command is immutable'); END;
+    `,
+  },
+  {
+    version: 15,
+    name: "offline_intents_and_review",
+    sql: `
+      -- Provisional offline OPERATION INTENTS (inventory/suppliers/staff/settings/review). A signed,
+      -- immutable intent is stored locally + queued in ONE transaction before any network. The server only
+      -- ever RECEIVES it as pending_review; nothing here (or there) mutates canonical stock, AP, payroll,
+      -- roles, settings or devices. Mirrors local_attendance_event / attendance_outbox.
+      CREATE TABLE local_intent (
+        local_intent_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL REFERENCES offline_grant(grant_id) ON DELETE RESTRICT,
+        operator_membership_id TEXT NOT NULL,
+        operation TEXT NOT NULL CHECK (length(operation) BETWEEN 3 AND 80),
+        subject_id TEXT,
+        base_version TEXT,
+        depends_on_sync_command_id TEXT,
+        payload_json TEXT NOT NULL,
+        accepted_at TEXT NOT NULL,
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('accepted_pending_sync', 'received')),
+        server_ingestion_id TEXT,
+        server_received_at TEXT,
+        synchronized_at TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX local_intent_by_operation ON local_intent(operation, accepted_at);
+
+      CREATE TRIGGER immutable_intent_facts BEFORE UPDATE OF
+        local_intent_id, grant_id, operator_membership_id, operation, subject_id, base_version,
+        depends_on_sync_command_id, payload_json, accepted_at, created_at ON local_intent
+      BEGIN SELECT RAISE(ABORT, 'offline intent facts are immutable'); END;
+      CREATE TRIGGER immutable_intent_delete BEFORE DELETE ON local_intent
+      BEGIN SELECT RAISE(ABORT, 'offline intent is immutable'); END;
+
+      CREATE TABLE intent_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        local_intent_id TEXT NOT NULL UNIQUE REFERENCES local_intent(local_intent_id) ON DELETE RESTRICT,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        canonical_command TEXT NOT NULL,
+        payload_hash TEXT NOT NULL CHECK (length(payload_hash) = 64),
+        signature_base64 TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'delivered', 'blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        server_ingestion_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK ((state = 'leased') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL))
+      ) STRICT;
+
+      CREATE INDEX intent_outbox_due_work ON intent_outbox(state, next_attempt_at, created_at);
+      CREATE INDEX intent_outbox_expired_lease ON intent_outbox(state, lease_expires_at);
+
+      CREATE TRIGGER immutable_intent_outbox_command BEFORE UPDATE OF
+        sync_command_id, local_intent_id, idempotency_key, canonical_command, payload_hash,
+        signature_base64, credential_id, request_json, created_at ON intent_outbox
+      BEGIN SELECT RAISE(ABORT, 'intent outbox command is immutable'); END;
+      CREATE TRIGGER immutable_intent_outbox_delete BEFORE DELETE ON intent_outbox
+      BEGIN SELECT RAISE(ABORT, 'intent outbox command is immutable'); END;
+
+      -- Append-only audit of every operator action taken in the review center. action_id is supplied by
+      -- the caller so a double-click / IPC retry is idempotent (same id ⇒ same recorded outcome).
+      CREATE TABLE review_action (
+        action_id TEXT PRIMARY KEY,
+        lane TEXT NOT NULL CHECK (lane IN ('sale', 'payment', 'attendance', 'return', 'intent')),
+        sync_command_id TEXT NOT NULL,
+        action TEXT NOT NULL CHECK (action IN ('retry', 'resolution_request')),
+        operator_label TEXT,
+        note TEXT,
+        outcome TEXT NOT NULL CHECK (outcome IN ('requeued', 'requested', 'refused')),
+        outcome_detail TEXT,
+        related_sync_command_id TEXT,
+        created_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX review_action_by_target ON review_action(lane, sync_command_id, created_at);
+
+      CREATE TRIGGER immutable_review_action_update BEFORE UPDATE ON review_action
+      BEGIN SELECT RAISE(ABORT, 'review actions are append-only'); END;
+      CREATE TRIGGER immutable_review_action_delete BEFORE DELETE ON review_action
+      BEGIN SELECT RAISE(ABORT, 'review actions are append-only'); END;
+    `,
+  },
+  {
+    version: 16,
+    name: "team_attendance",
+    sql: `
+      ALTER TABLE local_attendance_event ADD COLUMN membership_id TEXT;
+      UPDATE local_attendance_event SET membership_id = operator_membership_id;
+      CREATE INDEX local_attendance_event_by_target ON local_attendance_event(membership_id, event_at);
+      CREATE TRIGGER immutable_attendance_target BEFORE UPDATE OF membership_id
+        ON local_attendance_event
+      BEGIN SELECT RAISE(ABORT, 'accepted attendance target is immutable'); END;
+    `,
+  },
+  {
+    version: 17,
+    name: "offline_intent_server_disposition",
+    sql: `
+      -- The server now decides every offline intent automatically (no human approval). Store its final
+      -- machine disposition with the local intent. Write-once: set together with lifecycle 'received'
+      -- and never changed afterwards (a replay returns the same disposition).
+      ALTER TABLE local_intent ADD COLUMN server_disposition TEXT
+        CHECK (server_disposition IS NULL OR server_disposition IN
+          ('applied', 'rejected', 'needs_reconciliation', 'blocked_policy'));
+      ALTER TABLE local_intent ADD COLUMN server_disposition_code TEXT
+        CHECK (server_disposition_code IS NULL OR length(server_disposition_code) BETWEEN 1 AND 64);
+      ALTER TABLE local_intent ADD COLUMN server_disposition_detail_json TEXT;
+      ALTER TABLE local_intent ADD COLUMN server_policy_version TEXT;
+      ALTER TABLE local_intent ADD COLUMN server_decided_at TEXT;
+
+      CREATE TRIGGER immutable_intent_disposition BEFORE UPDATE OF
+        server_disposition, server_disposition_code, server_disposition_detail_json,
+        server_policy_version, server_decided_at ON local_intent
+        WHEN OLD.server_disposition IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'offline intent disposition is immutable'); END;
+    `,
+  },
+  {
+    version: 18,
+    name: "adr042_offline_scope",
+    sql: `
+      -- ADR-042 §4: the per-variant POS stock this till may sell offline under one grant snapshot.
+      -- Consumption is never stored as a counter: it is derived from local_sale_line rows written in the
+      -- same transaction as the sale, so a crash can never desynchronise it.
+      CREATE TABLE offline_stock_grant (
+        snapshot_id TEXT PRIMARY KEY REFERENCES catalog_snapshot(snapshot_id),
+        stock_grant_id TEXT NOT NULL,
+        grant_id TEXT NOT NULL,
+        enforced INTEGER NOT NULL CHECK (enforced IN (0, 1)),
+        expires_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TABLE offline_stock_grant_line (
+        snapshot_id TEXT NOT NULL REFERENCES offline_stock_grant(snapshot_id),
+        variant_id TEXT NOT NULL,
+        granted_quantity INTEGER NOT NULL CHECK (granted_quantity >= 0),
+        PRIMARY KEY (snapshot_id, variant_id)
+      ) STRICT;
+
+      -- ADR-042 §5: reserved offline voucher quota. Uses are derived from local_sale rows.
+      CREATE TABLE offline_voucher_grant (
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id),
+        voucher_grant_id TEXT NOT NULL,
+        promotion_id TEXT NOT NULL,
+        code_id TEXT,
+        code TEXT,
+        allowed_count INTEGER NOT NULL CHECK (allowed_count >= 0),
+        max_discount_per_redemption_minor INTEGER NOT NULL CHECK (max_discount_per_redemption_minor > 0),
+        max_discount_per_grant_minor INTEGER NOT NULL CHECK (max_discount_per_grant_minor > 0),
+        requires_admin_credentials INTEGER NOT NULL CHECK (requires_admin_credentials IN (0, 1)),
+        expires_at TEXT NOT NULL,
+        terms_json TEXT NOT NULL,
+        PRIMARY KEY (snapshot_id, voucher_grant_id)
+      ) STRICT;
+      CREATE INDEX offline_voucher_grant_by_code ON offline_voucher_grant(snapshot_id, code);
+
+      ALTER TABLE local_sale ADD COLUMN voucher_grant_id TEXT;
+      ALTER TABLE local_sale ADD COLUMN discount_total_minor INTEGER NOT NULL DEFAULT 0
+        CHECK (discount_total_minor >= 0);
+      ALTER TABLE local_sale ADD COLUMN voucher_label TEXT;
+
+      -- ADR-042 §8: a new customer captured offline (name + phone). Deleted after the server accepts it;
+      -- receipts keep their own snapshot.
+      CREATE TABLE local_customer (
+        local_customer_id TEXT PRIMARY KEY,
+        grant_id TEXT NOT NULL,
+        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+        phone TEXT NOT NULL CHECK (length(phone) BETWEEN 7 AND 32),
+        lifecycle TEXT NOT NULL CHECK (lifecycle IN ('accepted_pending_sync', 'synced')),
+        duplicate_of_customer_id TEXT,
+        created_at TEXT NOT NULL,
+        synchronized_at TEXT
+      ) STRICT;
+      CREATE TABLE customer_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        local_customer_id TEXT NOT NULL UNIQUE,
+        tenant_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        canonical_command TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        signature_base64 TEXT NOT NULL,
+        credential_id TEXT NOT NULL,
+        request_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'blocked', 'delivered')),
+        attempts INTEGER NOT NULL DEFAULT 0,
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        server_ingestion_id TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
+  {
+    version: 19,
+    name: "offline_customer_dependencies",
+    sql: `
+      -- Offline new customer -> installment sale / paydown. A sale or customer payment that names a customer
+      -- created offline (not yet accepted by the server) records a durable dependency on that customer's
+      -- command IN THE SAME TRANSACTION as the sale/payment. The sale/payment outboxes never claim a command
+      -- whose dependency is not 'ready', so the server always receives the customer first. The server
+      -- creates the canonical customer with the till's stable local UUID; the accepted id is recorded here
+      -- and must equal it, otherwise the dependent is HELD (never relinked to another customer). A rejected
+      -- customer holds every dependent with deterministic evidence; nothing is merged or dropped.
+      -- customer_display_name / customer_phone_last4 are the minimal receipt/audit snapshot kept after the
+      -- local profile is purged.
+      CREATE TABLE local_customer_dependency (
+        dependent_lane TEXT NOT NULL CHECK (dependent_lane IN ('sale', 'payment')),
+        dependent_sync_command_id TEXT NOT NULL,
+        local_customer_id TEXT NOT NULL,
+        customer_sync_command_id TEXT NOT NULL,
+        customer_display_name TEXT NOT NULL CHECK (length(customer_display_name) BETWEEN 1 AND 200),
+        customer_phone_last4 TEXT NOT NULL CHECK (length(customer_phone_last4) BETWEEN 1 AND 4),
+        state TEXT NOT NULL CHECK (state IN ('waiting', 'ready', 'held_customer_rejected', 'held_customer_mismatch')),
+        canonical_customer_id TEXT,
+        hold_code TEXT,
+        created_at TEXT NOT NULL,
+        resolved_at TEXT,
+        PRIMARY KEY (dependent_lane, dependent_sync_command_id),
+        CHECK ((state = 'waiting') = (resolved_at IS NULL)),
+        CHECK (state <> 'ready' OR canonical_customer_id = local_customer_id)
+      ) STRICT;
+      CREATE INDEX local_customer_dependency_by_customer
+        ON local_customer_dependency(customer_sync_command_id, state);
+      -- Resolution is write-once: a ready/held dependency can never be reopened or relinked.
+      CREATE TRIGGER immutable_resolved_customer_dependency BEFORE UPDATE ON local_customer_dependency
+        WHEN OLD.state <> 'waiting'
+      BEGIN SELECT RAISE(ABORT, 'customer dependency resolution is immutable'); END;
+      CREATE TRIGGER immutable_customer_dependency_identity BEFORE UPDATE OF
+        dependent_lane, dependent_sync_command_id, local_customer_id, customer_sync_command_id,
+        customer_display_name, customer_phone_last4, created_at ON local_customer_dependency
+      BEGIN SELECT RAISE(ABORT, 'customer dependency identity is immutable'); END;
+      CREATE TRIGGER retain_customer_dependency BEFORE DELETE ON local_customer_dependency
+      BEGIN SELECT RAISE(ABORT, 'customer dependency evidence is retained'); END;
+      -- Accepted profiles are purged at the NEXT successful sync; the outbox copy is redacted then too.
+      ALTER TABLE customer_outbox ADD COLUMN redacted_at TEXT;
+    `,
+  },
+  {
+    version: 20,
+    name: "sale_reconciliation_hold_outbox",
+    sql: `
+      -- ADR-042 §4.6 (Finding A). A sale held because the new customer it depends on was definitively rejected
+      -- would otherwise leave its offline sale ordinal unaccounted for forever, so the stock grant could never
+      -- close. The till enqueues (in the same transaction as the hold) a signed HOLD command naming the
+      -- original signed sale's fingerprint; the server records the ordinal as held_for_reconciliation. The
+      -- sale row, its signed outbox command and its receipt are never changed or deleted. The command body
+      -- is fixed at enqueue (stable requestedAt) and signed once; both are immutable afterwards, so every
+      -- retry is byte-identical and replay-safe.
+      CREATE TABLE sale_hold_outbox (
+        sync_command_id TEXT PRIMARY KEY,
+        sale_sync_command_id TEXT NOT NULL UNIQUE REFERENCES outbox(sync_command_id) ON DELETE RESTRICT,
+        local_sale_id TEXT NOT NULL UNIQUE REFERENCES local_sale(local_sale_id) ON DELETE RESTRICT,
+        reason TEXT NOT NULL CHECK (reason IN ('customer_dependency_rejected')),
+        command_json TEXT NOT NULL,
+        canonical_command TEXT,
+        signature_base64 TEXT,
+        credential_id TEXT,
+        request_json TEXT,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'retry_wait', 'acknowledged', 'blocked')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_id TEXT,
+        lease_expires_at TEXT,
+        last_error_code TEXT,
+        last_error_message TEXT,
+        server_hold_id TEXT,
+        server_receipt_json TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        acknowledged_at TEXT,
+        CHECK ((state = 'leased') = (lease_id IS NOT NULL AND lease_expires_at IS NOT NULL)),
+        CHECK ((state = 'acknowledged') = (server_hold_id IS NOT NULL AND acknowledged_at IS NOT NULL)),
+        CHECK ((signature_base64 IS NULL) = (request_json IS NULL)),
+        CHECK (state NOT IN ('acknowledged', 'leased') OR signature_base64 IS NOT NULL)
+      ) STRICT;
+      CREATE INDEX sale_hold_outbox_due ON sale_hold_outbox(state, next_attempt_at, created_at);
+      CREATE TRIGGER immutable_sale_hold_identity BEFORE UPDATE OF
+        sync_command_id, sale_sync_command_id, local_sale_id, reason, command_json, created_at ON sale_hold_outbox
+      BEGIN SELECT RAISE(ABORT, 'sale hold identity is immutable'); END;
+      CREATE TRIGGER immutable_sale_hold_signature BEFORE UPDATE OF
+        canonical_command, signature_base64, credential_id, request_json ON sale_hold_outbox
+        WHEN OLD.signature_base64 IS NOT NULL
+      BEGIN SELECT RAISE(ABORT, 'a signed sale hold is immutable'); END;
+      CREATE TRIGGER terminal_sale_hold BEFORE UPDATE ON sale_hold_outbox
+        WHEN OLD.state = 'acknowledged'
+      BEGIN SELECT RAISE(ABORT, 'an acknowledged sale hold is terminal'); END;
+      CREATE TRIGGER retain_sale_hold BEFORE DELETE ON sale_hold_outbox
+      BEGIN SELECT RAISE(ABORT, 'sale hold evidence is retained'); END;
+    `,
+  },
+  {
+    version: 21,
+    name: "server_sync_conflict_receipts",
+    sql: `
+      -- ADR-042 §13.5 (online-first POS). When the server refuses a signed offline paydown or clock event on
+      -- business grounds (debt changed / duplicate clock-in) it PRESERVES the command as evidence and answers
+      -- syncStatus "conflict_recorded". The till keeps a durable, immutable receipt of that answer so the
+      -- cashier sees "synced with a conflict" (terminal, never retried, never lost) instead of an error.
+      CREATE TABLE server_sync_conflict_receipt (
+        sync_command_id TEXT PRIMARY KEY,
+        command_kind TEXT NOT NULL CHECK (command_kind IN ('customer_payment', 'attendance')),
+        local_reference TEXT NOT NULL,
+        server_ingestion_id TEXT NOT NULL,
+        conflict_id TEXT NOT NULL,
+        conflict_kind TEXT NOT NULL,
+        reason_code TEXT NOT NULL,
+        server_received_at TEXT NOT NULL,
+        recorded_at TEXT NOT NULL
+      ) STRICT;
+      CREATE TRIGGER immutable_server_sync_conflict_receipt BEFORE UPDATE ON server_sync_conflict_receipt
+      BEGIN SELECT RAISE(ABORT, 'a server conflict receipt is immutable'); END;
+      CREATE TRIGGER retain_server_sync_conflict_receipt BEFORE DELETE ON server_sync_conflict_receipt
+      BEGIN SELECT RAISE(ABORT, 'a server conflict receipt is retained'); END;
+    `,
+  },
+  {
+    version: 22,
+    name: "offline_voucher_cached_policy",
+    sql: `
+      -- ADR-042 §13.6: cached policy of an EXISTING voucher, fetched while online with the lease. It is NOT a
+      -- reservation or a per-till quota: observed_remaining is the SHARED remaining usage the server saw at
+      -- fetch time, and the Website keeps consuming the same limit. The raw code is never stored, only its
+      -- fingerprint. integrity_sha256 is a local integrity check over the installed row (tamper/corruption
+      -- detection); policy_digest is the server's opaque digest echoed in the signed sale command.
+      CREATE TABLE offline_voucher_policy (
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id),
+        policy_issuance_id TEXT NOT NULL,
+        promotion_id TEXT NOT NULL,
+        code_id TEXT NOT NULL,
+        code_fingerprint TEXT NOT NULL CHECK (length(code_fingerprint) = 64),
+        channel_policy_version INTEGER NOT NULL CHECK (channel_policy_version > 0),
+        policy_digest TEXT NOT NULL CHECK (length(policy_digest) = 64),
+        calculation_version TEXT NOT NULL CHECK (calculation_version = 'ov1'),
+        observed_remaining INTEGER CHECK (observed_remaining IS NULL OR observed_remaining > 0),
+        max_discount_per_redemption_minor INTEGER
+          CHECK (max_discount_per_redemption_minor IS NULL OR max_discount_per_redemption_minor > 0),
+        requires_admin_credentials INTEGER NOT NULL CHECK (requires_admin_credentials = 0),
+        fetched_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        terms_json TEXT NOT NULL,
+        integrity_sha256 TEXT NOT NULL CHECK (length(integrity_sha256) = 64),
+        PRIMARY KEY (snapshot_id, policy_issuance_id),
+        UNIQUE (snapshot_id, code_fingerprint)
+      ) STRICT;
+      CREATE TRIGGER immutable_offline_voucher_policy BEFORE UPDATE ON offline_voucher_policy
+      BEGIN SELECT RAISE(ABORT, 'a cached voucher policy is immutable'); END;
+
+      -- The durable local usage counter is DERIVED from these columns inside the same transaction that
+      -- writes the sale, so a redemption can never exist without its sale (or the reverse).
+      ALTER TABLE local_sale ADD COLUMN voucher_policy_issuance_id TEXT;
+      ALTER TABLE local_sale ADD COLUMN voucher_code_id TEXT;
+      CREATE INDEX local_sale_by_voucher_code ON local_sale(voucher_code_id)
+        WHERE voucher_code_id IS NOT NULL;
+    `,
+  },
+  {
+    version: 23,
+    name: "offline_pin_v2_device_enrollment",
+    sql: `
+      -- Offline PIN v2 (server 20261115170000). Verifiers the server minted from KEK-sealed PINs are INVALID
+      -- (the local-development KEK was exposed). Versioned invalidation: delete every cached one and refuse
+      -- any future insert, whatever an older server sends.
+      DELETE FROM staff_roster;
+      CREATE TRIGGER retired_staff_roster BEFORE INSERT ON staff_roster
+      BEGIN SELECT RAISE(ABORT, 'server-minted offline PIN verifiers are retired'); END;
+
+      -- Who the latest online bootstrap authorises to unlock THIS device offline (no secret: ids + versions).
+      -- The verifier itself lives only in the OS-sealed offline-pin-enrollments file.
+      CREATE TABLE offline_pin_authorization (
+        snapshot_id TEXT NOT NULL REFERENCES catalog_snapshot(snapshot_id),
+        membership_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        enrollment_id TEXT NOT NULL,
+        verifier_version INTEGER NOT NULL CHECK (verifier_version > 0),
+        PRIMARY KEY (snapshot_id, membership_id),
+        UNIQUE (snapshot_id, username)
+      ) STRICT;
+
+      -- Persistent per-username lockout (survives restarts; holds no secret).
+      CREATE TABLE offline_pin_lockout (
+        username TEXT PRIMARY KEY,
+        failures INTEGER NOT NULL CHECK (failures >= 0),
+        locked_until TEXT
+      ) STRICT;
+    `,
+  },
+  {
+    version: 24,
+    name: "pos_users_display_only_roster",
+    sql: `
+      -- ADR-043: the server is the ONLY POS credential authority. pos_users is a display-only roster cache for the
+      -- pre-auth picker. Any device-local PIN hash left by the retired cafe-style local accounts (v9) is erased so
+      -- it can never authenticate, and a trigger refuses any future non-empty hash whatever an older build writes.
+      UPDATE pos_users SET pin_hash = '' WHERE pin_hash <> '';
+      CREATE TRIGGER pos_users_no_pin_hash_insert BEFORE INSERT ON pos_users
+      WHEN NEW.pin_hash <> ''
+      BEGIN SELECT RAISE(ABORT, 'pos_users is a display-only roster cache; PIN hashes are not stored'); END;
+      CREATE TRIGGER pos_users_no_pin_hash_update BEFORE UPDATE OF pin_hash ON pos_users
+      WHEN NEW.pin_hash <> ''
+      BEGIN SELECT RAISE(ABORT, 'pos_users is a display-only roster cache; PIN hashes are not stored'); END;
+    `,
+  },
+  {
+    version: 25,
+    name: "local_sale_unlocked_by_operator",
+    sql: `
+      -- ADR-043 §5.1: the member operating the till when an offline sale was accepted (verified offline PIN
+      -- unlock, else the signed-in online operator); NULL for sales accepted before this version. Mirrors the
+      -- signed command's unlockedByMembershipId; the server verifies and attributes it at ingestion.
+      ALTER TABLE local_sale ADD COLUMN unlocked_by_membership_id TEXT;
     `,
   },
 ];

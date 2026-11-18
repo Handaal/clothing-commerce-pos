@@ -1,11 +1,24 @@
 import type {
+  AcceptedOfflineIntent,
+  LocalIntentsState,
+  OfflineIntentInput,
+  ReviewActionResult,
+  ReviewItem,
+  ReviewQuery,
+  ReviewResolutionInput,
+  ReviewRetryInput,
   AcceptedOfflineAttendanceEvent,
   AcceptedOfflinePayment,
   AcceptedOfflineSale,
   CachedCatalogItem,
+  AcceptedOfflineReturn,
   LocalAttendanceState,
   LocalReceipt,
+  LocalReturnsState,
   OfflineAttendanceEventInput,
+  OfflineReturnGrantView,
+  OfflineReturnInput,
+  PrepareReturnGrantInput,
   OfflineCustomer,
   OfflineCustomerPaymentInput,
   OfflineBootstrapInput,
@@ -13,6 +26,10 @@ import type {
   OfflineLocalReport,
   OfflineReadiness,
   OfflineSaleInput,
+  OfflineVoucherPreview,
+  OfflineVoucherPreviewInput,
+  OfflineNewCustomerInput,
+  AcceptedOfflineCustomer,
   OfflineStaffPinInput,
   OfflineStaffPinResult,
   OfflineSyncStatus,
@@ -24,11 +41,29 @@ import { OfflineAuthorityStore } from "./authority-store";
 import { OfflineBootstrapService } from "./bootstrap";
 import { LocalDatabase, localDatabasePath } from "./database";
 import { DeviceKeyStore, type OsSecureStorage } from "./device-key";
-import { OfflineSaleService } from "./offline-service";
+import { OverrideRosterStore, overrideRosterPath } from "./override-roster";
+import { CustomerOutboxStore } from "./customer-outbox-store";
+import { SaleHoldOutboxStore, type SaleHoldSigner } from "./sale-hold-outbox-store";
+import { OfflineAcceptanceError, OfflineSaleService } from "./offline-service";
 import { OutboxStore } from "./outbox-store";
 import { PaymentOutboxStore } from "./payment-outbox-store";
 import { AttendanceOutboxStore } from "./attendance-outbox-store";
+import { ReturnOutboxStore } from "./return-outbox-store";
+import { IntentOutboxStore } from "./intent-outbox-store";
+import { OfflineIntentService } from "./intent-service";
+import { OfflineReviewService } from "./review-service";
+import {
+  OfflineReturnService,
+  SdkReturnGrantIssuer,
+  type ReturnGrantIssuer,
+} from "./return-service";
 import { StaffRosterStore } from "./staff-roster";
+import { OfflinePinEnrollmentStore, offlinePinEnrollmentPath } from "./offline-pin-enrollment";
+import {
+  OfflinePinEnroller,
+  type OfflinePinEnrollmentInput,
+  type OfflinePinRefreshResult,
+} from "./offline-pin-enroller";
 import { LocalUserStore } from "../local-users/store";
 import { ReturnService } from "../returns/service";
 import { ReturnStore } from "../returns/store";
@@ -37,6 +72,7 @@ import { ConnectedSaleStore } from "../sales/store";
 import {
   OfflineSyncWorker,
   SdkOfflineDeliveryClient,
+  canonicalizeSaleHold,
   type OfflineDeliveryClient,
   type SyncWorkerTestSeam,
 } from "./sync-worker";
@@ -49,6 +85,16 @@ export interface OfflineRuntimeOptions {
   readonly syncTestSeam?: SyncWorkerTestSeam;
   readonly startSyncWorker?: boolean;
   readonly syncPollIntervalMs?: number;
+  /** Test seam for the online return-grant fetch (defaults to the SDK over `apiBaseUrl`). */
+  readonly returnGrantIssuer?: ReturnGrantIssuer;
+}
+
+/** ADR-042 §13: deterministic online-required refusal for the retired offline-return lane. */
+export function offlineReturnsDisabled(): OfflineAcceptanceError {
+  return new OfflineAcceptanceError(
+    "OFFLINE_RETURNS_DISABLED",
+    "Returns are online-only. Reconnect and use the Returns desk; nothing was recorded.",
+  );
 }
 
 export class OfflineRuntime {
@@ -64,7 +110,32 @@ export class OfflineRuntime {
     private readonly activityStore?: ActivityStore,
     private readonly staffRoster?: StaffRosterStore,
     private readonly userStore?: LocalUserStore,
-  ) {}
+    private readonly offlineReturns?: OfflineReturnService,
+    private readonly offlineIntents?: OfflineIntentService,
+    private readonly review?: OfflineReviewService,
+    private readonly pinEnroller?: OfflinePinEnroller,
+  ) {
+    this.sales?.setOperatorResolver(() => this.currentOperatorMembershipId());
+  }
+
+  /** ADR-043 §5.1: member who unlocked offline with a VERIFIED PIN on this till (main-process state only). */
+  private offlineOperatorId: string | null = null;
+  private sessionOperator: () => string | null = () => null;
+
+  /** The main process supplies the signed-in online operator (used when no offline unlock is active). */
+  setSessionOperatorResolver(resolver: () => string | null): void {
+    this.sessionOperator = resolver;
+  }
+
+  /** End the offline staff session (sign-out / back to the login, or an online sign-in took over). */
+  endStaffSession(): void {
+    this.offlineOperatorId = null;
+  }
+
+  /** Current operator stamped into new offline sales (null => grant operator attribution). */
+  currentOperatorMembershipId(): string | null {
+    return this.offlineOperatorId ?? this.sessionOperator();
+  }
 
   static async initialize(
     userDataPath: string,
@@ -88,13 +159,46 @@ export class OfflineRuntime {
         // the same key validation and fails closed with PRIVATE_KEY_UNAVAILABLE.
       }
       const authority = new OfflineAuthorityStore(database);
-      const sales = new OfflineSaleService(database, keys, now);
+      // ADR-042 §6.3: admin override verifiers, sealed with the OS key store in their own file.
+      const overrideRoster = new OverrideRosterStore(
+        overrideRosterPath(userDataPath),
+        secureStorage,
+        now,
+      );
+      // Offline PIN v2: device-local, OS-sealed verifiers (never sent to or minted by the server).
+      const pinEnrollments = new OfflinePinEnrollmentStore(
+        offlinePinEnrollmentPath(userDataPath),
+        secureStorage,
+        now,
+      );
+      const sales = new OfflineSaleService(database, keys, now, undefined, overrideRoster);
+      const intents = new OfflineIntentService(database, keys, () => sales.getReadiness(), now);
       const outbox = new OutboxStore(database, now);
       outbox.recoverExpiredLeases();
       const paymentOutbox = new PaymentOutboxStore(database, now);
       paymentOutbox.recoverExpiredLeases();
       const attendanceOutbox = new AttendanceOutboxStore(database, now);
       attendanceOutbox.recoverExpiredLeases();
+      const returnOutbox = new ReturnOutboxStore(database, now);
+      returnOutbox.recoverExpiredLeases();
+      const intentOutbox = new IntentOutboxStore(database, now);
+      intentOutbox.recoverExpiredLeases();
+      const customerOutbox = new CustomerOutboxStore(database, now);
+      customerOutbox.recoverExpiredLeases();
+      const saleHoldOutbox = new SaleHoldOutboxStore(database, now);
+      saleHoldOutbox.recoverExpiredLeases();
+      const holdDatabase = database;
+      const saleHoldSigner: SaleHoldSigner = {
+        sign: (canonical) => keys.signCanonical(canonical),
+        credentialId: () => {
+          const row = holdDatabase.connection
+            .prepare("SELECT credential_id FROM device_state WHERE status = 'active'")
+            .get() as { credential_id: string } | undefined;
+          if (!row) throw new Error("No active device credential to sign the sale hold.");
+          return row.credential_id;
+        },
+        canonicalize: canonicalizeSaleHold,
+      };
       const syncWorker = new OfflineSyncWorker(
         outbox,
         options.deliveryClient ?? new SdkOfflineDeliveryClient(apiBaseUrl),
@@ -105,6 +209,11 @@ export class OfflineRuntime {
           testSeam: options.syncTestSeam,
           paymentOutbox,
           attendanceOutbox,
+          returnOutbox,
+          intentOutbox,
+          customerOutbox,
+          saleHoldOutbox,
+          saleHoldSigner,
         },
       );
       // Eager evaluation loads enrolled state and verifies the protected key without requiring it
@@ -113,7 +222,7 @@ export class OfflineRuntime {
       const runtime = new OfflineRuntime(
         database,
         sales,
-        new OfflineBootstrapService(apiBaseUrl, authority, keys, now),
+        new OfflineBootstrapService(apiBaseUrl, authority, keys, now, overrideRoster),
         outbox,
         syncWorker,
         undefined,
@@ -128,10 +237,20 @@ export class OfflineRuntime {
         // Client-only activity ledger. Available whenever the local database is healthy, independent
         // of offline-selling enrollment.
         new ActivityStore(database.connection),
-        new StaffRosterStore(database, now),
+        new StaffRosterStore(database, now, pinEnrollments),
         // Device-local POS floor-staff accounts (the shifted-cafe login model). Available whenever the
         // local database is healthy, independent of offline-selling enrollment.
         new LocalUserStore(database, now),
+        new OfflineReturnService(
+          database,
+          keys,
+          options.returnGrantIssuer ?? new SdkReturnGrantIssuer(apiBaseUrl),
+          now,
+          overrideRoster,
+        ),
+        intents,
+        new OfflineReviewService(database, intents, now),
+        new OfflinePinEnroller(database, pinEnrollments, apiBaseUrl),
       );
       if (options.startSyncWorker !== false) syncWorker.start();
       return runtime;
@@ -199,13 +318,78 @@ export class OfflineRuntime {
     return result;
   }
 
-  getLocalAttendance(): LocalAttendanceState {
+  getLocalAttendance(membershipId?: string): LocalAttendanceState {
     if (!this.sales) return { lastEvent: null, pending: 0, recent: [] };
-    return this.sales.getLocalAttendance();
+    return this.sales.getLocalAttendance(membershipId);
+  }
+
+  // ADR-042 §13: returns are ONLINE-ONLY. The offline-return lane is retired at the main-process boundary:
+  // no grant is prepared and no offline return is recorded, signed or queued (the renderer no longer offers
+  // it, and a stale renderer/IPC caller gets a deterministic refusal). Online returns use the Returns desk.
+  prepareReturnGrant(input: PrepareReturnGrantInput): Promise<OfflineReturnGrantView> {
+    void input;
+    return Promise.reject(offlineReturnsDisabled());
+  }
+
+  getReturnGrants(): ReadonlyArray<OfflineReturnGrantView> {
+    return this.offlineReturns?.getGrants() ?? [];
+  }
+
+  recordReturn(input: OfflineReturnInput): AcceptedOfflineReturn {
+    void input;
+    throw offlineReturnsDisabled();
+  }
+
+  recordIntent(input: OfflineIntentInput): AcceptedOfflineIntent {
+    if (!this.offlineIntents)
+      throw new Error(this.initializationError ?? "Local persistence is unavailable.");
+    const result = this.offlineIntents.recordIntent(input);
+    void this.syncWorker?.requestRun();
+    return result;
+  }
+
+  getLocalIntents(): LocalIntentsState {
+    return (
+      this.offlineIntents?.getLocalIntents() ?? { enabledOperations: [], pending: 0, recent: [] }
+    );
+  }
+
+  getReviewItems(query: ReviewQuery): ReadonlyArray<ReviewItem> {
+    return this.review?.list(query) ?? [];
+  }
+
+  reviewRetry(input: ReviewRetryInput): ReviewActionResult {
+    if (!this.review)
+      throw new Error(this.initializationError ?? "Local persistence is unavailable.");
+    const result = this.review.retry(input);
+    if (result.outcome === "requeued") void this.syncWorker?.requestRun();
+    return result;
+  }
+
+  reviewRequestResolution(input: ReviewResolutionInput): ReviewActionResult {
+    if (!this.review)
+      throw new Error(this.initializationError ?? "Local persistence is unavailable.");
+    const result = this.review.requestResolution(input);
+    if (result.outcome === "requested") void this.syncWorker?.requestRun();
+    return result;
+  }
+
+  getLocalReturns(): LocalReturnsState {
+    return this.offlineReturns?.getLocalReturns() ?? { pending: 0, recent: [] };
   }
 
   acceptCashSale(input: OfflineSaleInput): AcceptedOfflineSale {
     return this.requireSales().acceptCashSale(input);
+  }
+
+  previewOfflineVoucher(input: OfflineVoucherPreviewInput): OfflineVoucherPreview {
+    return this.requireSales().previewVoucher(input);
+  }
+
+  addOfflineCustomer(input: OfflineNewCustomerInput): AcceptedOfflineCustomer {
+    const accepted = this.requireSales().acceptNewCustomer(input);
+    void this.syncWorker?.requestRun();
+    return accepted;
   }
 
   getLocalReceipt(localSaleId: string): LocalReceipt | null {
@@ -268,15 +452,32 @@ export class OfflineRuntime {
     return this.syncWorker.getStatus();
   }
 
+  /**
+   * Offline PIN v2, same-PIN model: called by the main process right after a SUCCESSFUL online sign-in with the
+   * credential the server just accepted. Prepares offline sign-in on this till with that same PIN. Never throws,
+   * never reaches the renderer, never logs the PIN.
+   */
+  async refreshOfflinePinAfterSignIn(
+    input: OfflinePinEnrollmentInput,
+  ): Promise<OfflinePinRefreshResult> {
+    if (!this.pinEnroller) return { status: "skipped", reason: "TILL_NOT_ENROLLED" };
+    return this.pinEnroller.refreshAfterSignIn(input);
+  }
+
   verifyStaffPin(input: OfflineStaffPinInput): OfflineStaffPinResult {
     if (!this.staffRoster) return { ok: false, reason: "UNAVAILABLE" };
-    return this.staffRoster.verifyPin(input);
+    const result = this.staffRoster.verifyPin(input);
+    // Only a successful device-bound verification can set the operator; a failure never changes it.
+    if (result.ok) this.offlineOperatorId = result.operator.membershipId;
+    return result;
   }
 
   async bootstrap(input: OfflineBootstrapInput): Promise<OfflineBootstrapResult> {
     if (!this.bootstrapService)
       throw new Error(this.initializationError ?? "Offline bootstrap unavailable.");
     const result = await this.bootstrapService.bootstrap(input);
+    // Offline PIN v2: revocations take effect on this device at the first successful online bootstrap.
+    this.staffRoster?.pruneToAuthorized();
     void this.syncWorker?.requestRun();
     return result;
   }
@@ -284,6 +485,12 @@ export class OfflineRuntime {
   close(): void {
     this.syncWorker?.stop();
     this.database?.close();
+  }
+
+  private requireOfflineReturns(): OfflineReturnService {
+    if (!this.offlineReturns)
+      throw new Error(this.initializationError ?? "Local persistence is unavailable.");
+    return this.offlineReturns;
   }
 
   private requireSales(): OfflineSaleService {

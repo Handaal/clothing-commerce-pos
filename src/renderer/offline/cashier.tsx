@@ -1,19 +1,32 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import type {
   CachedCatalogItem,
   LocalReceipt,
   OfflineBridge,
   OfflineCustomer,
+  OfflineVoucherPreview,
   OfflineReadiness,
   OfflineSyncStatus,
   ProjectedInventoryItem,
 } from "../../shared/offline";
-import { addVariant, cartTotal, removeLine, updateQuantity, type CartLine } from "../cart/cart";
+import {
+  addVariant,
+  cartTotal,
+  refreshCartPrices,
+  removeLine,
+  updateQuantity,
+  type CartLine,
+} from "../cart/cart";
+import { HeldCartsPanel } from "../cart/HeldCartsPanel";
+import { holdCart, listHeldCarts, removeHeldCart, type HeldCart } from "../cart/held";
 import { groupByCategory, type SellableProduct, type SellableVariant } from "../catalog/catalog";
+import { formatDateTime } from "../format";
 import { currencySymbol, formatMoney, parseMajorToMinor } from "../money";
 import { PayModal, type SaleTender } from "../checkout/PayModal";
 import { useI18n } from "../shell/i18n";
+import { Icons } from "../shell/icons";
+import { VariantDialog } from "../pos/VariantDialog";
 import { OfflineRunwayNote } from "./OfflineRunwayNote";
 
 export function cachedProducts(items: readonly CachedCatalogItem[]): readonly SellableProduct[] {
@@ -72,6 +85,20 @@ interface OfflineCashierProps {
   readonly onRefresh: () => Promise<void>;
   readonly onUseConnected: () => void;
   readonly onSignOut: () => Promise<void>;
+  /** Register/branch names when known (the offline grant only carries ids). */
+  readonly registerName?: string;
+  readonly branchName?: string;
+  /** Extra header actions (e.g. clock in/out) placed first, matching the connected register. */
+  readonly extraActions?: ReactNode;
+  /**
+   * Wraps the cashier in the app frame (sidebar + header) so offline selling looks exactly like the
+   * connected register. Without it a bare header row is rendered (tests / standalone use).
+   */
+  readonly renderShell?: (
+    headerStart: ReactNode,
+    headerActions: ReactNode,
+    body: ReactNode,
+  ) => ReactNode;
 }
 
 export function OfflineCashier({
@@ -83,6 +110,10 @@ export function OfflineCashier({
   onRefresh,
   onUseConnected,
   onSignOut,
+  registerName,
+  branchName,
+  extraActions,
+  renderShell,
 }: OfflineCashierProps) {
   const { t, locale } = useI18n();
   const currency = readiness.currency;
@@ -92,8 +123,11 @@ export function OfflineCashier({
     [inventory],
   );
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [catalogQuery, setCatalogQuery] = useState("");
   const [cart, setCart] = useState<readonly CartLine[]>([]);
+  const [heldCarts, setHeldCarts] = useState<readonly HeldCart[]>([]);
+  const [heldCartsOpen, setHeldCartsOpen] = useState(false);
   const [customers, setCustomers] = useState<readonly OfflineCustomer[]>([]);
   const [customerQuery, setCustomerQuery] = useState("");
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
@@ -107,6 +141,22 @@ export function OfflineCashier({
   const [submitting, setSubmitting] = useState(false);
   const [acknowledging, setAcknowledging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // ADR-042 §5: offline voucher against this till's reserved quota. Priced before payment so the tenders
+  // match the net total; admin credentials are typed here when the voucher requires them (checked now; no queue).
+  const [voucherCode, setVoucherCode] = useState("");
+  // The preview is tied to the exact cart it priced; any cart change makes it inactive.
+  const [pricedVoucher, setPricedVoucher] = useState<{
+    readonly cartKey: string;
+    readonly preview: OfflineVoucherPreview;
+  } | null>(null);
+  const [voucherError, setVoucherError] = useState<string | null>(null);
+  const [approverName, setApproverName] = useState("");
+  const [approverPassword, setApproverPassword] = useState("");
+  // ADR-042 §8: capture a new customer (name + phone) while offline.
+  const [newCustomerOpen, setNewCustomerOpen] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  const [newCustomerNotice, setNewCustomerNotice] = useState<string | null>(null);
 
   // Durable crash recovery: any locally accepted sale the cashier never acknowledged (e.g. the app
   // died after the SQLite commit but before the receipt was seen) is surfaced here as a specific
@@ -124,6 +174,51 @@ export function OfflineCashier({
   }, [refreshUnacknowledged]);
   const selectedProduct = products.find((item) => item.productId === selectedProductId) ?? null;
   const total = cartTotal(cart);
+  const cartKey = JSON.stringify(cart.map((line) => [line.variantId, line.quantity]));
+  const voucherPreview = pricedVoucher?.cartKey === cartKey ? pricedVoucher.preview : null;
+  const setVoucherPreview = (preview: OfflineVoucherPreview | null) =>
+    setPricedVoucher(preview ? { cartKey, preview } : null);
+  const amountDue = voucherPreview ? voucherPreview.netTotalMinor : total;
+
+  async function applyVoucher() {
+    const code = voucherCode.trim();
+    if (code === "" || cart.length === 0) return;
+    setVoucherError(null);
+    try {
+      setVoucherPreview(
+        await bridge.previewOfflineVoucher({
+          code,
+          lines: cart.map((line) => ({ variantId: line.variantId, quantity: line.quantity })),
+        }),
+      );
+    } catch (caught) {
+      setVoucherPreview(null);
+      setVoucherError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
+  async function saveNewCustomer() {
+    setNewCustomerNotice(null);
+    try {
+      const created = await bridge.addOfflineCustomer({
+        name: newCustomerName,
+        phone: newCustomerPhone,
+      });
+      setNewCustomerName("");
+      setNewCustomerPhone("");
+      setNewCustomerOpen(false);
+      setNewCustomerNotice(t("offlineCustomer.saved"));
+      // The new customer can carry an installment right away; it syncs before the sale does.
+      await refreshCustomers();
+      setSelectedCustomerId(created.localCustomerId);
+    } catch (caught) {
+      setNewCustomerNotice(
+        t("offlineCustomer.failed", {
+          reason: caught instanceof Error ? caught.message : String(caught),
+        }),
+      );
+    }
+  }
 
   // Offline search matches product name, brand, and any variant SKU/name — the same fields the
   // connected register searches, so the floor's muscle memory carries over when the link drops.
@@ -142,6 +237,36 @@ export function OfflineCashier({
             ),
         );
   const groupedCatalog = groupByCategory(filteredProducts, t("pos.uncategorized"));
+  const visibleCategory = groupedCatalog.find((group) => group.category === selectedCategory);
+
+  function holdCurrentCart() {
+    if (cart.length === 0 || submitting) return;
+    try {
+      holdCart(readiness.registerId, cart);
+      setHeldCarts(listHeldCarts(readiness.registerId));
+      setCart([]);
+      setSelectedCustomerId(null);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : t("cashier.holdFailed"));
+    }
+  }
+
+  function resumeHeldCart(held: HeldCart) {
+    if (cart.length > 0 || submitting) return;
+    const restored = refreshCartPrices(held.lines, products);
+    if (
+      restored.length !== held.lines.length ||
+      restored.some((line) => (availability.get(line.variantId) ?? 0) < line.quantity)
+    ) {
+      setError(t("cashier.heldUnavailable"));
+      return;
+    }
+    setCart(restored);
+    removeHeldCart(readiness.registerId, held.id);
+    setHeldCarts(listHeldCarts(readiness.registerId));
+    setHeldCartsOpen(false);
+  }
 
   const installmentsAvailable = readiness.offlineInstallmentsAvailable;
   const refreshCustomers = useCallback(async () => {
@@ -221,10 +346,24 @@ export function OfflineCashier({
             : {}),
         })),
         ...(installment ? { customerId: selectedCustomer!.customerId, amountPaidMinor } : {}),
+        ...(voucherPreview
+          ? {
+              voucher: {
+                code: voucherCode.trim(),
+                ...(voucherPreview.requiresApproval
+                  ? { approver: { username: approverName, password: approverPassword } }
+                  : {}),
+              },
+            }
+          : {}),
       });
       const durableReceipt = await bridge.getLocalReceipt(accepted.localSaleId);
       if (!durableReceipt) throw new Error("The accepted local receipt could not be read back.");
       setReceipt(durableReceipt);
+      setVoucherCode("");
+      setVoucherPreview(null);
+      setApproverName("");
+      setApproverPassword("");
       setCart([]);
       setSelectedCustomerId(null);
       setCustomerQuery("");
@@ -234,6 +373,7 @@ export function OfflineCashier({
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : t("cashier.err.notAccepted"));
     } finally {
+      setApproverPassword("");
       setSubmitting(false);
     }
   }
@@ -283,11 +423,110 @@ export function OfflineCashier({
     }
   }
 
+  const waiting = waitingSyncCount(syncStatus);
+  const syncKey = syncLabel(syncStatus);
+  const needsAttention = syncStatus.needsReconciliation + syncStatus.blocked > 0;
+  const offlineDetail = `${t(syncKey)} · ${t("cashier.waiting", { count: waiting })}`;
+  // Same header contents and order as the connected register: identity, connection chip, offline
+  // chip, then compact actions. Offline-only context (grant + authority notes) lives in tooltips.
+  const headerStart = (
+    <div className="register-bar">
+      <div
+        className="register-bar__identity"
+        title={branchName ? `${registerName ?? ""} · ${branchName}` : undefined}
+      >
+        <strong>{registerName ?? t("pos.register")}</strong>
+        {branchName ? <span>{branchName}</span> : null}
+      </div>
+      {/* The one deliberate difference from the connected register: the cashier must always see that
+          sales are being saved locally (cached prices, no promotions). */}
+      <span
+        className="status-chip status-chip--warn"
+        title={`${t("cashier.offlineGrantHint")} ${t("cashier.authorityNote")}`}
+      >
+        {t("cashier.offlineCashier")}
+      </span>
+      <span
+        className={`status-chip ${syncStatus.networkOnline ? "status-chip--good" : "status-chip--bad"}`}
+      >
+        <span className="status-chip__dot" aria-hidden="true" />
+        {syncStatus.networkOnline ? t("pos.connected") : t("pos.disconnected")}
+      </span>
+      <span
+        className={`status-chip ${needsAttention ? "status-chip--warn" : "status-chip--quiet"}`}
+        data-state={syncKey}
+        title={`${t("cashier.offlineGrantHint")} ${t("cashier.authorityNote")}`}
+        role="status"
+      >
+        {offlineDetail}
+        <OfflineRunwayNote readiness={readiness} />
+      </span>
+    </div>
+  );
+  const headerActions = (
+    <div className="operator-actions">
+      {extraActions}
+      <button
+        className="button button--quiet"
+        disabled={!syncStatus.networkOnline || syncStatus.synchronizing}
+        onClick={() => void bridge.requestSync().then(onRefresh)}
+      >
+        {syncStatus.synchronizing ? t("cashier.synchronizing") : t("cashier.syncNow")}
+      </button>
+      {syncStatus.networkOnline ? (
+        <button className="button button--quiet" onClick={onUseConnected}>
+          {t("cashier.useConnected")}
+        </button>
+      ) : null}
+      {/* ADR-042 §13: returns are online-only; the action is shown disabled with the reason. */}
+      <button
+        className="button button--quiet"
+        disabled
+        aria-disabled="true"
+        title={t("cashier.returnsOfflineHint")}
+        aria-label={`${t("pos.returns")} — ${t("cashier.returnsOfflineHint")}`}
+      >
+        {t("pos.returns")}
+      </button>
+      {renderShell ? null : (
+        <button className="button button--quiet" onClick={() => void onSignOut()}>
+          {t("nav.signOut")}
+        </button>
+      )}
+    </div>
+  );
+  const frame = (body: ReactNode) =>
+    renderShell ? (
+      renderShell(headerStart, headerActions, body)
+    ) : (
+      <>
+        <header className="shell-header">
+          <div className="shell-header__start">{headerStart}</div>
+          <div className="shell-header__actions">{headerActions}</div>
+        </header>
+        {body}
+      </>
+    );
+  const remainingFor = (variantId: string) =>
+    Math.max(
+      0,
+      (availability.get(variantId) ?? 0) -
+        (cart.find((line) => line.variantId === variantId)?.quantity ?? 0),
+    );
+  function addToCart(variant: SellableVariant) {
+    setCart((current) => {
+      const inCart = current.find((line) => line.variantId === variant.variantId)?.quantity ?? 0;
+      return inCart >= (availability.get(variant.variantId) ?? 0)
+        ? current
+        : addVariant(current, variant);
+    });
+  }
+
   if (displayReceipt) {
     const pending = displayReceipt.lifecycle === "accepted_pending_sync";
     const governed = displayReceipt.lifecycle === "needs_reconciliation";
     const attention = governed || syncStatus.blocked > 0;
-    return (
+    return frame(
       <main className="receipt-shell">
         <section className="receipt-card">
           <div className="success-mark" aria-hidden="true">
@@ -370,6 +609,24 @@ export function OfflineCashier({
                 {formatMoney(displayReceipt.changeMinor, displayReceipt.currency, locale)}
               </strong>
             </div>
+            {(displayReceipt.tenders ?? []).map((tender, index) => (
+              <div key={`tender-${index}`} className="receipt-tender-unconfirmed">
+                <span>
+                  {t(
+                    tender.confirmation === "recorded_in_server_ledger"
+                      ? "cashier.tenderRecordedServer"
+                      : "cashier.tenderRecordedLocally",
+                    { method: t(`pay.method.${tender.method}`) },
+                  )}
+                </span>
+                <strong>{formatMoney(tender.amountMinor, displayReceipt.currency, locale)}</strong>
+              </div>
+            ))}
+            {displayReceipt.reconciliationHold ? (
+              <div className="receipt-hold" role="status">
+                <span>{t(`cashier.hold.${displayReceipt.reconciliationHold}`)}</span>
+              </div>
+            ) : null}
             <div>
               <span>{t("cashier.syncState")}</span>
               <strong>
@@ -398,52 +655,13 @@ export function OfflineCashier({
                 : t("cashier.newSale")}
           </button>
         </section>
-      </main>
+      </main>,
     );
   }
 
-  return (
+  return frame(
     <main className="pos-shell">
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">{t("cashier.offlineCashier")}</p>
-          <h1>{t("app.name")}</h1>
-        </div>
-        <div className="operator-actions">
-          <div className="connection-badge" data-state={syncLabel(syncStatus)}>
-            <strong>{t(syncLabel(syncStatus))}</strong>
-            <span>{t("cashier.waiting", { count: waitingSyncCount(syncStatus) })}</span>
-          </div>
-          {syncStatus.networkOnline ? (
-            <button className="button button--quiet" onClick={onUseConnected}>
-              {t("cashier.useConnected")}
-            </button>
-          ) : null}
-          <button className="button button--quiet" onClick={() => void onSignOut()}>
-            {t("nav.signOut")}
-          </button>
-        </div>
-      </header>
-      <div className="sync-strip">
-        <div>
-          <button className="button button--quiet" disabled>
-            {t("cashier.returnsOffline")}
-          </button>
-          <p>{t("cashier.returnsOfflineHint")}</p>
-        </div>
-        <span>
-          {t("cashier.offlineGrantHint")}
-          <OfflineRunwayNote readiness={readiness} />
-        </span>
-        <button
-          className="button button--quiet"
-          disabled={!syncStatus.networkOnline || syncStatus.synchronizing}
-          onClick={() => void bridge.requestSync().then(onRefresh)}
-        >
-          {syncStatus.synchronizing ? t("cashier.synchronizing") : t("cashier.syncNow")}
-        </button>
-      </div>
-      {syncStatus.needsReconciliation + syncStatus.blocked > 0 ? (
+      {needsAttention ? (
         <div className="attention-strip" role="status">
           {t("cashier.needAttention", {
             count: syncStatus.needsReconciliation + syncStatus.blocked,
@@ -453,142 +671,231 @@ export function OfflineCashier({
       <div className="workspace">
         <section className="catalog-panel">
           <div className="section-heading">
-            <div>
-              <p className="eyebrow">{t("cashier.installedCatalog")}</p>
-              <h2>{t("cashier.products")}</h2>
-            </div>
-            <span className="currency-pill">{currency}</span>
+            <h2>{t("pos.products")}</h2>
+            <span className="currency-pill">{currencySymbol(currency, locale)}</span>
+          </div>
+          <div className="catalog-search">
+            <input
+              className="catalog-search__input"
+              aria-label={t("pos.searchAria")}
+              placeholder={t("pos.searchPlaceholder")}
+              value={catalogQuery}
+              disabled={products.length === 0}
+              autoFocus
+              onChange={(event) => setCatalogQuery(event.target.value)}
+            />
+            {catalogQuery !== "" ? (
+              <button
+                type="button"
+                className="catalog-search__clear"
+                aria-label={t("pos.clearSearch")}
+                onClick={() => setCatalogQuery("")}
+              >
+                ×
+              </button>
+            ) : null}
           </div>
           {products.length === 0 ? <p className="inline-state">{t("cashier.noCached")}</p> : null}
-          {products.length > 0 ? (
-            <div className="catalog-search">
-              <input
-                className="catalog-search__input"
-                aria-label={t("pos.searchAria")}
-                placeholder={t("pos.searchPlaceholder")}
-                value={catalogQuery}
-                onChange={(event) => setCatalogQuery(event.target.value)}
-              />
-              {catalogQuery !== "" ? (
-                <button
-                  type="button"
-                  className="catalog-search__clear"
-                  aria-label={t("pos.clearSearch")}
-                  onClick={() => setCatalogQuery("")}
-                >
-                  ×
-                </button>
-              ) : null}
-            </div>
-          ) : null}
           {products.length > 0 && filteredProducts.length === 0 ? (
             <p className="inline-state">{t("pos.noMatch", { query: catalogQuery })}</p>
           ) : null}
-          {groupedCatalog.map((group) => (
-            <div className="catalog-group" key={group.category}>
-              <p className="catalog-group__heading">{group.category}</p>
-              <div className="product-grid">
-                {group.products.map((product) => (
-                  <button
-                    key={product.productId}
-                    className={`product-card${selectedProductId === product.productId ? " product-card--selected" : ""}`}
-                    onClick={() => setSelectedProductId(product.productId)}
-                  >
-                    <span>{product.productName}</span>
-                    {product.brandName ? (
-                      <span className="product-card__brand">{product.brandName}</span>
-                    ) : null}
-                    <small>{t("cashier.variantCount", { count: product.variants.length })}</small>
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-          {selectedProduct ? (
-            <div className="variant-panel">
-              <h3>{selectedProduct.productName}</h3>
-              {selectedProduct.variants.map((variant) => {
-                const available = availability.get(variant.variantId) ?? 0;
-                return (
-                  <div className="variant-row" key={variant.variantId}>
-                    <div>
-                      <strong>{variant.variantName ?? t("cashier.standard")}</strong>
-                      <span>
-                        {t("cashier.sku", { sku: variant.sku })} ·{" "}
-                        {t("cashier.projectedAvailable", { count: available })}
-                      </span>
-                    </div>
-                    <strong>{formatMoney(variant.unitPriceMinor, currency, locale)}</strong>
-                    <button
-                      className="button"
-                      disabled={available <= 0}
-                      onClick={() => setCart((current) => addVariant(current, variant))}
-                    >
-                      {t("cashier.add")}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-        </section>
-        <aside className="checkout-panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">{t("cashier.localCashSale")}</p>
-              <h2>{t("cashier.cart")}</h2>
-            </div>
-            <span>{t("cashier.lines", { count: cart.length })}</span>
-          </div>
-          {cart.length === 0 ? (
-            <p className="inline-state">{t("cashier.cartEmpty")}</p>
-          ) : (
-            <div className="cart-lines">
-              {cart.map((line) => (
-                <div className="cart-line" key={line.variantId}>
-                  <div className="cart-line__description">
-                    <strong>{line.label}</strong>
-                    <span>{t("cashier.sku", { sku: line.sku })}</span>
-                    <span>
-                      {t("cashier.each", {
-                        price: formatMoney(line.displayedUnitPriceMinor, currency, locale),
-                      })}
-                    </span>
-                  </div>
-                  <label>
-                    {t("cashier.qty")}
-                    <input
-                      aria-label={t("cashier.qtyFor", { label: line.label })}
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={line.quantity}
-                      disabled={submitting}
-                      onChange={(event) =>
-                        setCart((current) =>
-                          updateQuantity(current, line.variantId, Number(event.target.value)),
-                        )
-                      }
-                    />
-                  </label>
-                  <strong>
-                    {formatMoney(line.quantity * line.displayedUnitPriceMinor, currency, locale)}
-                  </strong>
-                  <button
-                    className="remove-button"
-                    disabled={submitting}
-                    onClick={() => setCart((current) => removeLine(current, line.variantId))}
-                  >
-                    {t("cashier.remove")}
-                  </button>
-                </div>
+          {normalizedQuery === "" && !visibleCategory ? (
+            <div className="product-grid" aria-label={t("pos.categories")}>
+              {groupedCatalog.map((group) => (
+                <button
+                  key={group.category}
+                  className="product-card category-card"
+                  onClick={() => setSelectedCategory(group.category)}
+                >
+                  <span>{group.category}</span>
+                  <small>{t("cashier.productCount", { count: group.products.length })}</small>
+                </button>
               ))}
             </div>
+          ) : (
+            <div className="catalog-group">
+              {normalizedQuery === "" || visibleCategory ? (
+                <div className="catalog-group__bar">
+                  {normalizedQuery === "" ? (
+                    <button
+                      type="button"
+                      className="back-chip"
+                      onClick={() => setSelectedCategory(null)}
+                    >
+                      <Icons.chevronBack />
+                      {t("pos.backToCategories")}
+                    </button>
+                  ) : null}
+                  {visibleCategory ? (
+                    <p className="catalog-group__heading">{visibleCategory.category}</p>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="product-grid">
+                {(normalizedQuery ? filteredProducts : (visibleCategory?.products ?? [])).map(
+                  (product) => {
+                    const total = product.variants.reduce(
+                      (sum, variant) => sum + (availability.get(variant.variantId) ?? 0),
+                      0,
+                    );
+                    return (
+                      <button
+                        key={product.productId}
+                        className={`product-card${total <= 0 ? " product-card--out" : ""}${selectedProductId === product.productId ? " product-card--selected" : ""}`}
+                        disabled={total <= 0}
+                        onClick={() => setSelectedProductId(product.productId)}
+                      >
+                        <span>{product.productName}</span>
+                        {product.brandName ? (
+                          <span className="product-card__brand">{product.brandName}</span>
+                        ) : null}
+                        <small>
+                          {t("cashier.variantCount", { count: product.variants.length })}
+                        </small>
+                        <small>{t("cashier.remainingCount", { count: total })}</small>
+                      </button>
+                    );
+                  },
+                )}
+              </div>
+            </div>
           )}
-          <div className="total-row">
-            <span>{t("cashier.total")}</span>
-            <strong>{formatMoney(total, currency, locale)}</strong>
+          {selectedProduct ? (
+            <VariantDialog
+              product={selectedProduct}
+              stockByVariant={
+                new Map(
+                  selectedProduct.variants.map((variant) => [
+                    variant.variantId,
+                    remainingFor(variant.variantId),
+                  ]),
+                )
+              }
+              submitting={submitting}
+              onAdd={addToCart}
+              onClose={() => setSelectedProductId(null)}
+            />
+          ) : null}
+        </section>
+
+        <aside className="checkout-panel">
+          <div className="cart-head">
+            <div className="cart-head__title">
+              <h2>{t("cashier.cart")}</h2>
+              <span className="cart-head__count">{t("cashier.lines", { count: cart.length })}</span>
+            </div>
+            <div className="cart-head__actions">
+              <button
+                className="chip-button"
+                disabled={cart.length === 0 || submitting}
+                onClick={holdCurrentCart}
+              >
+                {t("cashier.holdCart")}
+              </button>
+              <button
+                className="chip-button"
+                onClick={() => {
+                  setHeldCarts(listHeldCarts(readiness.registerId));
+                  setHeldCartsOpen(true);
+                }}
+              >
+                {t("cashier.heldCarts")}
+              </button>
+            </div>
           </div>
+          <div className="cart-body">
+            {cart.length === 0 ? (
+              <p className="inline-state">{t("cashier.cartEmpty")}</p>
+            ) : (
+              <div className="cart-lines">
+                {cart.map((line) => {
+                  const available = availability.get(line.variantId) ?? 0;
+                  return (
+                    <div className="cart-item" key={line.variantId}>
+                      <div className="cart-item__top">
+                        <strong title={t("cashier.sku", { sku: line.sku })}>{line.label}</strong>
+                        <button
+                          className="cart-item__remove"
+                          aria-label={t("pos.removeLine", { label: line.label })}
+                          title={t("cashier.remove")}
+                          disabled={submitting}
+                          onClick={() => setCart((current) => removeLine(current, line.variantId))}
+                        >
+                          <Icons.trash />
+                        </button>
+                      </div>
+                      <div className="cart-item__bottom">
+                        <div className="qty-stepper">
+                          <button
+                            type="button"
+                            aria-label={t("cashier.decreaseQty", { label: line.label })}
+                            disabled={submitting || line.quantity <= 1}
+                            onClick={() =>
+                              setCart((current) =>
+                                updateQuantity(current, line.variantId, line.quantity - 1),
+                              )
+                            }
+                          >
+                            <Icons.minus />
+                          </button>
+                          <input
+                            aria-label={t("cashier.qtyFor", { label: line.label })}
+                            type="number"
+                            min="1"
+                            max={available}
+                            step="1"
+                            value={line.quantity}
+                            disabled={submitting}
+                            onWheel={(event) => event.currentTarget.blur()}
+                            onChange={(event) => {
+                              const next = Number(event.target.value);
+                              if (next > available) return;
+                              setCart((current) => updateQuantity(current, line.variantId, next));
+                            }}
+                          />
+                          <button
+                            type="button"
+                            aria-label={t("cashier.increaseQty", { label: line.label })}
+                            disabled={submitting || line.quantity >= available}
+                            onClick={() =>
+                              setCart((current) =>
+                                updateQuantity(current, line.variantId, line.quantity + 1),
+                              )
+                            }
+                          >
+                            <Icons.plus />
+                          </button>
+                        </div>
+                        <span className="cart-item__unit">
+                          × {formatMoney(line.displayedUnitPriceMinor, currency, locale)}
+                        </span>
+                        <strong className="cart-item__total">
+                          {formatMoney(
+                            line.quantity * line.displayedUnitPriceMinor,
+                            currency,
+                            locale,
+                          )}
+                        </strong>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          {heldCartsOpen ? (
+            <HeldCartsPanel
+              carts={heldCarts}
+              currency={currency}
+              canResume={cart.length === 0 && !submitting}
+              onResume={resumeHeldCart}
+              onDelete={(id) => {
+                removeHeldCart(readiness.registerId, id);
+                setHeldCarts(listHeldCarts(readiness.registerId));
+              }}
+              onClose={() => setHeldCartsOpen(false)}
+            />
+          ) : null}
           {installmentsAvailable ? (
             <div className="offline-customer">
               <div className="offline-customer__heading">
@@ -647,6 +954,46 @@ export function OfflineCashier({
                     disabled={submitting}
                     onChange={(event) => setCustomerQuery(event.target.value)}
                   />
+                  <button
+                    className="button button--quiet"
+                    data-testid="offline-new-customer"
+                    disabled={submitting}
+                    onClick={() => setNewCustomerOpen((open) => !open)}
+                  >
+                    {t("offlineCustomer.add")}
+                  </button>
+                  {newCustomerOpen ? (
+                    <div className="offline-customer__new">
+                      <label>
+                        {t("offlineCustomer.name")}
+                        <input
+                          value={newCustomerName}
+                          onChange={(event) => setNewCustomerName(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        {t("offlineCustomer.phone")}
+                        <input
+                          inputMode="tel"
+                          value={newCustomerPhone}
+                          onChange={(event) => setNewCustomerPhone(event.target.value)}
+                        />
+                      </label>
+                      <button
+                        className="button"
+                        data-testid="offline-new-customer-save"
+                        disabled={newCustomerName.trim() === "" || newCustomerPhone.trim() === ""}
+                        onClick={() => void saveNewCustomer()}
+                      >
+                        {t("offlineCustomer.save")}
+                      </button>
+                    </div>
+                  ) : null}
+                  {newCustomerNotice ? (
+                    <p className="inline-state" data-testid="offline-new-customer-notice">
+                      {newCustomerNotice}
+                    </p>
+                  ) : null}
                   {customerQuery.trim() !== "" ? (
                     <div className="offline-customer__results">
                       {filteredCustomers.length === 0 ? (
@@ -664,6 +1011,13 @@ export function OfflineCashier({
                           >
                             <strong>{item.name}</strong>
                             <span>{item.phone}</span>
+                            {item.createdOffline ? (
+                              <span data-testid="offline-customer-new-tag">
+                                {item.pendingSync
+                                  ? t("offlineCustomer.pendingSync")
+                                  : t("offlineCustomer.synced")}
+                              </span>
+                            ) : null}
                             <span>
                               {formatMoney(item.projectedOutstandingMinor, currency, locale)}
                             </span>
@@ -676,6 +1030,106 @@ export function OfflineCashier({
               )}
             </div>
           ) : null}
+          {/* ADR-042 §5: only vouchers this till holds offline quota for can be used here. */}
+          <div className="promotion-panel">
+            <div className="promotion-code-row">
+              <label className="promotion-code-field">
+                <input
+                  aria-label={t("offlineVoucher.label")}
+                  placeholder={t("offlineVoucher.placeholder")}
+                  type="text"
+                  value={voucherCode}
+                  disabled={submitting || cart.length === 0}
+                  onChange={(event) => {
+                    setVoucherCode(event.target.value);
+                    setVoucherPreview(null);
+                    setVoucherError(null);
+                  }}
+                />
+              </label>
+              {voucherPreview ? (
+                <button
+                  className="button"
+                  disabled={submitting}
+                  onClick={() => {
+                    setVoucherCode("");
+                    setVoucherPreview(null);
+                  }}
+                >
+                  {t("offlineVoucher.clear")}
+                </button>
+              ) : (
+                <button
+                  className="button"
+                  disabled={submitting || cart.length === 0 || voucherCode.trim() === ""}
+                  onClick={() => void applyVoucher()}
+                >
+                  {t("offlineVoucher.apply")}
+                </button>
+              )}
+            </div>
+            {voucherError ? (
+              <p className="notice notice--error" role="alert" data-testid="offline-voucher-error">
+                {voucherError}
+              </p>
+            ) : null}
+            {voucherPreview?.requiresApproval ? (
+              <fieldset className="approval" data-testid="offline-voucher-approval">
+                <legend>{t("approval.title")}</legend>
+                <p>
+                  {t("offlineVoucher.needsApproval")} {t("approval.note")}
+                </p>
+                <label>
+                  {t("approval.username")}
+                  <input
+                    value={approverName}
+                    autoComplete="off"
+                    onChange={(event) => setApproverName(event.target.value)}
+                  />
+                </label>
+                <label>
+                  {t("approval.password")}
+                  <input
+                    type="password"
+                    value={approverPassword}
+                    autoComplete="off"
+                    onChange={(event) => setApproverPassword(event.target.value)}
+                  />
+                </label>
+              </fieldset>
+            ) : null}
+          </div>
+          <div className="total-row">
+            <span>{t("pos.grossSubtotal")}</span>
+            <strong>{formatMoney(total, currency, locale)}</strong>
+          </div>
+          {voucherPreview ? (
+            <div className="total-row" data-testid="offline-voucher-discount">
+              <span>
+                {t("offlineVoucher.discount")} ({voucherPreview.label})
+              </span>
+              <strong>−{formatMoney(voucherPreview.discountTotalMinor, currency, locale)}</strong>
+            </div>
+          ) : null}
+          {voucherPreview?.policy ? (
+            <p className="muted" data-testid="offline-voucher-freshness">
+              {t("offlineVoucher.freshness", {
+                fetched: formatDateTime(voucherPreview.policy.fetchedAt, locale),
+                remaining:
+                  voucherPreview.policy.remainingAtFetch === null
+                    ? t("offlineVoucher.noLimit")
+                    : String(
+                        voucherPreview.policy.remainingAtFetch -
+                          voucherPreview.policy.localUsesSinceFetch,
+                      ),
+              })}{" "}
+              {t("offlineVoucher.provisional")}
+            </p>
+          ) : null}
+          <div className="total-row total-row--due">
+            <span>{t("pay.amountDue")}</span>
+            <strong>{formatMoney(amountDue, currency, locale)}</strong>
+          </div>
           {error ? (
             <div className="notice notice--error" role="alert">
               {error}
@@ -683,17 +1137,23 @@ export function OfflineCashier({
           ) : null}
           <button
             className="button button--complete"
-            disabled={cart.length === 0 || submitting}
+            disabled={
+              cart.length === 0 ||
+              submitting ||
+              (voucherPreview?.requiresApproval === true &&
+                (approverName.trim() === "" || approverPassword === ""))
+            }
             onClick={openPayment}
           >
             {submitting ? t("cashier.savingSale") : t("cashier.takePayment")}
           </button>
           {payOpen ? (
             <PayModal
-              netMinor={total}
+              netMinor={amountDue}
               currency={currency}
               submitting={submitting}
               disableFreeformCustomer
+              offlineTenderNotice
               presetCustomer={
                 selectedCustomer
                   ? {
@@ -765,9 +1225,8 @@ export function OfflineCashier({
               </div>
             </div>
           ) : null}
-          <p className="authority-note">{t("cashier.authorityNote")}</p>
         </aside>
       </div>
-    </main>
+    </main>,
   );
 }

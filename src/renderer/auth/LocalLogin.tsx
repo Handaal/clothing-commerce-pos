@@ -2,30 +2,40 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { OfflineBridge, OfflineStaffIdentity } from "../../shared/offline";
 import type { PosAuthBridge, PosRosterEntry } from "../../shared/pos-auth";
-import { POS_PIN_MAX_LENGTH } from "../../shared/pos-auth";
+import { isPosPinFormat } from "../../shared/pos-auth";
 import type { PosSessionLoginResult } from "../../shared/pos-session";
 import { useI18n } from "../shell/i18n";
 
-// The shifted-cafe floor login, now server-backed: pick who you are from the cached roster, then tap a
-// numeric PIN. The PIN is verified by the server via the POS-native (pos_pin) provider (`onSignIn`); when
-// the server is unreachable it falls back to the device-bound offline roster so the till still opens. On
-// a fresh till (no cached accounts yet) it points the owner at the Clerk provisioning affordance, since
-// accounts are created server-side. Failures are collapsed to one message so a probe cannot tell an
-// unknown username from a wrong PIN.
+// The floor login (ADR-043), modelled on the shifted-cafe roster-first flow but server-backed: pick who you are
+// from the display-only roster cache (or type your username on a fresh till), then enter a numeric PIN on the
+// pad or a physical keyboard. The PIN is verified by the API (POS-native pos_pin account). Offline fallback is
+// attempted ONLY when the server is genuinely unreachable (`OFFLINE`) and only through the device-bound offline
+// verifier, which itself enforces the bounded offline authority window. A definitive server rejection never
+// falls back. Credential failures collapse to one message so a probe cannot tell an unknown username from a
+// wrong PIN. PINs are digits only, at least 4, with NO maximum: nothing here truncates what was typed.
 const PAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"] as const;
 
-type Mode = "loading" | "empty" | "roster" | "pin";
+type Mode = "loading" | "roster" | "username" | "pin";
+type Failure =
+  "none" | "credentials" | "format" | "throttled" | "offlineNotReady" | "server" | "notConfigured";
+
+const FAILURE_KEYS: Record<Exclude<Failure, "none">, string> = {
+  credentials: "login.error",
+  format: "login.pinTooShort",
+  throttled: "login.throttled",
+  offlineNotReady: "login.offlineNotReady",
+  server: "login.serverError",
+  notConfigured: "login.notConfigured",
+};
 
 interface LocalLoginProps {
-  /** The device-local roster cache (pos_users), populated by an admin / at bootstrap. Local & offline. */
+  /** The display-only roster cache (pos_users). Never an authenticator. */
   readonly rosterBridge: PosAuthBridge;
   /** Verify username + PIN against the server (pos_pin). Success establishes the connected session. */
   readonly onSignIn: (username: string, pin: string) => Promise<PosSessionLoginResult>;
-  /** Offline fallback; present only when offline login is armed and the server was unreachable. */
+  /** The device-bound offline verifier; present only while offline sign-in is armed on this till. */
   readonly offlineBridge?: OfflineBridge;
   readonly onOfflineSignedIn: (operator: OfflineStaffIdentity) => void;
-  /** Owner provisioning (Clerk) affordance — create the first accounts on a fresh till. */
-  readonly onOwnerSetup?: () => void;
 }
 
 export function LocalLogin({
@@ -33,162 +43,204 @@ export function LocalLogin({
   onSignIn,
   offlineBridge,
   onOfflineSignedIn,
-  onOwnerSetup,
 }: LocalLoginProps) {
   const { t } = useI18n();
   const [mode, setMode] = useState<Mode>("loading");
+  const [freshTill, setFreshTill] = useState(false);
   const [roster, setRoster] = useState<readonly PosRosterEntry[]>([]);
-  const [selected, setSelected] = useState<PosRosterEntry | null>(null);
+  const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [pin, setPin] = useState("");
-  const [error, setError] = useState(false);
+  const [failure, setFailure] = useState<Failure>("none");
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const count = await rosterBridge.count();
-    if (count === 0) {
-      setMode("empty");
+    const [count, entries] = await Promise.all([rosterBridge.count(), rosterBridge.roster()]);
+    setRoster(entries);
+    if (count === 0 || entries.length === 0) {
+      // Fresh till (or nobody active cached): sign in by typing the username; the server is the authority.
+      setFreshTill(count === 0);
+      setMode("username");
       return;
     }
-    setRoster(await rosterBridge.roster());
     setMode("roster");
   }, [rosterBridge]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- initial external read (count/roster)
-    void refresh().catch(() => setMode("empty"));
+    void refresh().catch(() => setMode("username"));
   }, [refresh]);
 
+  const backToStart = useCallback(() => {
+    setUsername("");
+    setDisplayName("");
+    setPin("");
+    setFailure("none");
+    setMode(roster.length > 0 ? "roster" : "username");
+  }, [roster.length]);
+
+  const fail = useCallback((reason: Exclude<Failure, "none">) => {
+    setFailure(reason);
+    setPin("");
+  }, []);
+
   const submitPin = useCallback(async () => {
-    if (!selected || pin === "" || busy) return;
+    if (username === "" || pin === "" || busy) return;
+    if (!isPosPinFormat(pin)) {
+      fail("format");
+      return;
+    }
     setBusy(true);
-    setError(false);
+    setFailure("none");
     try {
-      const result = await onSignIn(selected.username, pin);
+      const result = await onSignIn(username, pin);
       if (result.ok) return; // The parent re-renders into the connected desks once the session resolves.
-      // Server reachable but rejected the credential, or the provider is not configured: one failure.
-      if (result.reason === "INVALID_CREDENTIALS" || result.reason === "NOT_CONFIGURED") {
-        setError(true);
+      if (result.reason === "INVALID_CREDENTIALS") return fail("credentials");
+      if (result.reason === "NOT_CONFIGURED") return fail("notConfigured");
+      if (result.reason !== "OFFLINE") return fail("server"); // Not proven to be an outage: fail closed.
+      // Server unreachable: the device-bound offline verifier, within the bounded offline authority only.
+      if (!offlineBridge) return fail("offlineNotReady");
+      const offline = await offlineBridge.verifyStaffPin({ username, pin });
+      if (offline.ok) {
         setPin("");
+        onOfflineSignedIn(offline.operator);
         return;
       }
-      // Server unreachable (OFFLINE/ERROR): fall back to the cached offline roster with the same PIN.
-      if (offlineBridge) {
-        const offline = await offlineBridge.verifyStaffPin({ username: selected.username, pin });
-        if (offline.ok) {
-          onOfflineSignedIn(offline.operator);
-          return;
-        }
-      }
-      setError(true);
-      setPin("");
+      if (offline.reason === "THROTTLED") return fail("throttled");
+      if (offline.reason === "UNAVAILABLE") return fail("offlineNotReady");
+      return fail("credentials");
     } catch {
-      setError(true);
-      setPin("");
+      fail("server");
     } finally {
       setBusy(false);
     }
-  }, [selected, pin, busy, onSignIn, offlineBridge, onOfflineSignedIn]);
+  }, [username, pin, busy, onSignIn, offlineBridge, onOfflineSignedIn, fail]);
 
-  // Physical-keyboard entry on the PIN step (keyboards + bench scanners), mirroring the on-screen pad.
+  // Physical-keyboard entry on the PIN step (keyboards + bench scanners), mirroring the on-screen pad. Escape
+  // clears the PIN, and a second Escape on an empty PIN returns to the roster.
   useEffect(() => {
     if (mode !== "pin") return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key >= "0" && event.key <= "9") {
-        setError(false);
-        setPin((current) => (current.length < POS_PIN_MAX_LENGTH ? current + event.key : current));
+      if (event.key.length === 1 && event.key >= "0" && event.key <= "9") {
+        setFailure("none");
+        setPin((current) => current + event.key);
       } else if (event.key === "Backspace") {
-        setError(false);
+        setFailure("none");
         setPin((current) => current.slice(0, -1));
       } else if (event.key === "Enter") {
         void submitPin();
       } else if (event.key === "Escape") {
-        setPin("");
+        if (pin === "") backToStart();
+        else setPin("");
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, submitPin]);
+  }, [mode, pin, submitPin, backToStart]);
 
   if (mode === "loading") return <p className="inline-state">{t("login.preparing")}</p>;
-
-  // Fresh till: no cached accounts. Accounts are provisioned server-side, so steer the owner to the Clerk
-  // setup affordance rather than seeding a device-local admin.
-  if (mode === "empty") {
-    return (
-      <div className="pin-login">
-        <h2 className="pin-login__title">{t("login.noAccountsTitle")}</h2>
-        <p className="pin-login__hint">{t("login.noAccountsHint")}</p>
-        {onOwnerSetup ? (
-          <button type="button" className="button button--complete" onClick={onOwnerSetup}>
-            {t("login.ownerSetup")}
-          </button>
-        ) : null}
-      </div>
-    );
-  }
 
   if (mode === "roster") {
     return (
       <div className="pin-login">
         <h2 className="pin-login__title">{t("login.chooseOperator")}</h2>
         <p className="pin-login__hint">{t("login.chooseOperatorHint")}</p>
-        {roster.length === 0 ? (
-          <p className="staff-empty">{t("login.noOperators")}</p>
-        ) : (
-          <ul className="roster">
-            {roster.map((entry) => (
-              <li key={entry.id}>
-                <button
-                  type="button"
-                  className="roster__item"
-                  onClick={() => {
-                    setSelected(entry);
-                    setPin("");
-                    setError(false);
-                    setMode("pin");
-                  }}
-                >
-                  <span className="roster__name">{entry.name}</span>
-                  <span className={`pill ${entry.role === "admin" ? "pill--good" : ""}`}>
-                    {t(`login.role.${entry.role}`)}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        {onOwnerSetup ? (
-          <button type="button" className="pin-login__back" onClick={onOwnerSetup}>
-            {t("login.ownerSetup")}
+        <ul className="roster">
+          {roster.map((entry) => (
+            <li key={entry.id}>
+              <button
+                type="button"
+                className="roster__item"
+                onClick={() => {
+                  setUsername(entry.username);
+                  setDisplayName(entry.name);
+                  setPin("");
+                  setFailure("none");
+                  setMode("pin");
+                }}
+              >
+                <span className="roster__name">{entry.name}</span>
+                <span className={`pill ${entry.role === "admin" ? "pill--good" : ""}`}>
+                  {t(`login.role.${entry.role}`)}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        <button
+          type="button"
+          className="pin-login__back"
+          onClick={() => {
+            setUsername("");
+            setFailure("none");
+            setMode("username");
+          }}
+        >
+          {t("login.notListed")}
+        </button>
+      </div>
+    );
+  }
+
+  if (mode === "username") {
+    return (
+      <form
+        className="pin-login"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const typed = username.trim().toLowerCase();
+          if (typed === "") return;
+          setUsername(typed);
+          setDisplayName(typed);
+          setPin("");
+          setFailure("none");
+          setMode("pin");
+        }}
+      >
+        {roster.length > 0 ? (
+          <button type="button" className="pin-login__back" onClick={backToStart}>
+            ‹ {t("login.back")}
           </button>
         ) : null}
-      </div>
+        <h2 className="pin-login__title">
+          {freshTill ? t("login.noAccountsTitle") : t("login.enterUsername")}
+        </h2>
+        <p className="pin-login__hint">
+          {freshTill ? t("login.noAccountsHint") : t("login.usernamePrompt")}
+        </p>
+        <input
+          className="pin-login__input"
+          aria-label={t("login.username")}
+          autoComplete="off"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          autoFocus
+          value={username}
+          onChange={(event) => setUsername(event.target.value)}
+          placeholder={t("login.usernamePlaceholder")}
+        />
+        <button type="submit" className="button button--complete" disabled={username.trim() === ""}>
+          {t("login.continue")}
+        </button>
+      </form>
     );
   }
 
   return (
     <div className="pin-login">
-      <button
-        type="button"
-        className="pin-login__back"
-        onClick={() => {
-          setSelected(null);
-          setPin("");
-          setError(false);
-          setMode("roster");
-        }}
-      >
+      <button type="button" className="pin-login__back" onClick={backToStart}>
         ‹ {t("login.back")}
       </button>
       <h2 className="pin-login__title">{t("login.enterPin")}</h2>
-      <p className="pin-login__hint">{t("login.pinFor", { username: selected?.name ?? "" })}</p>
+      <p className="pin-login__hint">{t("login.pinFor", { username: displayName })}</p>
       <div
-        className={`pin-login__display${error ? " pin-login__display--error" : ""}`}
+        className={`pin-login__display${failure !== "none" ? " pin-login__display--error" : ""}`}
         role="status"
         aria-label={t("login.pin")}
       >
         {pin ? (
-          "•".repeat(pin.length)
+          "•".repeat(Math.min(pin.length, 12)) + (pin.length > 12 ? ` +${pin.length - 12}` : "")
         ) : (
           <span className="pin-login__placeholder">{t("login.pin")}</span>
         )}
@@ -202,22 +254,19 @@ export function LocalLogin({
             disabled={busy}
             aria-label={key === "C" ? t("login.clear") : key === "⌫" ? t("login.backspace") : key}
             onClick={() => {
-              setError(false);
+              setFailure("none");
               if (key === "C") setPin("");
               else if (key === "⌫") setPin((current) => current.slice(0, -1));
-              else
-                setPin((current) =>
-                  current.length < POS_PIN_MAX_LENGTH ? current + key : current,
-                );
+              else setPin((current) => current + key);
             }}
           >
             {key}
           </button>
         ))}
       </div>
-      {error ? (
+      {failure !== "none" ? (
         <div className="notice notice--error" role="alert">
-          {t("login.error")}
+          {t(FAILURE_KEYS[failure])}
         </div>
       ) : null}
       <button

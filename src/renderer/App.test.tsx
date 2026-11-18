@@ -156,6 +156,10 @@ function connectedFixture(
     });
   const posQuoteFn = vi.fn<TenantCommerceClient["posQuote"]>(posQuote);
   const tenantClient = {
+    getPosAvailability: vi.fn(async () => ({
+      registerId: "register-1",
+      items: [{ variantId: "variant-1", onHand: 5 }],
+    })),
     tenantId: "tenant-1",
     getPosContext: vi.fn(async () => ({
       business: {
@@ -375,8 +379,14 @@ function offlineEnablementFixture(): OfflineBridge {
     getOfflineCustomers: vi.fn(async () => []),
     recordCustomerPayment: vi.fn(),
     acceptCashSale: vi.fn(),
+    previewOfflineVoucher: vi.fn(),
+    addOfflineCustomer: vi.fn(),
     recordAttendanceEvent: vi.fn(),
     getLocalAttendance: vi.fn(async () => ({ lastEvent: null, pending: 0, recent: [] })),
+    prepareReturnGrant: vi.fn(),
+    getReturnGrants: vi.fn(async () => []),
+    recordReturn: vi.fn(),
+    getLocalReturns: vi.fn(async () => ({ pending: 0, recent: [] })),
     getLocalReceipt: vi.fn(),
     getUnacknowledgedSales: vi.fn(async () => []),
     acknowledgeSale: vi.fn(),
@@ -420,6 +430,12 @@ function offlineEnablementFixture(): OfflineBridge {
       };
     }),
     verifyStaffPin: vi.fn(async () => ({ ok: false as const, reason: "UNAVAILABLE" as const })),
+    endStaffSession: vi.fn(async () => undefined),
+    recordIntent: vi.fn(),
+    getLocalIntents: vi.fn(async () => ({ enabledOperations: [], pending: 0, recent: [] })),
+    getReviewItems: vi.fn(async () => []),
+    reviewRetry: vi.fn(),
+    reviewRequestResolution: vi.fn(),
   };
 }
 
@@ -432,10 +448,10 @@ describe("connected cashier application", () => {
       <PosApplication
         auth={signedOutAuth}
         clientFactory={clientFactory}
-        signedOutContent={<div>Real Clerk sign in</div>}
+        signedOutContent={<div>Injected sign-in content</div>}
       />,
     );
-    expect(screen.getByText("Real Clerk sign in")).toBeTruthy();
+    expect(screen.getByText("Injected sign-in content")).toBeTruthy();
     expect(getMyTenants).not.toHaveBeenCalled();
   });
 
@@ -451,7 +467,7 @@ describe("connected cashier application", () => {
     await waitFor(() => expect(fixture.auth.signOut).toHaveBeenCalledTimes(1));
   });
 
-  it("uses the real Clerk token and selected register to enable offline selling", async () => {
+  it("automatically prepares offline selling for an online register", async () => {
     const fixture = connectedFixture();
     const offlineBridge = offlineEnablementFixture();
     render(
@@ -462,10 +478,7 @@ describe("connected cashier application", () => {
       />,
     );
     await screen.findByRole("heading", { name: "Products" });
-    // A never-armed register shows the first-run commissioning prompt and an "Arm offline selling"
-    // action rather than the terse unavailable line.
-    expect(await screen.findByText(/has not been armed for offline selling/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Arm offline selling" }));
+    expect(screen.queryByRole("button", { name: "Enable offline selling" })).toBeNull();
     await waitFor(() =>
       expect(offlineBridge.bootstrap).toHaveBeenCalledWith({
         tenantId: "tenant-1",
@@ -474,10 +487,7 @@ describe("connected cashier application", () => {
         accessToken: "token",
       }),
     );
-    expect(await screen.findByText(/Offline selling is ready/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Work offline" })).toBeTruthy();
-    // Once armed, the commissioning prompt is gone.
-    expect(screen.queryByText(/has not been armed for offline selling/)).toBeNull();
   });
 
   it("combines cart lines, submits only sale intent, shows receipt, and resets", async () => {
@@ -489,6 +499,7 @@ describe("connected cashier application", () => {
         salesGateway={fixture.salesGateway}
       />,
     );
+    fireEvent.click(await screen.findByRole("button", { name: /Uncategorized/ }));
     const productButton = await screen.findByRole("button", { name: /Linen Shirt/ });
     fireEvent.click(productButton);
     const addButton = await screen.findByRole("button", { name: "Add" });
@@ -555,6 +566,7 @@ describe("connected cashier application", () => {
         salesGateway={fixture.salesGateway}
       />,
     );
+    fireEvent.click(await screen.findByRole("button", { name: /Uncategorized/ }));
     fireEvent.click(await screen.findByRole("button", { name: /Linen Shirt/ }));
     fireEvent.click(await screen.findByRole("button", { name: "Add" }));
     await waitFor(() => expect(completeButton().disabled).toBe(false));
@@ -629,8 +641,14 @@ function readyOfflineBridge(): OfflineBridge {
     getOfflineCustomers: vi.fn(async () => []),
     recordCustomerPayment: vi.fn(),
     acceptCashSale: vi.fn(),
+    previewOfflineVoucher: vi.fn(),
+    addOfflineCustomer: vi.fn(),
     recordAttendanceEvent: vi.fn(),
     getLocalAttendance: vi.fn(async () => ({ lastEvent: null, pending: 0, recent: [] })),
+    prepareReturnGrant: vi.fn(),
+    getReturnGrants: vi.fn(async () => []),
+    recordReturn: vi.fn(),
+    getLocalReturns: vi.fn(async () => ({ pending: 0, recent: [] })),
     getLocalReceipt: vi.fn(),
     getUnacknowledgedSales: vi.fn(async () => []),
     acknowledgeSale: vi.fn(),
@@ -662,10 +680,17 @@ function readyOfflineBridge(): OfflineBridge {
     requestSync: vi.fn(),
     bootstrap: vi.fn(),
     verifyStaffPin: vi.fn(async () => ({ ok: false as const, reason: "UNAVAILABLE" as const })),
+    endStaffSession: vi.fn(async () => undefined),
+    recordIntent: vi.fn(),
+    getLocalIntents: vi.fn(async () => ({ enabledOperations: [], pending: 0, recent: [] })),
+    getReviewItems: vi.fn(async () => []),
+    reviewRetry: vi.fn(),
+    reviewRequestResolution: vi.fn(),
   };
 }
 
 async function addOneAndReady() {
+  fireEvent.click(await screen.findByRole("button", { name: /Uncategorized/ }));
   fireEvent.click(await screen.findByRole("button", { name: /Linen Shirt/ }));
   fireEvent.click(await screen.findByRole("button", { name: "Add" }));
 }
@@ -915,6 +940,32 @@ describe("connected POS promotions", () => {
     render(<PosApplication auth={fixture.auth} clientFactory={fixture.clientFactory} />);
     await addOneAndReady();
     expect(await screen.findByText("Promotions require a connection.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+    expect(completeButton().disabled).toBe(true);
+  });
+
+  it("surfaces a branch-brand conflict without offering a meaningless reconnect", async () => {
+    const posQuote = vi
+      .fn<TenantCommerceClient["posQuote"]>()
+      .mockRejectedValue(
+        new ApiHttpError(
+          "The branch does not operate the sale's brand.",
+          409,
+          "BRAND_NOT_AVAILABLE_AT_BRANCH",
+          "request-1",
+        ),
+      );
+    const fixture = connectedFixture({ posQuote });
+    render(<PosApplication auth={fixture.auth} clientFactory={fixture.clientFactory} />);
+    await addOneAndReady();
+
+    expect(
+      await screen.findByText(
+        "This product's brand isn't available at the selected branch. Remove it or select another register.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText("Pricing is unavailable right now.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
     expect(completeButton().disabled).toBe(true);
   });
 

@@ -7,6 +7,7 @@ import type {
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { OfflineBridge, OfflineReturnGrantView } from "../../shared/offline";
 import type {
   ReturnReply,
   ReturnSession,
@@ -27,6 +28,12 @@ interface Props {
   onLocked: (locked: boolean) => void;
   getToken: () => Promise<string | null>;
   bridge?: ReturnsBridge;
+  /**
+   * Offline-returns preparation (ADR-041 A). When an eligible order is opened while connected, main
+   * caches a server-issued return grant for it so the return can still be captured if the link drops.
+   * Best effort: a failure (offline selling not enrolled, policy off) leaves the connected flow intact.
+   */
+  offline?: Pick<OfflineBridge, "prepareReturnGrant">;
 }
 type Selection = { quantity: string; reason: string; disposition: "restock" | "non_restock" };
 
@@ -37,6 +44,7 @@ export function ReturnDesk({
   onLocked,
   getToken,
   bridge = window.returns,
+  offline,
 }: Props) {
   const { t, locale } = useI18n();
   const [connected, setConnected] = useState(false);
@@ -62,6 +70,7 @@ export function ReturnDesk({
   const [result, setResult] = useState<ReturnDetailResponse | null>(null);
   const [reference, setReference] = useState("");
   const [cashConfirmed, setCashConfirmed] = useState(false);
+  const [offlineGrant, setOfflineGrant] = useState<OfflineReturnGrantView | null>(null);
   const locked = pending || uncertain !== null || !recoveryChecked;
   const activeWorkflow = workflow !== null && workflow.stage !== "completed";
 
@@ -233,6 +242,22 @@ export function ReturnDesk({
     setResult(null);
     setReference("");
     setCashConfirmed(false);
+    setOfflineGrant(null);
+    if (offline && eligible.eligible) {
+      // Best effort and non-blocking: never delays or fails the connected return flow.
+      void session()
+        .then((auth) =>
+          offline.prepareReturnGrant({
+            tenantId: auth.tenantId,
+            accessToken: auth.accessToken,
+            orderId: id,
+          }),
+        )
+        .then((grant) => {
+          if (grant.orderId === id) setOfflineGrant(grant);
+        })
+        .catch(() => setOfflineGrant(null));
+    }
   }
   const lines: ReturnIntent["lines"] =
     eligibility?.lines.flatMap((line) => {
@@ -467,6 +492,13 @@ export function ReturnDesk({
               amount: formatMoney(eligibility.maxRefundableMinor, eligibility.currency, locale),
             })}
           </p>
+          {offlineGrant && offlineGrant.orderId === order.header.id ? (
+            <p role="status">
+              {t("offlineReturns.prepared", {
+                when: formatDateTime(offlineGrant.expiresAt, locale),
+              })}
+            </p>
+          ) : null}
           <button
             disabled={!connected || locked || activeWorkflow}
             onClick={() => void read(() => loadOrder(order.header.id))}

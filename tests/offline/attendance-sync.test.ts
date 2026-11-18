@@ -51,6 +51,9 @@ describe("offline attendance synchronization lane", () => {
     const delivery: OfflineDeliveryClient = {
       deliver: unexpectedSale,
       deliverPayment: unexpectedPayment,
+      deliverReturn: async () => {
+        throw new Error("deliverReturn was not expected in this test");
+      },
       deliverAttendance: async (item) => {
         delivered = { idempotencyKey: item.idempotencyKey, canonical: item.canonicalCommand };
         return attendanceResponse(item.localEventId);
@@ -99,6 +102,9 @@ describe("offline attendance synchronization lane", () => {
     const delivery: OfflineDeliveryClient = {
       deliver: unexpectedSale,
       deliverPayment: unexpectedPayment,
+      deliverReturn: async () => {
+        throw new Error("deliverReturn was not expected in this test");
+      },
       deliverAttendance: async (item) => {
         attempts += 1;
         if (attempts === 1) throw new ApiNetworkError("offline");
@@ -149,6 +155,9 @@ describe("offline attendance synchronization lane", () => {
     const delivery: OfflineDeliveryClient = {
       deliver: unexpectedSale,
       deliverPayment: unexpectedPayment,
+      deliverReturn: async () => {
+        throw new Error("deliverReturn was not expected in this test");
+      },
       deliverAttendance: async (item) => {
         replayed = { idempotencyKey: item.idempotencyKey, canonical: item.canonicalCommand };
         return attendanceResponse(item.localEventId);

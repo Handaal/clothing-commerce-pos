@@ -6,6 +6,7 @@ export interface SellableVariant {
   productName: string;
   variantName: string | null;
   sku: string;
+  barcode?: string | null;
   unitPriceMinor: number;
 }
 
@@ -81,6 +82,7 @@ function sellableProduct(
         productName: detail.product.name,
         variantName: variant.displayName,
         sku: variant.sku,
+        barcode: variant.barcode ?? null,
         unitPriceMinor,
       },
     ];
