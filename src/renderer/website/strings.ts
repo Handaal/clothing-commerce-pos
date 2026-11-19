@@ -3,6 +3,8 @@
 // languages carry exactly the same keys.
 
 export const WEBSITE_EN: Record<string, string> = {
+  "website.orders.deliveryFee": "Delivery to {area}: {fee} (included in the total)",
+  "website.orders.deliveryFree": "free",
   "nav.website": "Website Management",
   "desk.reason.website":
     "Website changes go straight to the online store, so they need a connection.",
@@ -449,6 +451,8 @@ export const WEBSITE_EN: Record<string, string> = {
 };
 
 export const WEBSITE_AR: Record<string, string> = {
+  "website.orders.deliveryFee": "التوصيل إلى {area}: {fee} (ضمن الإجمالي)",
+  "website.orders.deliveryFree": "مجاني",
   "nav.website": "إدارة الموقع",
   "desk.reason.website": "تغييرات الموقع تُرسل مباشرة إلى المتجر الإلكتروني، لذا تحتاج إلى اتصال.",
   "desk.websiteOffline": "إدارة الموقع غير متاحة أثناء انقطاع الاتصال. تعود عند عودة الاتصال.",

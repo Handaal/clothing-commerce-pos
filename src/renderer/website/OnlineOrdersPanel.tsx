@@ -533,6 +533,20 @@ function OnlineOrderDialog({
                 <strong>{money(detail.header.totalMinor)}</strong>
               </div>
 
+              {detail.commerce?.deliveryFeeMinor !== undefined &&
+              (detail.commerce.deliveryFeeMinor > 0 || detail.commerce.delivery?.zoneCode) ? (
+                <p className="muted" data-testid="online-order-delivery-fee">
+                  {t("website.orders.deliveryFee", {
+                    area:
+                      detail.commerce.delivery?.region ?? detail.commerce.delivery?.zoneCode ?? "",
+                    fee:
+                      detail.commerce.deliveryFeeMinor === 0
+                        ? t("website.orders.deliveryFree")
+                        : money(detail.commerce.deliveryFeeMinor),
+                  })}
+                </p>
+              ) : null}
+
               {detail.cancellation ? (
                 <p className="notice notice--warning" role="status">
                   {t("website.orders.cancelledOn", {
