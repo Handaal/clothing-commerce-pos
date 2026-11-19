@@ -3,6 +3,7 @@ import type {
   OrderSummary,
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
+import { orderConfirmationMessage, whatsAppLink } from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { formatDateTime } from "../format";
@@ -77,10 +78,13 @@ export function OnlineOrdersPanel({
   client,
   canFulfill,
   canCancel,
+  storeName = "",
 }: {
   client: OnlineOrdersClient;
   canFulfill: boolean;
   canCancel: boolean;
+  /** Shown in the WhatsApp order confirmation ("Thanks for shopping with …"). */
+  storeName?: string;
 }) {
   const { t, locale } = useI18n();
   const [orders, setOrders] = useState<OrderSummary[] | null>(null);
@@ -316,6 +320,7 @@ export function OnlineOrdersPanel({
           })()}
           canFulfill={canFulfill}
           canCancel={canCancel}
+          storeName={storeName}
           onChanged={onChanged}
           onClose={() => setOpenId(null)}
         />
@@ -365,10 +370,12 @@ function OnlineOrderDialog({
   initial,
   canFulfill,
   canCancel,
+  storeName,
   onChanged,
   onClose,
 }: {
   client: OnlineOrdersClient;
+  storeName: string;
   orderId: string;
   initial: OrderDetailResponse | null;
   canFulfill: boolean;
@@ -568,13 +575,23 @@ function OnlineOrderDialog({
                 <section>
                   <h4>{t("website.orders.customer")}</h4>
                   {customer ? (
-                    <dl className="order-kv">
-                      <Row label={t("website.orders.name")}>{customer.name}</Row>
-                      <Row label={t("website.orders.phone")}>{customer.phone}</Row>
-                      {customer.email ? (
-                        <Row label={t("website.orders.email")}>{customer.email}</Row>
+                    <>
+                      <dl className="order-kv">
+                        <Row label={t("website.orders.name")}>{customer.name}</Row>
+                        <Row label={t("website.orders.phone")}>{customer.phone}</Row>
+                        {customer.email ? (
+                          <Row label={t("website.orders.email")}>{customer.email}</Row>
+                        ) : null}
+                      </dl>
+                      {placed ? (
+                        <ConfirmOnWhatsApp
+                          detail={detail}
+                          storeName={storeName}
+                          language={locale === "ar" ? "ar" : "en"}
+                          totalLabel={money(detail.header.totalMinor)}
+                        />
                       ) : null}
-                    </dl>
+                    </>
                   ) : (
                     <p className="muted">{t("website.orders.noCustomer")}</p>
                   )}
@@ -771,6 +788,50 @@ function sum(values: ReadonlyMap<number, number>): number {
   let total = 0;
   for (const value of values.values()) total += value;
   return total;
+}
+
+/**
+ * Phase 4: free click-to-chat order confirmation. Opens WhatsApp (desktop app or web) with the SDK's
+ * confirmation text for this customer; staff press send. Nothing is sent or recorded by the POS.
+ */
+function ConfirmOnWhatsApp({
+  detail,
+  storeName,
+  language,
+  totalLabel,
+}: {
+  detail: OrderDetailResponse;
+  storeName: string;
+  language: "en" | "ar";
+  totalLabel: string;
+}) {
+  const { t } = useI18n();
+  const customer = detail.commerce?.customer;
+  const phone = customer?.phone ?? detail.commerce?.delivery?.phone;
+  if (!phone) return null;
+  const href = whatsAppLink(
+    phone,
+    orderConfirmationMessage({
+      storeName: storeName || t("website.orders.ourStore"),
+      orderReference: detail.header.orderNumber,
+      customerName: customer?.name ?? detail.commerce?.delivery?.recipientName ?? null,
+      totalLabel,
+      deliveryCity: detail.commerce?.delivery?.city ?? null,
+      language,
+    }),
+  );
+  if (!href) return null;
+  return (
+    <a
+      className="button button--quiet website-order-whatsapp"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-testid="website-order-whatsapp"
+    >
+      {t("website.orders.confirmWhatsApp")}
+    </a>
+  );
 }
 
 function Row({ label, children }: { label: string; children: ReactNode }) {

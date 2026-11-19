@@ -202,6 +202,25 @@ describe("OnlineOrdersPanel", () => {
     expect(await screen.findByTestId(`website-order-${OPEN}`)).toBeTruthy();
   });
 
+  it("offers a WhatsApp confirmation addressed to the customer, in the store's name", async () => {
+    wrap(
+      <OnlineOrdersPanel
+        client={makeClient() as never}
+        canFulfill
+        canCancel
+        storeName="Zee Store"
+      />,
+    );
+    const dialog = await openOrder(OPEN);
+    const link = within(dialog).getByTestId("website-order-whatsapp");
+    const href = link.getAttribute("href")!;
+    expect(href).toMatch(/^https:\/\/wa\.me\/[0-9]+\?text=/u);
+    const text = decodeURIComponent(href.split("?text=")[1]!);
+    expect(text).toContain("Hi Mona,");
+    expect(text).toContain("Zee Store");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
   it("fulfils every remaining item with one idempotency key and moves the order out of the queue", async () => {
     const client = makeClient();
     wrap(<OnlineOrdersPanel client={client as never} canFulfill canCancel />);

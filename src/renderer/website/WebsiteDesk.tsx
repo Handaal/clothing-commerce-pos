@@ -25,6 +25,12 @@ interface TabDef {
 // Tab order follows Admin Mobile's Storefront hub, with the online-orders fulfilment queue first (the
 // day-to-day work; Admin Mobile shows the same order data in its Orders section). Each tab is shown only when the operator's
 // server-resolved access allows reading that area (the API still authorizes every request).
+/** The brand customers know (first brand the operator can see), else the business name. */
+function storeNameOf(context: MeContextResponse | null): string {
+  const partial = context as Partial<MeContextResponse> | null;
+  return partial?.access?.catalog?.brands[0]?.name ?? partial?.tenant?.name ?? "";
+}
+
 export const WEBSITE_TABS: readonly TabDef[] = [
   { id: "overview", labelKey: "website.tab.overview", descKey: "", visible: () => true },
   {
@@ -152,6 +158,7 @@ export function WebsiteDesk({
               client={client}
               canFulfill={access.ordersFulfill}
               canCancel={access.ordersCancel}
+              storeName={storeNameOf(context)}
             />
           ) : activeTab === "home" ? (
             <HomePagePanel client={client} />
