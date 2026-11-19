@@ -490,6 +490,7 @@ export function ReturnsTab({
               disabled={readOnly || !draft.enabled}
               onChange={(event) => update({ windowDays: event.target.value })}
             />
+            <span className="muted">{t("settings.returnWindowHint")}</span>
           </label>
           <label className="field settings-check">
             <input

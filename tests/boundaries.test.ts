@@ -13,18 +13,18 @@ function sourceFiles(directory: string): string[] {
 }
 
 describe("packaged SDK and renderer boundaries", () => {
-  it("locks the verified SDK 0.48.0 artifact", () => {
+  it("locks the verified SDK 0.49.0 artifact", () => {
     const packageJson = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8")) as {
       dependencies: Record<string, string>;
     };
     expect(packageJson.dependencies["@shifted/clothing-commerce-sdk"]).toBe(
-      "file:vendor/shifted-clothing-commerce-sdk-0.48.0.tgz",
+      "file:vendor/shifted-clothing-commerce-sdk-0.49.0.tgz",
     );
     const artifact = readFileSync(
-      path.join(root, "vendor", "shifted-clothing-commerce-sdk-0.48.0.tgz"),
+      path.join(root, "vendor", "shifted-clothing-commerce-sdk-0.49.0.tgz"),
     );
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "c9b16937f908d75e501794a2cdec931542d63b6750b29132ffc13d956b23e338",
+      "cae447c3a32fa8f434d5a341addfe7e8191fc8665a8db8750a154d85a67aef83",
     );
   });
 

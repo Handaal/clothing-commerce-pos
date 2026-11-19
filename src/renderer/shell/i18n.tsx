@@ -1172,6 +1172,8 @@ const EN: Dict = {
   "settings.returnPolicy": "Return policy",
   "settings.allowReturns": "Allow returns",
   "settings.returnWindow": "Return window (days)",
+  "settings.returnWindowHint":
+    "Days from ordering. Shown on the website and applied to return requests.",
   "settings.noLimit": "No limit",
   "settings.allowManualRefunds": "Allow manual refunds",
   "settings.manualRefundCap": "Manual refund cap ({sym})",
@@ -2667,6 +2669,7 @@ const AR: Dict = {
   "settings.returnPolicy": "سياسة المرتجعات",
   "settings.allowReturns": "السماح بالمرتجعات",
   "settings.returnWindow": "نافذة المرتجع (أيام)",
+  "settings.returnWindowHint": "أيام من تاريخ الطلب. تظهر على الموقع وتُطبق على طلبات الإرجاع.",
   "settings.noLimit": "بلا حد",
   "settings.allowManualRefunds": "السماح بالاستردادات اليدوية",
   "settings.manualRefundCap": "حد الاسترداد اليدوي ({sym})",
