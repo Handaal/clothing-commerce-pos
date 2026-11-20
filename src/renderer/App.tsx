@@ -22,18 +22,15 @@ import {
   updateQuantity,
   type CartLine,
 } from "./cart/cart";
+import { ClearCartButton } from "./cart/ClearCartButton";
 import { HeldCartsPanel } from "./cart/HeldCartsPanel";
 import { holdCart, listHeldCarts, removeHeldCart, type HeldCart } from "./cart/held";
-import {
-  groupByCategory,
-  loadSellableCatalog,
-  type SellableProduct,
-  type SellableVariant,
-} from "./catalog/catalog";
+import { loadSellableCatalog, type SellableProduct, type SellableVariant } from "./catalog/catalog";
 import { SaleExecutor, type SaleExecutionState, type SalesGateway } from "./checkout/sale-executor";
 import { createConfiguredCommerceClient, type CommerceClientFactory } from "./commerce/client";
 import { classifyCommerceError, type CommerceErrorView } from "./commerce/errors";
 import { currencySymbol, formatMoney } from "./money";
+import { CatalogBrowser } from "./pos/CatalogBrowser";
 import { VariantDialog } from "./pos/VariantDialog";
 import { PayModal, type SaleCustomer, type SaleTender } from "./checkout/PayModal";
 import { QuoteController, type QuoteState } from "./promotions/quote";
@@ -87,6 +84,7 @@ import type {
 import { AppShell } from "./shell/AppShell";
 import { useI18n } from "./shell/i18n";
 import { Icons } from "./shell/icons";
+import { KeyShortcut } from "./shell/KeyShortcut";
 import { PlaceholderSection } from "./shell/PlaceholderSection";
 import { Select } from "./shell/Select";
 import { accessibleSections, SECTIONS, type Capabilities, type SectionId } from "./shell/sections";
@@ -302,8 +300,6 @@ export function PosApplication({
   const [catalogError, setCatalogError] = useState<CommerceErrorView | null>(null);
   const [catalogNonce, setCatalogNonce] = useState(0);
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [catalogQuery, setCatalogQuery] = useState("");
 
   const [cart, setCart] = useState<readonly CartLine[]>([]);
   const [heldCarts, setHeldCarts] = useState<readonly HeldCart[]>([]);
@@ -726,7 +722,6 @@ export function PosApplication({
       resetTransaction();
       setProducts([]);
       setSelectedProductId(null);
-      setSelectedCategory(null);
     }
     setRegisterId(selectedRegisterId);
     setContextPhase("ready");
@@ -1170,47 +1165,12 @@ export function PosApplication({
       )
     : new Map(projectedInventory.map((item) => [item.variantId, item.projectedAvailable]));
 
-  // Search matches product name, brand, style code, and any variant name or SKU. A barcode scanner
-  // types the SKU then sends Enter: an exact SKU match adds that variant straight to the cart.
-  const normalizedQuery = catalogQuery.trim().toLowerCase();
-  const filteredProducts =
-    normalizedQuery === ""
-      ? products
-      : products.filter(
-          (product) =>
-            product.productName.toLowerCase().includes(normalizedQuery) ||
-            (product.brandName?.toLowerCase().includes(normalizedQuery) ?? false) ||
-            (product.styleCode?.toLowerCase().includes(normalizedQuery) ?? false) ||
-            product.variants.some(
-              (variant) =>
-                variant.sku.toLowerCase().includes(normalizedQuery) ||
-                (variant.barcode?.toLowerCase().includes(normalizedQuery) ?? false) ||
-                (variant.variantName?.toLowerCase().includes(normalizedQuery) ?? false),
-            ),
-        );
-  // Group the visible products by category so the floor browses by category first (Zara jackets,
-  // shirts, …). A product in multiple collections appears under each; uncategorized items sort last.
-  const groupedCatalog = groupByCategory(filteredProducts, t("pos.uncategorized"));
-  const visibleCategory = groupedCatalog.find((group) => group.category === selectedCategory);
-
-  function submitCatalogSearch() {
-    if (normalizedQuery === "" || locked) return;
-    const exactSku = products
-      .flatMap((product) => product.variants)
-      .find(
-        (variant) =>
-          variant.sku.toLowerCase() === normalizedQuery ||
-          variant.barcode?.toLowerCase() === normalizedQuery,
-      );
-    if (exactSku) {
-      addToCart(exactSku);
-      setSelectedProductId(exactSku.productId);
-      setCatalogQuery("");
-      return;
-    }
-    if (filteredProducts.length === 1) {
-      setSelectedProductId(filteredProducts[0].productId);
-    }
+  // A scan (exact SKU/barcode + Enter) rings the variant straight up without opening the picker, so
+  // the next scan can follow immediately.
+  function addScannedVariant(variant: SellableVariant) {
+    if (locked) return;
+    addToCart(variant);
+    setSelectedProductId(null);
   }
   const submitting = saleState.phase === "submitting";
   const recovering = saleState.phase === "recovering";
@@ -1315,7 +1275,7 @@ export function PosApplication({
   );
 
   const posContent = (
-    <main className="pos-shell">
+    <div className="pos-shell">
       {needsCommissioning(offlineReadiness) ? (
         <div className="commissioning-strip" role="status">
           {t("pos.commissionOfflinePrompt")}
@@ -1332,20 +1292,35 @@ export function PosApplication({
         </div>
       ) : null}
 
+      {/* Returns take over the till area as their own screen (the sale underneath keeps its cart and
+          catalog state, just hidden) instead of squeezing the catalog and cart. */}
       {showReturns && tenantClient && client ? (
-        <ReturnDesk
-          key={`${auth.sessionId}:${tenantId}:${registerId}`}
-          client={tenantClient}
-          health={client.getHealth}
-          register={register}
-          onLocked={setReturnLocked}
-          getToken={auth.getToken}
-          bridge={returnsBridge}
-          offline={offlineBridge}
-        />
+        <div className="returns-screen">
+          <div className="returns-screen__bar">
+            <button
+              type="button"
+              className="back-chip"
+              disabled={returnLocked}
+              onClick={() => setShowReturns(false)}
+            >
+              <Icons.chevronBack />
+              {t("pos.backToSale")}
+            </button>
+          </div>
+          <ReturnDesk
+            key={`${auth.sessionId}:${tenantId}:${registerId}`}
+            client={tenantClient}
+            health={client.getHealth}
+            register={register}
+            onLocked={setReturnLocked}
+            getToken={auth.getToken}
+            bridge={returnsBridge}
+            offline={offlineBridge}
+          />
+        </div>
       ) : null}
 
-      <div className="workspace">
+      <div className={`workspace${showReturns ? " workspace--hidden" : ""}`}>
         <section className="catalog-panel">
           <div className="section-heading">
             <h2>{t("pos.products")}</h2>
@@ -1353,119 +1328,37 @@ export function PosApplication({
               {currencySymbol(register.sellingCurrency, locale)}
             </span>
           </div>
-          <div className="catalog-search">
-            <input
-              className="catalog-search__input"
-              aria-label={t("pos.searchAria")}
-              placeholder={t("pos.searchPlaceholder")}
-              value={catalogQuery}
-              disabled={catalogPhase !== "ready"}
-              autoFocus
-              onChange={(event) => setCatalogQuery(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitCatalogSearch();
-                }
-              }}
-            />
-            {catalogQuery !== "" ? (
-              <button
-                type="button"
-                className="catalog-search__clear"
-                aria-label={t("pos.clearSearch")}
-                onClick={() => setCatalogQuery("")}
-              >
-                ×
-              </button>
-            ) : null}
-          </div>
-          {catalogPhase === "loading" ? <InlineState>{t("pos.loadingPrices")}</InlineState> : null}
-          {catalogPhase === "empty" ? <InlineState>{t("pos.noSellable")}</InlineState> : null}
-          {catalogPhase === "error" && catalogError ? (
-            <>
-              <InlineError
-                error={catalogError}
-                onRetry={() => setCatalogNonce((value) => value + 1)}
-              />
-              {offlineReadiness.ready ? (
-                <button className="button" onClick={switchToOffline}>
-                  {t("pos.useOfflineCatalog")}
-                </button>
-              ) : null}
-            </>
-          ) : null}
-          {catalogPhase === "ready" && filteredProducts.length === 0 && normalizedQuery !== "" ? (
-            <InlineState>{t("pos.noMatch", { query: catalogQuery })}</InlineState>
-          ) : null}
-          {normalizedQuery === "" && !visibleCategory ? (
-            <div className="product-grid" aria-label={t("pos.categories")}>
-              {groupedCatalog.map((group) => (
-                <button
-                  key={group.category}
-                  className="product-card category-card"
-                  onClick={() => setSelectedCategory(group.category)}
-                >
-                  <span>{group.category}</span>
-                  <small>{t("cashier.productCount", { count: group.products.length })}</small>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="catalog-group">
-              {normalizedQuery === "" || visibleCategory ? (
-                <div className="catalog-group__bar">
-                  {normalizedQuery === "" ? (
-                    <button
-                      type="button"
-                      className="back-chip"
-                      onClick={() => setSelectedCategory(null)}
-                    >
-                      <Icons.chevronBack />
-                      {t("pos.backToCategories")}
-                    </button>
-                  ) : null}
-                  {visibleCategory ? (
-                    <p className="catalog-group__heading">{visibleCategory.category}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="product-grid">
-                {(normalizedQuery ? filteredProducts : (visibleCategory?.products ?? [])).map(
-                  (product) => (
-                    <button
-                      key={product.productId}
-                      className={`product-card${product.variants.every((variant) => (stockByVariant.get(variant.variantId) ?? Infinity) <= 0) ? " product-card--out" : ""}${selectedProductId === product.productId ? " product-card--selected" : ""}`}
-                      disabled={product.variants.every(
-                        (variant) => (stockByVariant.get(variant.variantId) ?? Infinity) <= 0,
-                      )}
-                      onClick={() => setSelectedProductId(product.productId)}
-                    >
-                      <span>{product.productName}</span>
-                      {product.brandName ? (
-                        <span className="product-card__brand">{product.brandName}</span>
-                      ) : null}
-                      <small>
-                        {product.styleCode ??
-                          t("cashier.variantCount", { count: product.variants.length })}
-                      </small>
-                      <small>
-                        {product.variants.every((variant) => stockByVariant.has(variant.variantId))
-                          ? t("cashier.remainingCount", {
-                              count: product.variants.reduce(
-                                (sum, variant) =>
-                                  sum + (stockByVariant.get(variant.variantId) ?? 0),
-                                0,
-                              ),
-                            })
-                          : t("cashier.stockUnknown")}
-                      </small>
-                    </button>
-                  ),
-                )}
-              </div>
-            </div>
-          )}
+          <CatalogBrowser
+            products={products}
+            stockByVariant={stockByVariant}
+            currency={register.sellingCurrency}
+            disabled={catalogPhase !== "ready"}
+            captureKeys={!locked && !showReturns && !payOpen}
+            selectedProductId={selectedProductId}
+            onSelectProduct={setSelectedProductId}
+            onScanMatch={addScannedVariant}
+            status={
+              <>
+                {catalogPhase === "loading" ? (
+                  <InlineState>{t("pos.loadingPrices")}</InlineState>
+                ) : null}
+                {catalogPhase === "empty" ? <InlineState>{t("pos.noSellable")}</InlineState> : null}
+                {catalogPhase === "error" && catalogError ? (
+                  <>
+                    <InlineError
+                      error={catalogError}
+                      onRetry={() => setCatalogNonce((value) => value + 1)}
+                    />
+                    {offlineReadiness.ready ? (
+                      <button className="button" onClick={switchToOffline}>
+                        {t("pos.useOfflineCatalog")}
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+              </>
+            }
+          />
           {selectedProduct ? (
             <VariantDialog
               product={selectedProduct}
@@ -1494,6 +1387,12 @@ export function PosApplication({
               <span className="cart-head__count">{t("cashier.lines", { count: cart.length })}</span>
             </div>
             <div className="cart-head__actions">
+              <ClearCartButton
+                disabled={cart.length === 0 || locked}
+                onClear={() => {
+                  if (!locked) resetTransaction();
+                }}
+              />
               <button
                 className="chip-button"
                 disabled={cart.length === 0 || locked}
@@ -1747,8 +1646,12 @@ export function PosApplication({
           ) : null}
           {saleState.phase === "error" ? (
             <div className="notice notice--error" role="alert">
-              <strong>{saleState.error.code}</strong>
-              <span>{saleState.error.message}</span>
+              <strong>{t("pos.saleFailed")}</strong>
+              <span>{saleState.error.message || t("pos.saleFailedBody")}</span>
+              {/* The code stays available for support, but is not the headline. */}
+              <small className="error-ref">
+                {t("common.errorRef")} <code>{saleState.error.code}</code>
+              </small>
             </div>
           ) : null}
           {ambiguous ? (
@@ -1760,6 +1663,21 @@ export function PosApplication({
               </button>
             </div>
           ) : null}
+          {/* F12 = Take payment (only when the button itself is enabled). */}
+          <KeyShortcut
+            keyName="F12"
+            onTrigger={() => {
+              if (
+                cart.length === 0 ||
+                locked ||
+                priceConfirmationRequired ||
+                showReturns ||
+                !quoteReady
+              )
+                return;
+              openPayment();
+            }}
+          />
           <button
             className="button button--complete"
             disabled={
@@ -1772,6 +1690,11 @@ export function PosApplication({
               : recovering
                 ? t("pos.recoveringSale")
                 : t("cashier.takePayment")}
+            {!submitting && !recovering ? (
+              <kbd className="key-hint" aria-hidden="true">
+                F12
+              </kbd>
+            ) : null}
           </button>
           {payOpen ? (
             <PayModal
@@ -1796,7 +1719,7 @@ export function PosApplication({
           ) : null}
         </aside>
       </div>
-    </main>
+    </div>
   );
 
   const activeSection = SECTIONS.find((item) => item.id === section) ?? SECTIONS[0];
@@ -2073,9 +1996,11 @@ function ErrorState({
   return (
     <main className="state-shell">
       <section className="state-card">
-        <p className="eyebrow">{error.code}</p>
         <h1>{t("pos.state.unableContinue")}</h1>
         <p>{error.message}</p>
+        <small className="error-ref">
+          {t("common.errorRef")} <code>{error.code}</code>
+        </small>
         <div className="button-row">
           <button className="button" onClick={onRetry}>
             {t("common.retry")}

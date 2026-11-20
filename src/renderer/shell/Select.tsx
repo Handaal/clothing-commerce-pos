@@ -88,6 +88,13 @@ export function Select<T extends string>({
     return () => document.removeEventListener("mousedown", onPointerDown);
   }, [open]);
 
+  // Keep the keyboard-highlighted option visible in long lists (e.g. the offline item picker).
+  useEffect(() => {
+    if (!open) return;
+    const node = document.getElementById(`${listId}-${active}`);
+    node?.scrollIntoView?.({ block: "nearest" });
+  }, [open, active, listId]);
+
   const onKeyDown = (event: KeyboardEvent) => {
     if (disabled) return;
     if (!open) {

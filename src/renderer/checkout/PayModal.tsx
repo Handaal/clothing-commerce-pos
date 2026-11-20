@@ -43,6 +43,22 @@ function isValidPhone(value: string): boolean {
 }
 
 const METHODS: readonly TenderMethod[] = ["cash", "card", "instapay", "wallet"];
+
+// Banknote round-ups (major units) offered as one-tap "cash received" amounts.
+const ROUND_STEPS_MAJOR = [50, 100, 200, 500, 1000] as const;
+
+/** The exact cash due plus up to three distinct round-ups the customer is likely to hand over. */
+export function quickCashAmounts(dueMinor: number): readonly number[] {
+  if (dueMinor <= 0) return [];
+  const rounded = new Set<number>();
+  for (const step of ROUND_STEPS_MAJOR) {
+    const stepMinor = step * 100;
+    const next = Math.ceil(dueMinor / stepMinor) * stepMinor;
+    if (next > dueMinor) rounded.add(next);
+    if (rounded.size === 3) break;
+  }
+  return [dueMinor, ...[...rounded].sort((a, b) => a - b)];
+}
 const METHOD_LABEL_KEYS: Record<TenderMethod, string> = {
   cash: "pay.method.cash",
   card: "pay.method.card",
@@ -354,6 +370,21 @@ export function PayModal({
               onChange={(event) => setCashReceived(event.target.value)}
             />
           </label>
+        ) : null}
+        {cashIndex >= 0 && cashAmountMinor > 0 ? (
+          <div className="pay-quick-cash" role="group" aria-label={t("pay.quickCash")}>
+            {quickCashAmounts(cashAmountMinor).map((amount, index) => (
+              <button
+                key={amount}
+                type="button"
+                className={`pay-quick-cash__button${cashReceivedMinor === amount ? " pay-quick-cash__button--active" : ""}`}
+                disabled={submitting}
+                onClick={() => setCashReceived(minorToMajorInput(amount))}
+              >
+                {index === 0 ? t("pay.exactCash") : formatMoney(amount, currency, locale)}
+              </button>
+            ))}
+          </div>
         ) : null}
 
         {canOfferInstallment ? (

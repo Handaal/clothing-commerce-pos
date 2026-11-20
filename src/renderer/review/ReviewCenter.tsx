@@ -9,6 +9,7 @@ import type {
 } from "../../shared/offline";
 import { formatDateTime } from "../format";
 import { useI18n } from "../shell/i18n";
+import { Select } from "../shell/Select";
 
 const LANES: ReadonlyArray<ReviewLane | "all"> = [
   "all",
@@ -151,31 +152,21 @@ export function ReviewCenter({
       <div className="review-filters" role="search">
         <label>
           {t("review.filter.lane")}
-          <select
+          <Select<ReviewLane | "all">
+            ariaLabel={t("review.filter.lane")}
             value={lane}
-            onChange={(event) => setLane(event.target.value as ReviewLane | "all")}
-          >
-            {LANES.map((value) => (
-              <option key={value} value={value}>
-                {t(`review.lane.${value}`)}
-              </option>
-            ))}
-          </select>
+            onChange={setLane}
+            options={LANES.map((value) => ({ value, label: t(`review.lane.${value}`) }))}
+          />
         </label>
         <label>
           {t("review.filter.status")}
-          <select
+          <Select<NonNullable<ReviewQuery["status"]>>
+            ariaLabel={t("review.filter.status")}
             value={status}
-            onChange={(event) =>
-              setStatus(event.target.value as NonNullable<ReviewQuery["status"]>)
-            }
-          >
-            {STATUSES.map((value) => (
-              <option key={value} value={value}>
-                {t(`review.status.${value}`)}
-              </option>
-            ))}
-          </select>
+            onChange={setStatus}
+            options={STATUSES.map((value) => ({ value, label: t(`review.status.${value}`) }))}
+          />
         </label>
         <label>
           {t("review.filter.search")}

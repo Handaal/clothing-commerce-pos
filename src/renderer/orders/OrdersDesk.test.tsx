@@ -43,7 +43,8 @@ describe("OrdersDesk channel filter", () => {
         <OrdersDesk client={client} />
       </I18nProvider>,
     );
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "fulfillment" } });
+    fireEvent.click(screen.getByRole("button", { name: "Show" }));
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Needs fulfillment" }));
     await waitFor(() => expect(getOrder).toHaveBeenCalledTimes(2));
     expect(await screen.findByText(/WEB-1/)).toBeTruthy();
     expect(screen.queryByText(/WEB-2/)).toBeNull();

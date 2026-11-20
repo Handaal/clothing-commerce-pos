@@ -10,6 +10,7 @@ import type {
 } from "../../shared/offline";
 import { formatDateTime } from "../format";
 import { useI18n } from "../shell/i18n";
+import { Select } from "../shell/Select";
 
 /**
  * The desk actions this panel can capture offline. Only operations whose required references are
@@ -264,15 +265,18 @@ export function OfflineIntentPanel({
           {operation.startsWith("inventory.") ? (
             <label>
               {t("intent.field.variant")}
-              <select {...field("variantId")} required>
-                <option value="">{t("intent.field.chooseVariant")}</option>
-                {catalog.map((item) => (
-                  <option key={item.variantId} value={item.variantId}>
-                    {item.productName} · {item.sku}
-                    {item.optionSummary ? ` · ${item.optionSummary}` : ""}
-                  </option>
-                ))}
-              </select>
+              <Select<string>
+                ariaLabel={t("intent.field.variant")}
+                value={form.variantId}
+                onChange={(next) => setForm((current) => ({ ...current, variantId: next }))}
+                placeholder={t("intent.field.chooseVariant")}
+                options={catalog.map((item) => ({
+                  value: item.variantId,
+                  label: `${item.productName} · ${item.sku}${
+                    item.optionSummary ? ` · ${item.optionSummary}` : ""
+                  }`,
+                }))}
+              />
             </label>
           ) : null}
           {operation === "inventory.count" && advisory ? (
@@ -301,13 +305,15 @@ export function OfflineIntentPanel({
           {operation === "inventory.adjust" ? (
             <label>
               {t("intent.field.reason")}
-              <select {...field("reason")}>
-                {ADJUST_REASONS.map((value) => (
-                  <option key={value} value={value}>
-                    {t(`intent.reason.${value}`)}
-                  </option>
-                ))}
-              </select>
+              <Select<string>
+                ariaLabel={t("intent.field.reason")}
+                value={form.reason}
+                onChange={(next) => setForm((current) => ({ ...current, reason: next }))}
+                options={ADJUST_REASONS.map((value) => ({
+                  value,
+                  label: t(`intent.reason.${value}`),
+                }))}
+              />
             </label>
           ) : null}
           {operation === "settings.change_request" ? (

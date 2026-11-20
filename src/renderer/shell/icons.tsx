@@ -80,6 +80,19 @@ export const Icons = {
       <path d="M3 12h4l2 6 4-14 2 8h6" />
     </Svg>
   ),
+  sync: () => (
+    <Svg>
+      <path d="M20 11a8 8 0 0 0-14.7-4.3L3 9" />
+      <path d="M3 4v5h5" />
+      <path d="M4 13a8 8 0 0 0 14.7 4.3L21 15" />
+      <path d="M21 20v-5h-5" />
+    </Svg>
+  ),
+  chevronDown: () => (
+    <Svg>
+      <path d="m6 9 6 6 6-6" />
+    </Svg>
+  ),
   settings: () => (
     <Svg>
       <circle cx="12" cy="12" r="3" />

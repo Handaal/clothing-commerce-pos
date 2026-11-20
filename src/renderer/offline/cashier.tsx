@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import type {
   CachedCatalogItem,
@@ -18,14 +18,17 @@ import {
   updateQuantity,
   type CartLine,
 } from "../cart/cart";
+import { ClearCartButton } from "../cart/ClearCartButton";
 import { HeldCartsPanel } from "../cart/HeldCartsPanel";
 import { holdCart, listHeldCarts, removeHeldCart, type HeldCart } from "../cart/held";
-import { groupByCategory, type SellableProduct, type SellableVariant } from "../catalog/catalog";
+import { type SellableProduct, type SellableVariant } from "../catalog/catalog";
 import { formatDateTime } from "../format";
 import { currencySymbol, formatMoney, parseMajorToMinor } from "../money";
 import { PayModal, type SaleTender } from "../checkout/PayModal";
 import { useI18n } from "../shell/i18n";
 import { Icons } from "../shell/icons";
+import { KeyShortcut } from "../shell/KeyShortcut";
+import { CatalogBrowser } from "../pos/CatalogBrowser";
 import { VariantDialog } from "../pos/VariantDialog";
 import { OfflineRunwayNote } from "./OfflineRunwayNote";
 
@@ -123,9 +126,8 @@ export function OfflineCashier({
     [inventory],
   );
   const [selectedProductId, setSelectedProductId] = useState<string | null>(null);
-  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
-  const [catalogQuery, setCatalogQuery] = useState("");
   const [cart, setCart] = useState<readonly CartLine[]>([]);
+  const payButtonRef = useRef<HTMLButtonElement>(null);
   const [heldCarts, setHeldCarts] = useState<readonly HeldCart[]>([]);
   const [heldCartsOpen, setHeldCartsOpen] = useState(false);
   const [customers, setCustomers] = useState<readonly OfflineCustomer[]>([]);
@@ -220,24 +222,14 @@ export function OfflineCashier({
     }
   }
 
-  // Offline search matches product name, brand, and any variant SKU/name — the same fields the
-  // connected register searches, so the floor's muscle memory carries over when the link drops.
-  const normalizedQuery = catalogQuery.trim().toLowerCase();
-  const filteredProducts =
-    normalizedQuery === ""
-      ? products
-      : products.filter(
-          (product) =>
-            product.productName.toLowerCase().includes(normalizedQuery) ||
-            (product.brandName?.toLowerCase().includes(normalizedQuery) ?? false) ||
-            product.variants.some(
-              (variant) =>
-                variant.sku.toLowerCase().includes(normalizedQuery) ||
-                (variant.variantName?.toLowerCase().includes(normalizedQuery) ?? false),
-            ),
-        );
-  const groupedCatalog = groupByCategory(filteredProducts, t("pos.uncategorized"));
-  const visibleCategory = groupedCatalog.find((group) => group.category === selectedCategory);
+  // Offline stock is the installed projection; a variant without a row counts as zero (not sellable).
+  const catalogStock = new Map(
+    products.flatMap((product) =>
+      product.variants.map(
+        (variant) => [variant.variantId, availability.get(variant.variantId) ?? 0] as const,
+      ),
+    ),
+  );
 
   function holdCurrentCart() {
     if (cart.length === 0 || submitting) return;
@@ -527,7 +519,7 @@ export function OfflineCashier({
     const governed = displayReceipt.lifecycle === "needs_reconciliation";
     const attention = governed || syncStatus.blocked > 0;
     return frame(
-      <main className="receipt-shell">
+      <div className="receipt-shell">
         <section className="receipt-card">
           <div className="success-mark" aria-hidden="true">
             ✓
@@ -655,12 +647,12 @@ export function OfflineCashier({
                 : t("cashier.newSale")}
           </button>
         </section>
-      </main>,
+      </div>,
     );
   }
 
   return frame(
-    <main className="pos-shell">
+    <div className="pos-shell">
       {needsAttention ? (
         <div className="attention-strip" role="status">
           {t("cashier.needAttention", {
@@ -674,92 +666,21 @@ export function OfflineCashier({
             <h2>{t("pos.products")}</h2>
             <span className="currency-pill">{currencySymbol(currency, locale)}</span>
           </div>
-          <div className="catalog-search">
-            <input
-              className="catalog-search__input"
-              aria-label={t("pos.searchAria")}
-              placeholder={t("pos.searchPlaceholder")}
-              value={catalogQuery}
-              disabled={products.length === 0}
-              autoFocus
-              onChange={(event) => setCatalogQuery(event.target.value)}
-            />
-            {catalogQuery !== "" ? (
-              <button
-                type="button"
-                className="catalog-search__clear"
-                aria-label={t("pos.clearSearch")}
-                onClick={() => setCatalogQuery("")}
-              >
-                ×
-              </button>
-            ) : null}
-          </div>
-          {products.length === 0 ? <p className="inline-state">{t("cashier.noCached")}</p> : null}
-          {products.length > 0 && filteredProducts.length === 0 ? (
-            <p className="inline-state">{t("pos.noMatch", { query: catalogQuery })}</p>
-          ) : null}
-          {normalizedQuery === "" && !visibleCategory ? (
-            <div className="product-grid" aria-label={t("pos.categories")}>
-              {groupedCatalog.map((group) => (
-                <button
-                  key={group.category}
-                  className="product-card category-card"
-                  onClick={() => setSelectedCategory(group.category)}
-                >
-                  <span>{group.category}</span>
-                  <small>{t("cashier.productCount", { count: group.products.length })}</small>
-                </button>
-              ))}
-            </div>
-          ) : (
-            <div className="catalog-group">
-              {normalizedQuery === "" || visibleCategory ? (
-                <div className="catalog-group__bar">
-                  {normalizedQuery === "" ? (
-                    <button
-                      type="button"
-                      className="back-chip"
-                      onClick={() => setSelectedCategory(null)}
-                    >
-                      <Icons.chevronBack />
-                      {t("pos.backToCategories")}
-                    </button>
-                  ) : null}
-                  {visibleCategory ? (
-                    <p className="catalog-group__heading">{visibleCategory.category}</p>
-                  ) : null}
-                </div>
-              ) : null}
-              <div className="product-grid">
-                {(normalizedQuery ? filteredProducts : (visibleCategory?.products ?? [])).map(
-                  (product) => {
-                    const total = product.variants.reduce(
-                      (sum, variant) => sum + (availability.get(variant.variantId) ?? 0),
-                      0,
-                    );
-                    return (
-                      <button
-                        key={product.productId}
-                        className={`product-card${total <= 0 ? " product-card--out" : ""}${selectedProductId === product.productId ? " product-card--selected" : ""}`}
-                        disabled={total <= 0}
-                        onClick={() => setSelectedProductId(product.productId)}
-                      >
-                        <span>{product.productName}</span>
-                        {product.brandName ? (
-                          <span className="product-card__brand">{product.brandName}</span>
-                        ) : null}
-                        <small>
-                          {t("cashier.variantCount", { count: product.variants.length })}
-                        </small>
-                        <small>{t("cashier.remainingCount", { count: total })}</small>
-                      </button>
-                    );
-                  },
-                )}
-              </div>
-            </div>
-          )}
+          <CatalogBrowser
+            products={products}
+            stockByVariant={catalogStock}
+            currency={currency}
+            disabled={products.length === 0}
+            captureKeys={!submitting && !payOpen && !paymentOpen}
+            selectedProductId={selectedProductId}
+            onSelectProduct={setSelectedProductId}
+            onScanMatch={(variant) => {
+              if (submitting) return;
+              addToCart(variant);
+              setSelectedProductId(null);
+            }}
+            emptyNotice={<p className="inline-state">{t("cashier.noCached")}</p>}
+          />
           {selectedProduct ? (
             <VariantDialog
               product={selectedProduct}
@@ -785,6 +706,15 @@ export function OfflineCashier({
               <span className="cart-head__count">{t("cashier.lines", { count: cart.length })}</span>
             </div>
             <div className="cart-head__actions">
+              <ClearCartButton
+                disabled={cart.length === 0 || submitting}
+                onClear={() => {
+                  if (submitting) return;
+                  setCart([]);
+                  setSelectedCustomerId(null);
+                  setError(null);
+                }}
+              />
               <button
                 className="chip-button"
                 disabled={cart.length === 0 || submitting}
@@ -1144,9 +1074,17 @@ export function OfflineCashier({
                 (approverName.trim() === "" || approverPassword === ""))
             }
             onClick={openPayment}
+            ref={payButtonRef}
           >
             {submitting ? t("cashier.savingSale") : t("cashier.takePayment")}
+            {!submitting ? (
+              <kbd className="key-hint" aria-hidden="true">
+                F12
+              </kbd>
+            ) : null}
           </button>
+          {/* F12 = Take payment; clicking a disabled button is a no-op, so its rules apply. */}
+          <KeyShortcut keyName="F12" onTrigger={() => payButtonRef.current?.click()} />
           {payOpen ? (
             <PayModal
               netMinor={amountDue}
@@ -1227,6 +1165,6 @@ export function OfflineCashier({
           ) : null}
         </aside>
       </div>
-    </main>,
+    </div>,
   );
 }

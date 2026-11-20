@@ -209,8 +209,8 @@ describe("OfflineIntentPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Goods received" }));
     // inventory.adjust is not enabled server-side, so it is not offered.
     expect(screen.queryByRole("button", { name: "Stock adjustment" })).toBeNull();
-    await screen.findByRole("option", { name: /Foundation Tee/ });
-    fireEvent.change(screen.getByLabelText("Item"), { target: { value: "variant-1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Item" }));
+    fireEvent.mouseDown(await screen.findByRole("option", { name: /Foundation Tee/ }));
     fireEvent.change(screen.getByLabelText("Quantity received"), { target: { value: "3" } });
     fireEvent.click(screen.getByRole("button", { name: "Save request" }));
     await screen.findByText(/server will decide automatically/);

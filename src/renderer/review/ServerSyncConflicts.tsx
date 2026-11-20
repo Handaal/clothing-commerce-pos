@@ -11,6 +11,7 @@ import type { OfflineSyncStatus } from "../../shared/offline";
 import { formatDateTime } from "../format";
 import { formatMoney } from "../money";
 import { useI18n } from "../shell/i18n";
+import { Select } from "../shell/Select";
 
 const KINDS: ReadonlyArray<PosSyncConflictKind | "all"> = [
   "all",
@@ -140,16 +141,12 @@ export function ServerSyncConflicts({
       <div className="review-filters">
         <label>
           {t("conflicts.filterKind")}
-          <select
+          <Select<PosSyncConflictKind | "all">
+            ariaLabel={t("conflicts.filterKind")}
             value={kind}
-            onChange={(event) => setKind(event.target.value as PosSyncConflictKind | "all")}
-          >
-            {KINDS.map((value) => (
-              <option key={value} value={value}>
-                {t(`conflicts.kind.${value}`)}
-              </option>
-            ))}
-          </select>
+            onChange={setKind}
+            options={KINDS.map((value) => ({ value, label: t(`conflicts.kind.${value}`) }))}
+          />
         </label>
         <button
           type="button"

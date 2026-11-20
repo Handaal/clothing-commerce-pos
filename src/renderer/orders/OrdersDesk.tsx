@@ -10,6 +10,7 @@ import { classifyCommerceError } from "../commerce/errors";
 import { formatMoney } from "../money";
 import { formatDateTime } from "../format";
 import { DateRangeFilter } from "../shell/DateRangeFilter";
+import { Select } from "../shell/Select";
 import { useI18n, type TVars } from "../shell/i18n";
 import { SkeletonLines } from "../shell/Skeleton";
 
@@ -276,19 +277,21 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
           />
           <label>
             {t("orders.view")}
-            <select
+            <Select<typeof orderView>
+              ariaLabel={t("orders.view")}
               value={orderView}
-              onChange={(event) => {
-                setOrderView(event.target.value as typeof orderView);
+              onChange={(next) => {
+                setOrderView(next);
                 setSelectedId(null);
                 setList(null);
               }}
-            >
-              <option value="all">{t("orders.view.all")}</option>
-              <option value="pos">{t("orders.view.pos")}</option>
-              <option value="online">{t("orders.view.online")}</option>
-              <option value="fulfillment">{t("orders.view.fulfillment")}</option>
-            </select>
+              options={[
+                { value: "all", label: t("orders.view.all") },
+                { value: "pos", label: t("orders.view.pos") },
+                { value: "online", label: t("orders.view.online") },
+                { value: "fulfillment", label: t("orders.view.fulfillment") },
+              ]}
+            />
           </label>
           {hasDateFilter ? (
             <button
