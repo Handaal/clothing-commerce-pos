@@ -4699,3 +4699,78 @@ h3,
   width: 5rem;
   text-align: end;
 }
+
+/* ---------- Card figures that shrink to fit ----------
+   Figures inside cards stay on one line; shell/autoFitText.ts scales the font down until the value
+   fits its card (to 55% of its designed size), and the ellipsis is the last resort past that floor.
+   Keep this selector list in step with FIT_TEXT_SELECTOR there. */
+[data-fit],
+.staff-stat > strong,
+.voucher-stat > strong,
+.local-report__figure-value,
+.supplier-money-summary strong,
+.total-row > strong,
+.pay-due > strong,
+.pay-remaining > strong,
+.pay-change > strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+/* Grid/flex cells must be allowed to be narrower than their content, or the card grows instead. */
+.staff-stats > *,
+.voucher-stats > *,
+.local-report__grid > *,
+.supplier-money-summary > *,
+.order-detail__grid > *,
+.website-cards > *,
+.product-grid > * {
+  min-width: 0;
+}
+/* Fixed three-up stat rows drop to fewer columns in a narrow panel rather than crushing a money value. */
+.voucher-stats,
+.supplier-money-summary {
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+}
+/* Label + value rows (cart totals, pay modal): the label wraps, the value keeps its line and shrinks. */
+.total-row,
+.pay-due,
+.pay-remaining,
+.pay-change {
+  gap: 0.75rem;
+}
+.total-row > span,
+.pay-due > span,
+.pay-remaining > span,
+.pay-change > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.total-row > strong,
+.pay-due > strong,
+.pay-remaining > strong,
+.pay-change > strong {
+  flex: 0 1 auto;
+  max-width: 75%;
+}
+/* Key/value lists in order cards: long emails, IDs and addresses wrap inside the card. */
+.order-kv dt {
+  flex-shrink: 0;
+}
+.order-kv dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Long single-word product names and card text wrap instead of spilling past the card edge. */
+.product-card span,
+.product-card small,
+.website-card > * {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

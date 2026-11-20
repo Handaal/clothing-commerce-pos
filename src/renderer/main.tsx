@@ -2,6 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 
 import { App } from "./App";
+import { installAutoFitText } from "./shell/autoFitText";
 import { I18nProvider } from "./shell/i18n";
 import { ThemeProvider } from "./shell/theme";
 import { ToastProvider } from "./shell/Toast";
@@ -27,3 +28,6 @@ createRoot(root).render(
     </ThemeProvider>
   </React.StrictMode>,
 );
+
+// Card figures (stat tiles, totals) shrink their font to fit their card instead of overflowing it.
+installAutoFitText(root);
