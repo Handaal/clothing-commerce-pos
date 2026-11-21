@@ -253,7 +253,7 @@ function HomePageEditor({
 
   return (
     <>
-      <p className="notice">{t("website.home.intro")}</p>
+      <p className="notice website-desk-intro">{t("website.home.intro")}</p>
 
       <section className="staff-card">
         <div className="staff-card__head">

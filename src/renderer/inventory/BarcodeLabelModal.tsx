@@ -34,11 +34,11 @@ export function BarcodeLabelModal({
         ref={dialogRef}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="variant-dialog__head">
+        <div className="barcode-label-modal__head">
           <h3>{t("inventory.barcodeLabel")}</h3>
-          <button className="button button--quiet" onClick={onClose}>
-            {t("cashier.closeVariants")}
-          </button>
+          <p className="barcode-label-modal__sub">
+            {name} · {sku}
+          </p>
         </div>
         <label className="field barcode-label-quantity">
           {t("inventory.labelQuantity")}
@@ -51,6 +51,7 @@ export function BarcodeLabelModal({
             onChange={(event) => setQuantity(Number(event.target.value))}
           />
         </label>
+        <p className="barcode-label-modal__caption">{t("inventory.labelPreview")}</p>
         <div className="barcode-print-sheet">
           {Array.from({ length: count }, (_, index) => (
             <section className="barcode-label" key={index}>
@@ -75,9 +76,14 @@ export function BarcodeLabelModal({
             </section>
           ))}
         </div>
-        <button className="button" onClick={() => window.print()}>
-          {t("inventory.printLabels")}
-        </button>
+        <div className="barcode-label-modal__actions">
+          <button type="button" className="button button--quiet" onClick={onClose}>
+            {t("inventory.labelClose")}
+          </button>
+          <button type="button" className="button" onClick={() => window.print()}>
+            {t("inventory.printLabels")}
+          </button>
+        </div>
       </div>
     </div>
   );

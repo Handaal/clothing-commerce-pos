@@ -96,7 +96,9 @@ export function PayModal({
   onConfirm: (tenders: SaleTender[], customer?: SaleCustomer, amountPaidMinor?: number) => void;
   onCancel: () => void;
   // Optional phone lookup; returns the matched customer's name or null. Absent ⇒ no live matching.
-  lookupCustomer?: (phone: string) => Promise<{ name: string } | null>;
+  // outstandingMinor (when known) is the customer's existing unpaid installment balance, shown so the
+  // cashier sees a returning customer's debt the moment their phone matches.
+  lookupCustomer?: (phone: string) => Promise<{ name: string; outstandingMinor?: number } | null>;
   // Optional typeahead over existing customers, matching the typed name OR phone. Absent ⇒ no dropdown.
   // Selecting a suggestion fills both contact fields; typing a new name/phone still creates a profile.
   searchCustomers?: (term: string) => Promise<ReadonlyArray<CustomerMatch>>;
@@ -122,6 +124,7 @@ export function PayModal({
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [matchedName, setMatchedName] = useState<string | null>(null);
+  const [matchedOutstanding, setMatchedOutstanding] = useState(0);
   const [lookingUp, setLookingUp] = useState(false);
   // Typeahead over the customer book. `customerQuery` holds the last-typed contact fragment (name or
   // phone); picking a suggestion fills both fields and clears the query so the list collapses.
@@ -158,6 +161,7 @@ export function PayModal({
   useEffect(() => {
     if (!lookupCustomerRef.current || !phoneValid) {
       setMatchedName(null);
+      setMatchedOutstanding(0);
       setLookingUp(false);
       return;
     }
@@ -168,10 +172,15 @@ export function PayModal({
         .then((match) => {
           if (!active) return;
           setMatchedName(match?.name ?? null);
+          setMatchedOutstanding(match?.outstandingMinor ?? 0);
           if (match?.name)
             setCustomerName((current) => (current.trim() === "" ? match.name : current));
         })
-        .catch(() => active && setMatchedName(null))
+        .catch(() => {
+          if (!active) return;
+          setMatchedName(null);
+          setMatchedOutstanding(0);
+        })
         .finally(() => active && setLookingUp(false));
     }, 400);
     return () => {
@@ -373,17 +382,25 @@ export function PayModal({
         ) : null}
         {cashIndex >= 0 && cashAmountMinor > 0 ? (
           <div className="pay-quick-cash" role="group" aria-label={t("pay.quickCash")}>
-            {quickCashAmounts(cashAmountMinor).map((amount, index) => (
-              <button
-                key={amount}
-                type="button"
-                className={`pay-quick-cash__button${cashReceivedMinor === amount ? " pay-quick-cash__button--active" : ""}`}
-                disabled={submitting}
-                onClick={() => setCashReceived(minorToMajorInput(amount))}
-              >
-                {index === 0 ? t("pay.exactCash") : formatMoney(amount, currency, locale)}
-              </button>
-            ))}
+            {/* Round-ups first, then "Exact" last as the full-width button — exact cash is the most
+                common tender, so it gets the biggest target. */}
+            {(() => {
+              const [exact, ...roundUps] = quickCashAmounts(cashAmountMinor);
+              return [...roundUps, exact].map((amount) => {
+                const isExact = amount === exact;
+                return (
+                  <button
+                    key={amount}
+                    type="button"
+                    className={`pay-quick-cash__button${isExact ? " pay-quick-cash__button--exact" : ""}${cashReceivedMinor === amount ? " pay-quick-cash__button--active" : ""}`}
+                    disabled={submitting}
+                    onClick={() => setCashReceived(minorToMajorInput(amount))}
+                  >
+                    {isExact ? t("pay.exactCash") : formatMoney(amount, currency, locale)}
+                  </button>
+                );
+              });
+            })()}
           </div>
         ) : null}
 
@@ -408,7 +425,16 @@ export function PayModal({
                     placeholder="0.00"
                     value={deposit}
                     disabled={submitting}
-                    onChange={(event) => setDeposit(event.target.value)}
+                    onChange={(event) => {
+                      const next = event.target.value;
+                      setDeposit(next);
+                      // With a single tender the deposit IS that tender's amount — mirror it so the
+                      // cashier doesn't have to type the same figure twice (otherwise "Remaining"
+                      // shows the whole deposit and Complete sale stays disabled). Splits stay manual.
+                      setRows((current) =>
+                        current.length === 1 ? [{ ...current[0], amount: next }] : current,
+                      );
+                    }}
                   />
                 </label>
                 <div className="pay-installment__balance">
@@ -490,7 +516,17 @@ export function PayModal({
               <span className="pay-customer__status">{t("pay.checking")}</span>
             ) : matchedName ? (
               <span className="pay-customer__status pay-customer__status--match">
-                {t("pay.existing", { name: matchedName })}
+                <span>
+                  {t("pay.existing", { name: matchedName })}
+                  {matchedOutstanding > 0 ? (
+                    <span className="pay-customer__owes">
+                      {" · "}
+                      {t("pay.existingOwes", {
+                        amount: formatMoney(matchedOutstanding, currency, locale),
+                      })}
+                    </span>
+                  ) : null}
+                </span>
                 <button
                   type="button"
                   className="button button--quiet"

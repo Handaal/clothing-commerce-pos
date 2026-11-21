@@ -15,6 +15,7 @@ import { useToast } from "../shell/Toast";
 import { useModalA11y } from "../shell/useModalA11y";
 import { MAX_PAGES } from "./access";
 import { describeWebsiteError } from "./errors";
+import { PanelHead } from "./PanelHead";
 
 export type CheckoutClient = Pick<
   TenantCommerceClient,
@@ -139,8 +140,7 @@ export function CheckoutPanel({
   return (
     <>
       <section className="staff-card">
-        <div className="staff-card__head">
-          <h2>{t("website.checkout.title")}</h2>
+        <PanelHead title={t("website.checkout.title")} intro={t("website.checkout.intro")}>
           {canManage && unconfigured.length > 0 ? (
             <button
               className="button"
@@ -157,10 +157,9 @@ export function CheckoutPanel({
               {t("website.checkout.add")}
             </button>
           ) : null}
-        </div>
-        <p className="muted website-card-intro">{t("website.checkout.intro")}</p>
+        </PanelHead>
         {!canManage ? (
-          <p className="notice website-card-intro" role="status">
+          <p className="notice website-inline-notice" role="status">
             {t("website.readOnly")}
           </p>
         ) : null}

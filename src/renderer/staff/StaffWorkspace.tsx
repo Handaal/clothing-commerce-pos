@@ -22,24 +22,28 @@ export function StaffWorkspace({
   const [tab, setTab] = useState<"attendance" | "accounts">("attendance");
   return (
     <>
-      <nav className="report-tabs" aria-label={t("nav.staff")}>
-        <button
-          className={`report-tab${tab === "attendance" ? " report-tab--active" : ""}`}
-          onClick={() => setTab("attendance")}
-        >
-          {t("staff.workspace.attendance")}
-        </button>
-        <button
-          className={`report-tab${tab === "accounts" ? " report-tab--active" : ""}`}
-          onClick={() => setTab("accounts")}
-        >
-          {t("staff.workspace.accounts")}
-        </button>
-      </nav>
+      <div className="desk-preamble">
+        <nav className="report-tabs" aria-label={t("nav.staff")}>
+          <button
+            className={`report-tab${tab === "attendance" ? " report-tab--active" : ""}`}
+            onClick={() => setTab("attendance")}
+          >
+            {t("staff.workspace.attendance")}
+          </button>
+          <button
+            className={`report-tab${tab === "accounts" ? " report-tab--active" : ""}`}
+            onClick={() => setTab("accounts")}
+          >
+            {t("staff.workspace.accounts")}
+          </button>
+        </nav>
+      </div>
       {tab === "attendance" ? (
         <StaffAttendance client={client} currency={currency} branchId={branchId} />
       ) : (
-        <PosUsersManager client={client} rosterBridge={rosterBridge} operator={operator} />
+        <main className="staff-shell">
+          <PosUsersManager client={client} rosterBridge={rosterBridge} operator={operator} />
+        </main>
       )}
     </>
   );

@@ -8,6 +8,7 @@ import { CheckoutPanel } from "./CheckoutPanel";
 import { describeWebsiteError } from "./errors";
 import { HomePagePanel } from "./HomePagePanel";
 import { OnlineOrdersPanel } from "./OnlineOrdersPanel";
+import { PanelHead } from "./PanelHead";
 import { PromotionsPanel } from "./PromotionsPanel";
 import { PublicationPanel } from "./PublicationPanel";
 import { SalesPanel } from "./SalesPanel";
@@ -198,10 +199,7 @@ function Overview({
   return (
     <>
       <section className="staff-card">
-        <div className="staff-card__head">
-          <h2>{t("website.overview.title")}</h2>
-        </div>
-        <p className="muted website-card-intro">{t("website.overview.body")}</p>
+        <PanelHead title={t("website.overview.title")} intro={t("website.overview.body")} />
         <div className="website-cards">
           {tabs
             .filter((item) => item.id !== "overview")
@@ -270,9 +268,7 @@ function CheckoutSummary({ client }: { client: WebsiteClient }) {
 
   return (
     <section className="staff-card">
-      <div className="staff-card__head">
-        <h2>{t("website.overview.checkout")}</h2>
-      </div>
+      <PanelHead title={t("website.overview.checkout")} />
       {state.status === "loading" ? (
         <SkeletonLines lines={2} label={t("website.checkout.loading")} />
       ) : state.status === "error" ? (

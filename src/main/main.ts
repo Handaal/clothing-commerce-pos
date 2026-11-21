@@ -14,6 +14,7 @@ import { isAllowedRendererNavigation, PRODUCTION_RENDERER_ORIGIN } from "./rende
 import { startRendererServer } from "./renderer-server";
 import { resolveMainApiOrigin } from "./runtime-config";
 import { secureWebPreferences } from "./security";
+import { registerViewIpc } from "./view-ipc";
 
 function createWindow(rendererUrl: string): void {
   const window = new BrowserWindow({
@@ -92,6 +93,7 @@ if (!hasSingleInstanceLock) {
       registerSalesIpc(() => offlineRuntime!.getSales(), rendererUrl);
       registerActivityIpc(() => offlineRuntime!.getActivityStore(), rendererUrl);
       registerPosAuthIpc(() => offlineRuntime!.getUserStore(), rendererUrl);
+      registerViewIpc(rendererUrl);
       // POS-native (pos_pin) connected session: username + PIN → server access token, cached OS-encrypted
       // in the main process. This is the connected floor login (ADR-043: the POS has no Clerk).
       posSessionManager = new PosSessionManager(

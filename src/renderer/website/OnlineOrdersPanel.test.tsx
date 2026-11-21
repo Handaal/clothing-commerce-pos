@@ -373,3 +373,37 @@ describe("WebsiteDesk online orders tab", () => {
     expect(within(dialog).queryByTestId("website-order-cancel")).toBeNull();
   });
 });
+
+describe("online orders list fields (SDK 0.51)", () => {
+  it("reads only open orders' detail when the list carries fulfilment status and contact", async () => {
+    const client = makeClient({
+      listOrders: vi.fn().mockResolvedValue({
+        items: [
+          {
+            ...summary(OPEN, "W-1001", "placed", "2026-11-18T09:00:00.000Z"),
+            fulfillmentStatus: "unfulfilled",
+            customerName: "Mona Adel",
+            customerPhone: "+201000000001",
+            deliveryCity: "Giza",
+          },
+          {
+            ...summary(DONE, "W-1000", "placed", "2026-11-17T09:00:00.000Z"),
+            fulfillmentStatus: "fulfilled",
+            customerName: "Karim Nabil",
+            customerPhone: "+201000000002",
+            deliveryCity: "Alexandria",
+          },
+        ],
+        pageInfo: { hasMore: false, nextCursor: null },
+      }),
+    });
+    wrap(<OnlineOrdersPanel client={client as never} canFulfill canCancel />);
+    await screen.findByTestId(`website-order-${OPEN}`);
+    await waitFor(() => expect(client.getOrder).toHaveBeenCalledWith(OPEN));
+    expect(client.getOrder).not.toHaveBeenCalledWith(DONE);
+    fireEvent.click(screen.getByTestId("website-orders-view-fulfilled"));
+    const row = await screen.findByTestId(`website-order-${DONE}`);
+    expect(within(row).getByText("Karim Nabil")).toBeTruthy();
+    expect(within(row).getByText("Alexandria")).toBeTruthy();
+  });
+});

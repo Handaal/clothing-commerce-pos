@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import type { TenantCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../shell/i18n";
@@ -23,20 +23,17 @@ const makeOrder = (
 });
 
 describe("OrdersDesk channel filter", () => {
-  it("shows only placed online orders with work left in the fulfillment view", async () => {
+  it("offers All / POS / Online only (fulfillment lives in Website Management) and filters by channel", async () => {
     const orders = [
       makeOrder("11111111-1111-4111-8111-111111111101", "POS-1", "pos", "placed"),
       makeOrder("11111111-1111-4111-8111-111111111102", "WEB-1", "online", "placed"),
-      makeOrder("11111111-1111-4111-8111-111111111103", "WEB-2", "online", "placed"),
-      makeOrder("11111111-1111-4111-8111-111111111104", "WEB-3", "online", "cancelled"),
+      makeOrder("11111111-1111-4111-8111-111111111103", "WEB-2", "online", "cancelled"),
     ];
     const listOrders = vi.fn(async ({ channel }: { channel?: string } = {}) => ({
       items: orders.filter((item) => !channel || item.channel === channel),
       pageInfo: { hasMore: false, nextCursor: null },
     }));
-    const getOrder = vi.fn(async (id: string) => ({
-      fulfillmentProgress: { status: id.endsWith("102") ? "unfulfilled" : "fulfilled" },
-    }));
+    const getOrder = vi.fn();
     const client = { listOrders, getOrder } as unknown as TenantCommerceClient;
     render(
       <I18nProvider>
@@ -44,12 +41,13 @@ describe("OrdersDesk channel filter", () => {
       </I18nProvider>,
     );
     fireEvent.click(screen.getByRole("button", { name: "Show" }));
-    fireEvent.mouseDown(screen.getByRole("option", { name: "Needs fulfillment" }));
-    await waitFor(() => expect(getOrder).toHaveBeenCalledTimes(2));
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toHaveLength(3);
+    expect(screen.queryByRole("option", { name: /fulfil/i })).toBeNull();
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Online" }));
     expect(await screen.findByText(/WEB-1/)).toBeTruthy();
-    expect(screen.queryByText(/WEB-2/)).toBeNull();
-    expect(screen.queryByText(/WEB-3/)).toBeNull();
+    expect(screen.getByText(/WEB-2/)).toBeTruthy();
     expect(screen.queryByText(/POS-1/)).toBeNull();
     expect(listOrders).toHaveBeenCalledWith(expect.objectContaining({ channel: "online" }));
+    expect(getOrder).not.toHaveBeenCalled();
   });
 });

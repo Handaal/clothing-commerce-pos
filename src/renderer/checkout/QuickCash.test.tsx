@@ -30,8 +30,9 @@ describe("quick cash amounts", () => {
     );
     const group = screen.getByRole("group", { name: "Quick cash amounts" });
     const buttons = group.querySelectorAll("button");
-    expect(buttons[0].textContent).toBe("Exact");
-    fireEvent.click(buttons[2]); // 500.00
+    // Round-ups first; "Exact" is last (the full-width button).
+    expect(buttons[buttons.length - 1].textContent).toBe("Exact");
+    fireEvent.click(buttons[1]); // 500.00
     expect(screen.getByText(/63\.00/)).toBeTruthy(); // change 500 − 437
   });
 });

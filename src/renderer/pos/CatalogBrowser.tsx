@@ -233,7 +233,9 @@ export function CatalogBrowser({
                   ) : null}
                   <small>
                     {product.styleCode ??
-                      t("cashier.variantCount", { count: product.variants.length })}
+                      (product.variants.length === 1
+                        ? t("cashier.variantCountOne")
+                        : t("cashier.variantCount", { count: product.variants.length }))}
                   </small>
                   <div className="product-card__foot">
                     <strong className="product-card__price">

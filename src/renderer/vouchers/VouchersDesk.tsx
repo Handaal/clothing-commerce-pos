@@ -59,6 +59,7 @@ export function VouchersDesk({
   const toast = useToast();
   const [form, setForm] = useState<FormState | null>(null);
   const [detail, setDetail] = useState<PromotionDetail | null>(null);
+  const [deleting, setDeleting] = useState<PromotionDetail | null>(null);
 
   const sym = currencySymbol(currency, locale);
 
@@ -219,6 +220,17 @@ export function VouchersDesk({
         : t("vouchers.ok.activated", { code: voucherCode(v) ?? "" }),
     ).catch(() => undefined);
 
+  // Only inactive vouchers can be deleted from here. The server deletes a never-used voucher outright
+  // and archives one with sales history (codes disabled, hidden from the list) so past orders stay intact.
+  const confirmDelete = () => {
+    if (!deleting) return;
+    const code = voucherCode(deleting) ?? "";
+    void run(() => client.deletePromotion(deleting.id), t("vouchers.ok.deleted", { code })).then(
+      () => setDeleting(null),
+      () => undefined,
+    );
+  };
+
   const describe = (v: PromotionDetail) =>
     v.benefitType === "percentage"
       ? `${(v.benefitPercentBp ?? 0) / 100}%`
@@ -317,6 +329,15 @@ export function VouchersDesk({
                   <button className="link" disabled={busy} onClick={() => toggle(v)}>
                     {v.status === "active" ? t("vouchers.deactivate") : t("vouchers.activate")}
                   </button>
+                  {v.status !== "active" ? (
+                    <button
+                      className="link link--danger"
+                      disabled={busy}
+                      onClick={() => setDeleting(v)}
+                    >
+                      {t("vouchers.delete")}
+                    </button>
+                  ) : null}
                 </div>
               </article>
             );
@@ -411,6 +432,19 @@ export function VouchersDesk({
         </Modal>
       ) : null}
 
+      {deleting ? (
+        <Modal
+          title={t("vouchers.deleteTitle", { code: voucherCode(deleting) ?? "" })}
+          onClose={() => setDeleting(null)}
+          onSave={confirmDelete}
+          busy={busy}
+          saveLabel={t("vouchers.delete")}
+          danger
+        >
+          <p>{t("vouchers.deleteBody")}</p>
+        </Modal>
+      ) : null}
+
       {detail ? (
         <Modal
           title={t("vouchers.detailsTitle", { code: voucherCode(detail) ?? "" })}
@@ -466,7 +500,6 @@ export function VouchersDesk({
               <dd>{detail.channel ?? t("vouchers.allChannels")}</dd>
             </div>
           </dl>
-          <p className="muted">{t("vouchers.historyNote")}</p>
         </Modal>
       ) : null}
     </main>
@@ -480,6 +513,7 @@ function Modal({
   onSave,
   busy,
   saveLabel,
+  danger = false,
 }: {
   title: string;
   children: ReactNode;
@@ -487,6 +521,7 @@ function Modal({
   onSave: () => void;
   busy: boolean;
   saveLabel: string;
+  danger?: boolean;
 }) {
   const { t } = useI18n();
   const dialogRef = useModalA11y<HTMLDivElement>(onClose);
@@ -499,7 +534,11 @@ function Modal({
           <button className="button button--quiet" onClick={onClose} disabled={busy}>
             {t("pay.cancel")}
           </button>
-          <button className="button" onClick={onSave} disabled={busy}>
+          <button
+            className={danger ? "button button--danger" : "button"}
+            onClick={onSave}
+            disabled={busy}
+          >
             {saveLabel}
           </button>
         </div>

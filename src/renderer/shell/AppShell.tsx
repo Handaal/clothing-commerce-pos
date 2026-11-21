@@ -16,6 +16,8 @@ interface AppShellProps {
   headerStart?: ReactNode;
   /** Section-specific actions shown before the theme/language/user controls. */
   headerActions?: ReactNode;
+  /** Work waiting in a section (e.g. website orders to ship), shown as a count on its nav item. */
+  badges?: Partial<Record<SectionId, number>>;
   children: ReactNode;
 }
 
@@ -28,6 +30,7 @@ export function AppShell({
   signOutDisabled = false,
   headerStart,
   headerActions,
+  badges,
   children,
 }: AppShellProps) {
   const t = useT();
@@ -59,18 +62,27 @@ export function AppShell({
                   const Icon = Icons[section.icon];
                   const isActive = section.id === active;
                   const label = t(section.labelKey);
+                  const badge = badges?.[section.id] ?? 0;
+                  const badgeLabel =
+                    badge > 0 ? t("nav.waitingCount", { label, count: badge }) : label;
                   return (
                     <button
                       key={section.id}
                       type="button"
                       className={`shell-nav__item${isActive ? " shell-nav__item--active" : ""}`}
                       aria-current={isActive ? "page" : undefined}
+                      aria-label={badgeLabel}
                       // The sidebar collapses to icons on smaller tills; the tooltip keeps the name.
-                      title={label}
+                      title={badgeLabel}
                       onClick={() => onNavigate(section.id)}
                     >
                       <Icon />
                       <span>{label}</span>
+                      {badge > 0 ? (
+                        <span className="shell-nav__badge" aria-hidden="true">
+                          {badge > 99 ? "99+" : badge}
+                        </span>
+                      ) : null}
                     </button>
                   );
                 })}

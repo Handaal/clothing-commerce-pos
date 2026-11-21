@@ -1,5 +1,7 @@
 import type { ProductDetailResponse, TenantCommerceClient } from "@shifted/clothing-commerce-sdk";
 
+import { sortBySize } from "./variant-order";
+
 export interface SellableVariant {
   variantId: string;
   productId: string;
@@ -95,26 +97,57 @@ function sellableProduct(
     brandId: detail.product.brandId,
     brandName,
     categories,
-    variants,
+    // S, M, L, XL — not creation order — wherever the register lists sizes.
+    variants: sortBySize(variants, (variant) => variant.variantName ?? variant.sku),
   };
 }
 
-// Build the two classification lookups the register needs: brandId -> display name, and
-// productId -> category (collection) names. Both are small tenant-wide reads; failures degrade
-// gracefully to empty maps so a missing brand/collection never blocks selling.
-async function loadClassification(client: TenantCommerceClient): Promise<{
+// Build the classification lookups the register needs. Products are grouped by their catalogue
+// CATEGORIES (T-Shirts, Jeans… — the same tree the Storefront menu and Admin Mobile use) and labelled /
+// searched by their VENDOR ("Brand": Zara, H&M…). Tenants that haven't set up categories or vendors
+// keep the older behaviour: collections as categories and the tenant brand name. Every read degrades
+// to empty so a missing lookup never blocks selling.
+interface Classifier {
   brands: Map<string, string>;
-  categoriesByProduct: Map<string, string[]>;
-}> {
-  const brands = new Map<string, string>();
-  const categoriesByProduct = new Map<string, string[]>();
+  vendors: Map<string, string>;
+  /** Category id -> { name, parentId } for active categories. */
+  categories: Map<string, { name: string; parentId: string | null }>;
+  collectionsByProduct: Map<string, string[]>;
+}
+
+async function loadClassification(client: TenantCommerceClient): Promise<Classifier> {
+  const result: Classifier = {
+    brands: new Map(),
+    vendors: new Map(),
+    categories: new Map(),
+    collectionsByProduct: new Map(),
+  };
   // Wrap each call in Promise.resolve().then(...) so even a synchronous throw (e.g. a client stub
   // without these methods) becomes a caught rejection and degrades to empty classification.
   await Promise.all([
     Promise.resolve()
       .then(() => client.listBrands({ status: "active", limit: 100 }))
       .then((response) => {
-        for (const brand of response.items) brands.set(brand.id, brand.displayName);
+        for (const brand of response.items) result.brands.set(brand.id, brand.displayName);
+      })
+      .catch(() => {}),
+    Promise.resolve()
+      .then(() => client.listVendors())
+      .then((response) => {
+        for (const vendor of response.vendors) result.vendors.set(vendor.id, vendor.name);
+      })
+      .catch(() => {}),
+    Promise.resolve()
+      .then(() => client.listCategories())
+      .then((response) => {
+        for (const category of response.categories) {
+          if (category.status === "active") {
+            result.categories.set(category.id, {
+              name: category.name,
+              parentId: category.parentId,
+            });
+          }
+        }
       })
       .catch(() => {}),
     Promise.resolve()
@@ -124,18 +157,46 @@ async function loadClassification(client: TenantCommerceClient): Promise<{
         const details = await Promise.all(visible.map((c) => client.getCollection(c.id)));
         visible.forEach((collection, index) => {
           for (const productId of details[index].productIds) {
-            categoriesByProduct.set(productId, [
-              ...(categoriesByProduct.get(productId) ?? []),
+            result.collectionsByProduct.set(productId, [
+              ...(result.collectionsByProduct.get(productId) ?? []),
               collection.name,
             ]);
           }
         });
       })
-      // Categories degrade gracefully to "uncategorized", but log so a silent collections/getCollection
-      // failure (permission, contract drift) is diagnosable rather than invisibly hiding every category.
-      .catch((error) => console.error("[catalog] category classification failed", error)),
+      // Collections are only the fallback grouping; log so a silent failure stays diagnosable.
+      .catch((error) => console.error("[catalog] collection classification failed", error)),
   ]);
-  return { brands, categoriesByProduct };
+  return result;
+}
+
+/**
+ * The register's grouping for one product: its most specific active categories (a product filed under
+ * both "Men" and "T-Shirts" shows under "T-Shirts" only), or — when the tenant has no categories at
+ * all — its collections. Brand label: the vendor when set, else the tenant brand.
+ */
+export function classifyProduct(
+  detail: Pick<ProductDetailResponse, "product" | "categoryIds" | "vendorId">,
+  classifier: Classifier,
+): Classification {
+  const assigned = (detail.categoryIds ?? []).filter((id) => classifier.categories.has(id));
+  const ancestors = new Set<string>();
+  for (const id of assigned) {
+    let parent = classifier.categories.get(id)?.parentId ?? null;
+    for (let depth = 0; parent && depth < 10; depth += 1) {
+      ancestors.add(parent);
+      parent = classifier.categories.get(parent)?.parentId ?? null;
+    }
+  }
+  const categories =
+    classifier.categories.size > 0
+      ? assigned.filter((id) => !ancestors.has(id)).map((id) => classifier.categories.get(id)!.name)
+      : (classifier.collectionsByProduct.get(detail.product.id) ?? []);
+  const vendorName = detail.vendorId ? classifier.vendors.get(detail.vendorId) : undefined;
+  return {
+    brandName: vendorName ?? classifier.brands.get(detail.product.brandId) ?? null,
+    categories: [...new Set(categories)],
+  };
 }
 
 export async function loadSellableCatalog(
@@ -161,10 +222,8 @@ export async function loadSellableCatalog(
     Promise.all(productIds.map((productId) => client.getProduct(productId))),
     loadClassification(client),
   ]);
-  const classify = (detail: ProductDetailResponse): Classification => ({
-    brandName: classification.brands.get(detail.product.brandId) ?? null,
-    categories: classification.categoriesByProduct.get(detail.product.id) ?? [],
-  });
+  const classify = (detail: ProductDetailResponse): Classification =>
+    classifyProduct(detail, classification);
   return details.flatMap((detail) => {
     const product = sellableProduct(detail, currency, classify);
     return product && product.variants.length > 0 ? [product] : [];

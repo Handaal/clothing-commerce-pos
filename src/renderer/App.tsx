@@ -64,6 +64,7 @@ import { SuppliersDesk } from "./suppliers/SuppliersDesk";
 import { ReportsDesk } from "./reports/ReportsDesk";
 import { SettingsDesk } from "./settings/SettingsDesk";
 import { WebsiteDesk } from "./website/WebsiteDesk";
+import { useOnlineOrdersToFulfil } from "./website/useOnlineOrdersToFulfil";
 import { OfflineDeskBanner } from "./offline/OfflineDeskBanner";
 import { DESK_OFFLINE_PROFILES } from "./offline/desk-capabilities";
 import { ReviewCenter } from "./review/ReviewCenter";
@@ -376,6 +377,11 @@ export function PosApplication({
   const tenantClient = useMemo<TenantCommerceClient | null>(
     () => (tenantId && client ? client.withTenant(tenantId) : null),
     [client, tenantId],
+  );
+  // Website orders waiting to ship, as a sidebar badge (polled once a minute while online).
+  const onlineToFulfil = useOnlineOrdersToFulfil(
+    tenantClient,
+    syncStatus.networkOnline && visibleSections.some((item) => item.id === "website"),
   );
   const register = registers.find((item) => item.registerId === registerId) ?? null;
   const clientGross = cartTotal(cart);
@@ -1748,8 +1754,9 @@ export function PosApplication({
       signOutDisabled={locked || returnLocked}
       headerStart={section === "pos" ? posHeaderStart : undefined}
       headerActions={section === "pos" ? posHeaderActions : undefined}
+      badges={onlineToFulfil ? { website: onlineToFulfil } : undefined}
     >
-      {deskBanner}
+      {deskBanner ? <div className="desk-preamble">{deskBanner}</div> : null}
       {section === "pos" ? (
         posContent
       ) : section === "orders" ? (
@@ -1772,9 +1779,11 @@ export function PosApplication({
             onOpenVouchers={capabilities.vouchers ? () => handleNavigate("vouchers") : undefined}
           />
         ) : (
-          <div className="notice" role="status" data-testid="website-offline-disabled">
-            {t("desk.websiteOffline")}
-          </div>
+          <main className="staff-shell">
+            <div className="notice" role="status" data-testid="website-offline-disabled">
+              {t("desk.websiteOffline")}
+            </div>
+          </main>
         )
       ) : section === "staff" ? (
         <StaffWorkspace
@@ -1789,16 +1798,18 @@ export function PosApplication({
         syncStatus.networkOnline ? (
           <SuppliersDesk client={tenantClient} />
         ) : (
-          <div className="notice" role="status" data-testid="suppliers-offline-disabled">
-            {t("desk.suppliersOffline")}
-          </div>
+          <main className="staff-shell">
+            <div className="notice" role="status" data-testid="suppliers-offline-disabled">
+              {t("desk.suppliersOffline")}
+            </div>
+          </main>
         )
       ) : section === "reports" ? (
         <ReportsDesk client={tenantClient} />
       ) : section === "activity" ? (
         <ActivityDesk />
       ) : section === "review" ? (
-        <>
+        <main className="staff-shell">
           {/* ADR-042 §13.5: server conflict report first, then this till's local outbox review. */}
           <ServerSyncConflicts
             client={tenantClient}
@@ -1806,7 +1817,7 @@ export function PosApplication({
             syncStatus={syncStatus}
           />
           <ReviewCenter bridge={offlineBridge} />
-        </>
+        </main>
       ) : section === "settings" ? (
         <SettingsDesk
           client={tenantClient}
@@ -1842,9 +1853,10 @@ function Receipt({
   const discountMinor = grossSubtotalMinor - receipt.order.totalMinor;
   const cashTender = receipt.payments.find((tender) => tender.method === "cash") ?? null;
   return (
-    <main className="receipt-shell">
-      <section className="receipt-card">
-        <div className="success-mark" aria-hidden="true">
+    // `receipt-print-overlay` / `receipt-print` reuse the receipt @media print rules: only this card prints.
+    <main className="receipt-shell receipt-print-overlay">
+      <section className="receipt-card receipt-print">
+        <div className="success-mark no-print" aria-hidden="true">
           ✓
         </div>
         {/* Configured business/branch identity rendered at receipt time from trusted POS context.
@@ -1935,9 +1947,14 @@ function Receipt({
         {identity?.receiptFooter ? (
           <p className="receipt-footer">{identity.receiptFooter}</p>
         ) : null}
-        <button className="button button--complete" onClick={onNewSale}>
-          {t("receipt.newSale")}
-        </button>
+        <div className="receipt-actions no-print">
+          <button className="button button--quiet" onClick={() => window.print()}>
+            {t("receipt.print")}
+          </button>
+          <button className="button button--complete" onClick={onNewSale}>
+            {t("receipt.newSale")}
+          </button>
+        </div>
       </section>
     </main>
   );

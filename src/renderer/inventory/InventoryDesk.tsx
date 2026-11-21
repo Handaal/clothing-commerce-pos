@@ -620,12 +620,18 @@ export function InventoryDesk({ client }: { client: TenantCommerceClient }) {
                   <td className="muted">{brandNames.get(row.brandId) ?? "—"}</td>
                   <td className="muted">{categoryLabel(row)}</td>
                   <td className="muted">
-                    {row.barcode ?? "—"}
-                    {row.barcode ? (
-                      <button className="button button--quiet" onClick={() => setLabelRow(row)}>
-                        {t("inventory.printLabels")}
-                      </button>
-                    ) : null}
+                    <div className="barcode-cell">
+                      <span className="barcode-cell__code">{row.barcode ?? "—"}</span>
+                      {row.barcode ? (
+                        <button
+                          type="button"
+                          className="button button--quiet barcode-cell__print"
+                          onClick={() => setLabelRow(row)}
+                        >
+                          {t("inventory.printLabels")}
+                        </button>
+                      ) : null}
+                    </div>
                   </td>
                   <td className="end">
                     <strong>{row.onHand}</strong>

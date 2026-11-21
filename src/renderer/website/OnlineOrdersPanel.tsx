@@ -3,7 +3,11 @@ import type {
   OrderSummary,
   TenantCommerceClient,
 } from "@shifted/clothing-commerce-sdk";
-import { orderConfirmationMessage, whatsAppLink } from "@shifted/clothing-commerce-sdk";
+import {
+  orderConfirmationMessage,
+  orderShippedMessage,
+  whatsAppLink,
+} from "@shifted/clothing-commerce-sdk";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { formatDateTime } from "../format";
@@ -15,6 +19,8 @@ import { useToast } from "../shell/Toast";
 import { MAX_PAGES } from "./access";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { describeWebsiteError } from "./errors";
+import { PanelHead } from "./PanelHead";
+import { announceOnlineOrdersChanged } from "./online-orders-events";
 
 export type OnlineOrdersClient = Pick<
   TenantCommerceClient,
@@ -109,9 +115,12 @@ export function OnlineOrdersPanel({
     }
     if (run !== generation.current) return;
     setOrders(list);
-    // Open orders need their detail to know fulfilment progress and who/where to ship to. Cancelled
-    // orders are complete as listed; their detail loads on demand when opened.
-    const queue = list.filter((order) => order.status === "placed").map((order) => order.id);
+    // The list carries fulfilment status and contact (SDK 0.51), so only orders still to ship need their
+    // detail up front (lines to pick, address). Shipped and cancelled orders load on demand when opened.
+    // An older server without `fulfillmentStatus` falls back to reading every open order.
+    const queue = list
+      .filter((order) => order.status === "placed" && order.fulfillmentStatus !== "fulfilled")
+      .map((order) => order.id);
     const worker = async () => {
       for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
         let result: DetailState;
@@ -142,9 +151,10 @@ export function OnlineOrdersPanel({
   const fulfillmentOf = useCallback(
     (id: string): FulfillmentStatus | null => {
       const detail = details.get(id);
-      return detail && detail !== "error" ? detail.fulfillmentProgress.status : null;
+      if (detail && detail !== "error") return detail.fulfillmentProgress.status;
+      return orders?.find((order) => order.id === id)?.fulfillmentStatus ?? null;
     },
-    [details],
+    [details, orders],
   );
 
   const counts = useMemo(() => {
@@ -167,6 +177,9 @@ export function OnlineOrdersPanel({
       const commerce = detail && detail !== "error" ? detail.commerce : undefined;
       return [
         order.orderNumber,
+        order.customerName,
+        order.customerPhone,
+        order.deliveryCity,
         commerce?.customer?.name,
         commerce?.customer?.phone,
         commerce?.delivery?.phone,
@@ -192,42 +205,40 @@ export function OnlineOrdersPanel({
   return (
     <>
       <section className="staff-card">
-        <div className="staff-card__head">
-          <h2>{t("website.tab.orders")}</h2>
-          <div className="staff-filters">
-            <input
-              className="input"
-              type="search"
-              aria-label={t("website.orders.search")}
-              placeholder={t("website.orders.search")}
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-            />
-            <button className="button button--quiet" onClick={() => void load()}>
-              {t("website.orders.refresh")}
-            </button>
-          </div>
-        </div>
-        <p className="muted website-card-intro">{t("website.orders.intro")}</p>
+        <PanelHead title={t("website.tab.orders")} intro={t("website.orders.intro")}>
+          <button className="button button--quiet" onClick={() => void load()}>
+            {t("website.orders.refresh")}
+          </button>
+        </PanelHead>
         {!canFulfill && !canCancel ? (
-          <p className="notice website-card-intro" role="status">
+          <p className="notice website-inline-notice" role="status">
             {t("website.orders.readOnly")}
           </p>
         ) : null}
-        <nav className="report-tabs website-orders-views" aria-label={t("website.orders.views")}>
-          {views.map((item) => (
-            <button
-              key={item}
-              className={`report-tab${view === item ? " report-tab--active" : ""}`}
-              aria-pressed={view === item}
-              data-testid={`website-orders-view-${item}`}
-              onClick={() => setView(item)}
-            >
-              {t(`website.orders.view.${item}`)}
-              {orders ? <span className="muted"> · {counts[item]}</span> : null}
-            </button>
-          ))}
-        </nav>
+        <div className="website-toolbar">
+          <nav className="report-tabs website-views" aria-label={t("website.orders.views")}>
+            {views.map((item) => (
+              <button
+                key={item}
+                className={`report-tab${view === item ? " report-tab--active" : ""}`}
+                aria-pressed={view === item}
+                data-testid={`website-orders-view-${item}`}
+                onClick={() => setView(item)}
+              >
+                {t(`website.orders.view.${item}`)}
+                {orders ? <span className="website-count">{counts[item]}</span> : null}
+              </button>
+            ))}
+          </nav>
+          <input
+            className="input website-search"
+            type="search"
+            aria-label={t("website.orders.search")}
+            placeholder={t("website.orders.search")}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
 
         {error ? (
           <div className="notice notice--error" role="alert">
@@ -260,43 +271,58 @@ export function OnlineOrdersPanel({
                 {visible.map((order) => {
                   const detail = details.get(order.id);
                   const loaded = detail && detail !== "error" ? detail : null;
-                  const customer = loaded?.commerce?.customer;
+                  const customerName = loaded?.commerce?.customer?.name ?? order.customerName;
+                  const customerPhone = loaded?.commerce?.customer?.phone ?? order.customerPhone;
+                  const city = loaded?.commerce?.delivery?.city ?? order.deliveryCity;
                   return (
-                    <tr key={order.id} data-testid={`website-order-${order.id}`}>
+                    <tr
+                      key={order.id}
+                      className="website-row--open"
+                      data-testid={`website-order-${order.id}`}
+                      onClick={() => setOpenId(order.id)}
+                    >
                       <td>
                         <strong>#{order.orderNumber}</strong>
                       </td>
-                      <td>{formatDateTime(order.placedAt, locale)}</td>
+                      <td className="muted">{formatDateTime(order.placedAt, locale)}</td>
                       <td>
-                        {customer ? (
+                        {customerName ? (
                           <>
-                            {customer.name}
-                            <br />
-                            <span className="muted">{customer.phone}</span>
+                            <span className="website-cell-primary">{customerName}</span>
+                            {customerPhone ? (
+                              <small className="website-phone">
+                                <bdi dir="ltr">{customerPhone}</bdi>
+                              </small>
+                            ) : null}
                           </>
                         ) : (
                           <span className="muted">—</span>
                         )}
                       </td>
-                      <td>
-                        {loaded?.commerce?.delivery?.city ?? <span className="muted">—</span>}
-                      </td>
-                      <td className="end">
+                      <td>{city ?? <span className="muted">—</span>}</td>
+                      <td className="end website-cell-money">
                         {formatMoney(order.totalMinor, order.currency, locale)}
                       </td>
                       <td>
                         <StatusPill
                           status={order.status}
-                          fulfillment={loaded?.fulfillmentProgress.status ?? null}
+                          fulfillment={fulfillmentOf(order.id)}
                           detailFailed={detail === "error"}
-                          pending={order.status === "placed" && detail === undefined}
+                          pending={
+                            order.status === "placed" &&
+                            detail === undefined &&
+                            order.fulfillmentStatus === undefined
+                          }
                         />
                       </td>
                       <td className="end">
                         <button
-                          className="link"
+                          className="button button--quiet website-open-button"
                           data-testid={`website-order-open-${order.id}`}
-                          onClick={() => setOpenId(order.id)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setOpenId(order.id);
+                          }}
                         >
                           {t("website.orders.open")}
                         </button>
@@ -474,6 +500,7 @@ function OnlineOrderDialog({
       setConfirm(null);
       setReason("");
       onChanged(next);
+      announceOnlineOrdersChanged();
       toast.success(
         kind === "fulfil"
           ? next.fulfillmentProgress.status === "fulfilled"
@@ -502,7 +529,7 @@ function OnlineOrderDialog({
         onClick={busy || confirm ? undefined : onClose}
       >
         <div
-          className="staff-modal settings-modal website-promo-editor"
+          className="staff-modal settings-modal website-promo-editor website-order-dialog"
           role="dialog"
           aria-modal="true"
           aria-labelledby="website-order-title"
@@ -531,7 +558,7 @@ function OnlineOrderDialog({
             )
           ) : (
             <>
-              <div className="website-promo-headline">
+              <div className="website-promo-headline website-order-headline">
                 <StatusPill
                   status={detail.header.status}
                   fulfillment={detail.fulfillmentProgress.status}
@@ -564,7 +591,11 @@ function OnlineOrderDialog({
               ) : null}
 
               {payment?.method === "cash_on_delivery" && payment.status === "pending" && placed ? (
-                <p className="notice" role="status" data-testid="website-order-cod">
+                <p
+                  className="notice website-inline-notice"
+                  role="status"
+                  data-testid="website-order-cod"
+                >
                   {t("website.orders.codCollect", {
                     amount: formatMoney(payment.amountMinor, payment.currency, locale),
                   })}
@@ -637,7 +668,7 @@ function OnlineOrderDialog({
                 </section>
               </div>
 
-              <h4>{t("website.orders.items")}</h4>
+              <h4 className="website-order-items">{t("website.orders.items")}</h4>
               <div className="staff-table-wrap">
                 <table className="staff-table">
                   <thead>
@@ -655,7 +686,14 @@ function OnlineOrderDialog({
                       const left = remaining.get(line.lineNumber) ?? 0;
                       return (
                         <tr key={line.lineNumber}>
-                          <td>{line.productName}</td>
+                          <td>
+                            <span className="website-cell-primary">{line.productName}</span>
+                            {line.optionSummary || line.variantName ? (
+                              <small className="website-line-variant">
+                                {line.optionSummary ?? line.variantName}
+                              </small>
+                            ) : null}
+                          </td>
                           <td className="muted">{line.sku}</td>
                           <td className="end">{line.quantity}</td>
                           <td className="end">{money(line.lineTotalMinor)}</td>
@@ -702,7 +740,7 @@ function OnlineOrderDialog({
                 </p>
               ) : null}
               {placed && remaining.size > 0 && !canFulfill ? (
-                <p className="notice" role="status">
+                <p className="notice website-inline-notice" role="status">
                   {t("website.orders.noFulfilAccess")}
                 </p>
               ) : null}
@@ -808,10 +846,12 @@ function ConfirmOnWhatsApp({
   const { t } = useI18n();
   const customer = detail.commerce?.customer;
   const phone = customer?.phone ?? detail.commerce?.delivery?.phone;
-  if (!phone) return null;
+  if (!phone || detail.header.status === "cancelled") return null;
+  // Once fully shipped, "reply Confirm so we can start preparing it" is wrong: send "on its way".
+  const shipped = detail.fulfillmentProgress.status === "fulfilled";
   const href = whatsAppLink(
     phone,
-    orderConfirmationMessage({
+    (shipped ? orderShippedMessage : orderConfirmationMessage)({
       storeName: storeName || t("website.orders.ourStore"),
       orderReference: detail.header.orderNumber,
       customerName: customer?.name ?? detail.commerce?.delivery?.recipientName ?? null,
@@ -829,7 +869,7 @@ function ConfirmOnWhatsApp({
       rel="noopener noreferrer"
       data-testid="website-order-whatsapp"
     >
-      {t("website.orders.confirmWhatsApp")}
+      {t(shipped ? "website.orders.shippedWhatsApp" : "website.orders.confirmWhatsApp")}
     </a>
   );
 }

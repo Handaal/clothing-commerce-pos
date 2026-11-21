@@ -8,6 +8,7 @@ import { useToast } from "../shell/Toast";
 import { loadAllProducts, type ProductItem } from "./access";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { describeWebsiteError } from "./errors";
+import { PanelHead } from "./PanelHead";
 
 export type PublicationClient = Pick<
   TenantCommerceClient,
@@ -109,11 +110,12 @@ export function PublicationPanel({ client }: { client: PublicationClient }) {
   return (
     <>
       <section className="staff-card">
-        <div className="staff-card__head">
-          <h2>
-            {t("website.tab.publication")}
-            {products ? <span className="muted"> · {visible.length}</span> : null}
-          </h2>
+        <PanelHead
+          title={t("website.tab.publication")}
+          count={products ? visible.length : null}
+          intro={t("website.pub.intro")}
+        />
+        <div className="website-toolbar">
           <div className="staff-filters">
             <label>
               {t("website.search")}
@@ -140,7 +142,6 @@ export function PublicationPanel({ client }: { client: PublicationClient }) {
             </label>
           </div>
         </div>
-        <p className="muted website-card-intro">{t("website.pub.intro")}</p>
         {loading ? <SkeletonLines lines={5} label={t("website.loadingProducts")} /> : null}
         {error ? (
           <div className="notice notice--error" role="alert">

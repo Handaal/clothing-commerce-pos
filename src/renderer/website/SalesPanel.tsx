@@ -16,6 +16,7 @@ import { loadAllProducts, type ProductItem } from "./access";
 import { ConfirmDialog } from "./ConfirmDialog";
 import type { FieldError } from "./content-form";
 import { describeWebsiteError } from "./errors";
+import { PanelHead } from "./PanelHead";
 import { ItemPicker } from "./ItemPicker";
 import {
   buildCreateSaleRequest,
@@ -150,11 +151,11 @@ export function SalesPanel({ client, canManage }: { client: SalesClient; canMana
   return (
     <>
       <section className="staff-card">
-        <div className="staff-card__head">
-          <h2>
-            {t("website.tab.sales")}
-            {sales ? <span className="muted"> · {sales.length}</span> : null}
-          </h2>
+        <PanelHead
+          title={t("website.tab.sales")}
+          count={sales ? sales.length : null}
+          intro={t("website.sales.intro")}
+        >
           {canManage ? (
             <button
               className="button"
@@ -164,10 +165,9 @@ export function SalesPanel({ client, canManage }: { client: SalesClient; canMana
               {t("website.sales.new")}
             </button>
           ) : null}
-        </div>
-        <p className="muted website-card-intro">{t("website.sales.intro")}</p>
+        </PanelHead>
         {!canManage ? (
-          <p className="notice website-card-intro" role="status">
+          <p className="notice website-inline-notice" role="status">
             {t("website.readOnly")}
           </p>
         ) : null}

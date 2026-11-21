@@ -76,9 +76,13 @@ contextBridge.exposeInMainWorld("foundation", foundationBridge);
 // all scale cleanly. It belongs to the machine (a cramped 14" laptop vs a roomy 16"), not the business.
 export interface ViewBridge {
   readonly setZoom: (factor: number) => void;
+  // Match the native window frame (title bar / border) to the app's light/dark theme.
+  readonly setNativeTheme: (theme: "light" | "dark") => Promise<void>;
 }
 
 const viewBridge: ViewBridge = Object.freeze({
+  setNativeTheme: (theme: "light" | "dark") =>
+    ipcRenderer.invoke("view:set-native-theme", theme) as Promise<void>,
   setZoom: (factor: number) => {
     try {
       webFrame.setZoomFactor(factor);

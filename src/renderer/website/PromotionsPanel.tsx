@@ -12,6 +12,7 @@ import { useToast } from "../shell/Toast";
 import { loadAllPromotions } from "./access";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { describeWebsiteError } from "./errors";
+import { PanelHead } from "./PanelHead";
 import { PromotionDetailDialog } from "./PromotionDetailDialog";
 import { PromotionEditor } from "./PromotionEditor";
 
@@ -146,31 +147,28 @@ export function PromotionsPanel({
   return (
     <>
       <section className="staff-card">
-        <div className="staff-card__head">
-          <h2>
-            {t("website.tab.promotions")}
-            {items ? <span className="muted"> · {items.length}</span> : null}
-          </h2>
-          <div className="staff-filters">
-            {onOpenVouchers ? (
-              <button className="button button--quiet" onClick={onOpenVouchers}>
-                {t("website.promo.openVouchers")}
-              </button>
-            ) : null}
-            {canManage ? (
-              <button
-                className="button"
-                data-testid="website-promo-new"
-                onClick={() => setEditing({ promotion: null })}
-              >
-                {t("website.promo.new")}
-              </button>
-            ) : null}
-          </div>
-        </div>
-        <p className="muted website-card-intro">{t("website.promo.intro")}</p>
+        <PanelHead
+          title={t("website.tab.promotions")}
+          count={items ? items.length : null}
+          intro={t("website.promo.intro")}
+        >
+          {onOpenVouchers ? (
+            <button className="button button--quiet" onClick={onOpenVouchers}>
+              {t("website.promo.openVouchers")}
+            </button>
+          ) : null}
+          {canManage ? (
+            <button
+              className="button"
+              data-testid="website-promo-new"
+              onClick={() => setEditing({ promotion: null })}
+            >
+              {t("website.promo.new")}
+            </button>
+          ) : null}
+        </PanelHead>
         {!canManage ? (
-          <p className="notice website-card-intro" role="status">
+          <p className="notice website-inline-notice" role="status">
             {t("website.readOnly")}
           </p>
         ) : null}
