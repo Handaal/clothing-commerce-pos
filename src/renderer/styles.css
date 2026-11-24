@@ -5694,3 +5694,18 @@ h3,
     line-height: 1.1rem;
   }
 }
+
+/* Website → Site text: list fields (promo messages, FAQ, page sections). */
+.website-site-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.website-site-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 12px;
+}

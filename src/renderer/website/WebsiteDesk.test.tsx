@@ -87,7 +87,7 @@ describe("WebsiteDesk access", () => {
     const labels = within(tabs)
       .getAllByRole("button")
       .map((b) => b.textContent);
-    expect(labels).toEqual(["Overview", "Home page", "Catalog publication"]);
+    expect(labels).toEqual(["Overview", "Home page", "Site text", "Catalog publication"]);
     expect(screen.getByText("You don't have access to view checkout settings.")).toBeTruthy();
   });
 

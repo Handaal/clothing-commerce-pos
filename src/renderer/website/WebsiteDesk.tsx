@@ -12,9 +12,10 @@ import { PanelHead } from "./PanelHead";
 import { PromotionsPanel } from "./PromotionsPanel";
 import { PublicationPanel } from "./PublicationPanel";
 import { SalesPanel } from "./SalesPanel";
+import { SiteTextPanel } from "./SiteTextPanel";
 
 export type WebsiteTab =
-  "overview" | "orders" | "home" | "sales" | "publication" | "promotions" | "checkout";
+  "overview" | "orders" | "home" | "siteText" | "sales" | "publication" | "promotions" | "checkout";
 
 interface TabDef {
   id: WebsiteTab;
@@ -44,6 +45,12 @@ export const WEBSITE_TABS: readonly TabDef[] = [
     id: "home",
     labelKey: "website.tab.home",
     descKey: "website.card.home",
+    visible: (a) => a.catalogRead,
+  },
+  {
+    id: "siteText",
+    labelKey: "website.tab.siteText",
+    descKey: "website.card.siteText",
     visible: (a) => a.catalogRead,
   },
   {
@@ -163,6 +170,8 @@ export function WebsiteDesk({
             />
           ) : activeTab === "home" ? (
             <HomePagePanel client={client} />
+          ) : activeTab === "siteText" ? (
+            <SiteTextPanel client={client} />
           ) : activeTab === "sales" ? (
             <SalesPanel client={client} canManage={access.promotionsManage} />
           ) : activeTab === "publication" ? (
