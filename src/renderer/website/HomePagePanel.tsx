@@ -322,12 +322,16 @@ function HomePageEditor({
               })
             : null}
           {textField("eyebrow", "website.home.eyebrow", {
+            hint: t("website.home.hideHint"),
             placeholder: t("website.home.eyebrowPlaceholder"),
           })}
           {textField("title", "website.home.headline", {
             placeholder: t("website.home.headlinePlaceholder"),
           })}
-          {textField("subtitle", "website.home.subtitle", { multiline: true })}
+          {textField("subtitle", "website.home.subtitle", {
+            multiline: true,
+            hint: t("website.home.hideHint"),
+          })}
           {textField("ctaLabel", "website.home.ctaLabel", {
             placeholder: t("website.home.ctaLabelPlaceholder"),
           })}

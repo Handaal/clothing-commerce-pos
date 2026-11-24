@@ -366,7 +366,7 @@ describe("WebsiteDesk online orders tab", () => {
     const labels = within(tabs)
       .getAllByRole("button")
       .map((b) => b.textContent);
-    expect(labels).toEqual(["Overview", "Online orders"]);
+    expect(labels).toEqual(["Overview", "Online orders", "Return requests", "Sign-ups"]);
     fireEvent.click(within(tabs).getByText("Online orders"));
     const dialog = await openOrder(OPEN);
     expect(within(dialog).getByTestId("website-order-fulfil")).toBeTruthy();

@@ -13,9 +13,25 @@ import { PromotionsPanel } from "./PromotionsPanel";
 import { PublicationPanel } from "./PublicationPanel";
 import { SalesPanel } from "./SalesPanel";
 import { SiteTextPanel } from "./SiteTextPanel";
+import { CatalogPanel } from "./CatalogPanel";
+import { DeliveryPanel } from "./DeliveryPanel";
+import { PhotosPanel } from "./PhotosPanel";
+import { ReturnRequestsPanel, SignupsPanel } from "./RequestsPanels";
 
 export type WebsiteTab =
-  "overview" | "orders" | "home" | "siteText" | "sales" | "publication" | "promotions" | "checkout";
+  | "overview"
+  | "orders"
+  | "home"
+  | "siteText"
+  | "catalog"
+  | "photos"
+  | "sales"
+  | "publication"
+  | "promotions"
+  | "delivery"
+  | "returns"
+  | "signups"
+  | "checkout";
 
 interface TabDef {
   id: WebsiteTab;
@@ -54,6 +70,18 @@ export const WEBSITE_TABS: readonly TabDef[] = [
     visible: (a) => a.catalogRead,
   },
   {
+    id: "catalog",
+    labelKey: "website.tab.catalog",
+    descKey: "website.card.catalog",
+    visible: (a) => a.catalogRead,
+  },
+  {
+    id: "photos",
+    labelKey: "website.tab.photos",
+    descKey: "website.card.photos",
+    visible: (a) => a.catalogRead,
+  },
+  {
     id: "sales",
     labelKey: "website.tab.sales",
     descKey: "website.card.sales",
@@ -70,6 +98,24 @@ export const WEBSITE_TABS: readonly TabDef[] = [
     labelKey: "website.tab.promotions",
     descKey: "website.card.promotions",
     visible: (a) => a.promotionsRead,
+  },
+  {
+    id: "delivery",
+    labelKey: "website.tab.delivery",
+    descKey: "website.card.delivery",
+    visible: (a) => a.settingsRead,
+  },
+  {
+    id: "returns",
+    labelKey: "website.tab.returns",
+    descKey: "website.card.returns",
+    visible: (a) => a.ordersRead,
+  },
+  {
+    id: "signups",
+    labelKey: "website.tab.signups",
+    descKey: "website.card.signups",
+    visible: (a) => a.ordersRead,
   },
   {
     id: "checkout",
@@ -172,6 +218,16 @@ export function WebsiteDesk({
             <HomePagePanel client={client} />
           ) : activeTab === "siteText" ? (
             <SiteTextPanel client={client} />
+          ) : activeTab === "catalog" ? (
+            <CatalogPanel client={client} />
+          ) : activeTab === "photos" ? (
+            <PhotosPanel client={client} />
+          ) : activeTab === "delivery" ? (
+            <DeliveryPanel client={client} canManage={access.settingsManage} />
+          ) : activeTab === "returns" ? (
+            <ReturnRequestsPanel client={client} />
+          ) : activeTab === "signups" ? (
+            <SignupsPanel client={client} />
           ) : activeTab === "sales" ? (
             <SalesPanel client={client} canManage={access.promotionsManage} />
           ) : activeTab === "publication" ? (

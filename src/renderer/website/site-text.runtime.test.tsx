@@ -17,7 +17,7 @@ const tenantId = "2a000001-0000-4000-8000-000000000001";
 configure({ asyncUtilTimeout: 15000 });
 afterEach(cleanup);
 
-describe.skipIf(!url)("POS Website → Site text with the real API", () => {
+describe.skipIf(!url)("POS Website → Site text with the real API", { timeout: 60000 }, () => {
   it("opens the desk, sees Admin Mobile's text, edits more and saves", async () => {
     window.localStorage.setItem("pos.lang", "en");
     const sdk = createCommerceClient({
@@ -35,7 +35,9 @@ describe.skipIf(!url)("POS Website → Site text with the real API", () => {
     fireEvent.click(await screen.findByTestId("website-open-siteText"));
 
     // Admin Mobile saved these moments ago; the POS loads the same document.
-    const storeName = (await screen.findByTestId("website-site-text-storeName")) as HTMLInputElement;
+    const storeName = (await screen.findByTestId(
+      "website-site-text-storeName",
+    )) as HTMLInputElement;
     expect(storeName.value).toBe("Nile Wear");
     expect(screen.getByTestId("website-site-text-announcements-0")).toHaveProperty(
       "value",
@@ -69,9 +71,9 @@ describe.skipIf(!url)("POS Website → Site text with the real API", () => {
       body: "Prices include VAT.\n\n- Shown in EGP\n- Confirmed at checkout",
     });
     await waitFor(() =>
-      expect(
-        (screen.getByTestId("website-site-text-save") as HTMLButtonElement).disabled,
-      ).toBe(true),
+      expect((screen.getByTestId("website-site-text-save") as HTMLButtonElement).disabled).toBe(
+        true,
+      ),
     );
   });
 });
