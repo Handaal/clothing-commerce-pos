@@ -212,6 +212,7 @@ export function WebsiteDesk({
               client={client}
               canFulfill={access.ordersFulfill}
               canCancel={access.ordersCancel}
+              canCollect={access.ordersCollect}
               storeName={storeNameOf(context)}
             />
           ) : activeTab === "home" ? (

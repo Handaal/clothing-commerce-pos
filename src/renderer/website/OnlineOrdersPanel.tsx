@@ -24,11 +24,17 @@ import { announceOnlineOrdersChanged } from "./online-orders-events";
 
 export type OnlineOrdersClient = Pick<
   TenantCommerceClient,
-  "listOrders" | "getOrder" | "fulfillOrder" | "cancelOrder"
+  "listOrders" | "getOrder" | "fulfillOrder" | "cancelOrder" | "collectOrderPayment"
 >;
 
-export type OnlineOrderView = "toFulfil" | "fulfilled" | "cancelled" | "all";
+export type OnlineOrderView = "toFulfil" | "toCollect" | "fulfilled" | "cancelled" | "all";
 type FulfillmentStatus = OrderDetailResponse["fulfillmentProgress"]["status"];
+type PaymentStatus = NonNullable<OrderSummary["paymentStatus"]>;
+
+/** A payment still waiting for the courier's cash (or an authorization still to settle). */
+export function awaitingPayment(payment: PaymentStatus | null | undefined): boolean {
+  return payment === "pending" || payment === "authorized";
+}
 type DetailState = OrderDetailResponse | "error";
 
 /** Every online order (newest first), following the cursor to completion (fails closed at the bound). */
@@ -51,13 +57,19 @@ export async function loadOnlineOrders(
   throw new Error("The order list is larger than this screen can load.");
 }
 
-/** Which queue an order belongs in. `null` fulfillment = detail not loaded yet (treated as pending). */
+/**
+ * Which queue an order belongs in. `null` fulfillment = detail not loaded yet (treated as pending).
+ * A fully shipped order whose payment is still uncollected (cash on delivery) is out for delivery until
+ * staff record the cash; an unknown payment status (older server) counts as complete.
+ */
 export function orderView(
   order: Pick<OrderSummary, "status">,
   fulfillment: FulfillmentStatus | null,
+  payment: PaymentStatus | null = null,
 ): Exclude<OnlineOrderView, "all"> {
   if (order.status === "cancelled") return "cancelled";
-  return fulfillment === "fulfilled" ? "fulfilled" : "toFulfil";
+  if (fulfillment !== "fulfilled") return "toFulfil";
+  return awaitingPayment(payment) ? "toCollect" : "fulfilled";
 }
 
 /** Lines still to ship: ordered minus already fulfilled, per line number (only lines with a remainder). */
@@ -84,11 +96,14 @@ export function OnlineOrdersPanel({
   client,
   canFulfill,
   canCancel,
+  canCollect = false,
   storeName = "",
 }: {
   client: OnlineOrdersClient;
   canFulfill: boolean;
   canCancel: boolean;
+  /** May mark a shipped cash-on-delivery order delivered + collected (SDK 0.54). */
+  canCollect?: boolean;
   /** Shown in the WhatsApp order confirmation ("Thanks for shopping with …"). */
   storeName?: string;
 }) {
@@ -157,21 +172,40 @@ export function OnlineOrdersPanel({
     [details, orders],
   );
 
+  const paymentOf = useCallback(
+    (id: string): PaymentStatus | null => {
+      const detail = details.get(id);
+      if (detail && detail !== "error" && detail.commerce?.payment) {
+        return detail.commerce.payment.status;
+      }
+      return orders?.find((order) => order.id === id)?.paymentStatus ?? null;
+    },
+    [details, orders],
+  );
+
   const counts = useMemo(() => {
     const result: Record<OnlineOrderView, number> = {
       toFulfil: 0,
+      toCollect: 0,
       fulfilled: 0,
       cancelled: 0,
       all: orders?.length ?? 0,
     };
-    for (const order of orders ?? []) result[orderView(order, fulfillmentOf(order.id))] += 1;
+    for (const order of orders ?? []) {
+      result[orderView(order, fulfillmentOf(order.id), paymentOf(order.id))] += 1;
+    }
     return result;
-  }, [orders, fulfillmentOf]);
+  }, [orders, fulfillmentOf, paymentOf]);
 
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const rows = (orders ?? []).filter((order) => {
-      if (view !== "all" && orderView(order, fulfillmentOf(order.id)) !== view) return false;
+      if (
+        view !== "all" &&
+        orderView(order, fulfillmentOf(order.id), paymentOf(order.id)) !== view
+      ) {
+        return false;
+      }
       if (!needle) return true;
       const detail = details.get(order.id);
       const commerce = detail && detail !== "error" ? detail.commerce : undefined;
@@ -186,21 +220,30 @@ export function OnlineOrdersPanel({
         commerce?.delivery?.city,
       ].some((value) => value?.toLowerCase().includes(needle));
     });
-    // The work queue is first-in first-out; the other views read newest first (the API order).
-    return view === "toFulfil" ? [...rows].reverse() : rows;
-  }, [orders, details, view, query, fulfillmentOf]);
+    // The work queues are first-in first-out; the other views read newest first (the API order).
+    return view === "toFulfil" || view === "toCollect" ? [...rows].reverse() : rows;
+  }, [orders, details, view, query, fulfillmentOf, paymentOf]);
 
   const onChanged = (detail: OrderDetailResponse) => {
     setDetails((current) => new Map(current).set(detail.header.id, detail));
     setOrders(
       (current) =>
         current?.map((order) =>
-          order.id === detail.header.id ? { ...order, status: detail.header.status } : order,
+          order.id === detail.header.id
+            ? {
+                ...order,
+                status: detail.header.status,
+                fulfillmentStatus: detail.fulfillmentProgress.status,
+                ...(detail.commerce?.payment
+                  ? { paymentStatus: detail.commerce.payment.status }
+                  : {}),
+              }
+            : order,
         ) ?? null,
     );
   };
 
-  const views: OnlineOrderView[] = ["toFulfil", "fulfilled", "cancelled", "all"];
+  const views: OnlineOrderView[] = ["toFulfil", "toCollect", "fulfilled", "cancelled", "all"];
 
   return (
     <>
@@ -210,7 +253,7 @@ export function OnlineOrdersPanel({
             {t("website.orders.refresh")}
           </button>
         </PanelHead>
-        {!canFulfill && !canCancel ? (
+        {!canFulfill && !canCancel && !canCollect ? (
           <p className="notice website-inline-notice" role="status">
             {t("website.orders.readOnly")}
           </p>
@@ -307,6 +350,7 @@ export function OnlineOrdersPanel({
                         <StatusPill
                           status={order.status}
                           fulfillment={fulfillmentOf(order.id)}
+                          payment={paymentOf(order.id)}
                           detailFailed={detail === "error"}
                           pending={
                             order.status === "placed" &&
@@ -346,6 +390,7 @@ export function OnlineOrdersPanel({
           })()}
           canFulfill={canFulfill}
           canCancel={canCancel}
+          canCollect={canCollect}
           storeName={storeName}
           onChanged={onChanged}
           onClose={() => setOpenId(null)}
@@ -358,11 +403,13 @@ export function OnlineOrdersPanel({
 function StatusPill({
   status,
   fulfillment,
+  payment = null,
   detailFailed = false,
   pending = false,
 }: {
   status: OrderSummary["status"];
   fulfillment: FulfillmentStatus | null;
+  payment?: PaymentStatus | null;
   detailFailed?: boolean;
   pending?: boolean;
 }) {
@@ -381,6 +428,12 @@ function StatusPill({
       </span>
     );
   }
+  if (fulfillment === "fulfilled" && awaitingPayment(payment)) {
+    return <span className="pill pill--warn">{t("website.orders.state.outForDelivery")}</span>;
+  }
+  if (fulfillment === "fulfilled" && payment === "captured") {
+    return <span className="pill pill--good">{t("website.orders.state.delivered")}</span>;
+  }
   const tone =
     fulfillment === "fulfilled"
       ? " pill--good"
@@ -396,6 +449,7 @@ function OnlineOrderDialog({
   initial,
   canFulfill,
   canCancel,
+  canCollect,
   storeName,
   onChanged,
   onClose,
@@ -406,6 +460,7 @@ function OnlineOrderDialog({
   initial: OrderDetailResponse | null;
   canFulfill: boolean;
   canCancel: boolean;
+  canCollect: boolean;
   onChanged: (detail: OrderDetailResponse) => void;
   onClose: () => void;
 }) {
@@ -416,7 +471,7 @@ function OnlineOrderDialog({
   const [ship, setShip] = useState<Record<number, string>>(() =>
     initial ? shipDefaults(initial) : {},
   );
-  const [confirm, setConfirm] = useState<"fulfil" | "cancel" | null>(null);
+  const [confirm, setConfirm] = useState<Action | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
   // One key per confirmed intent: a retry after a network failure replays instead of shipping twice.
@@ -475,13 +530,22 @@ function OnlineOrderDialog({
   const canCancelNow = Boolean(
     placed && canCancel && detail?.fulfillmentProgress.status === "unfulfilled",
   );
+  const codPayment =
+    detail?.commerce?.payment?.method === "cash_on_delivery" ? detail.commerce.payment : null;
+  const awaitingCollection = Boolean(
+    placed &&
+    detail?.fulfillmentProgress.status === "fulfilled" &&
+    codPayment &&
+    awaitingPayment(codPayment.status),
+  );
+  const canCollectNow = awaitingCollection && canCollect;
 
-  const openConfirm = (kind: "fulfil" | "cancel") => {
+  const openConfirm = (kind: Action) => {
     intentKey.current = crypto.randomUUID();
     setConfirm(kind);
   };
 
-  const run = async (kind: "fulfil" | "cancel") => {
+  const run = async (kind: Action) => {
     if (!detail) return;
     setBusy(true);
     try {
@@ -489,11 +553,13 @@ function OnlineOrderDialog({
       const next =
         kind === "fulfil"
           ? await client.fulfillOrder({ orderId, idempotencyKey, lines: shipLines.lines })
-          : await client.cancelOrder({
-              orderId,
-              idempotencyKey,
-              ...(reason.trim() ? { reason: reason.trim() } : {}),
-            });
+          : kind === "collect"
+            ? await client.collectOrderPayment({ orderId, idempotencyKey })
+            : await client.cancelOrder({
+                orderId,
+                idempotencyKey,
+                ...(reason.trim() ? { reason: reason.trim() } : {}),
+              });
       intentKey.current = null;
       setDetail(next);
       setShip(shipDefaults(next));
@@ -506,7 +572,16 @@ function OnlineOrderDialog({
           ? next.fulfillmentProgress.status === "fulfilled"
             ? t("website.orders.fulfilledToast", { number: next.header.orderNumber })
             : t("website.orders.partialToast", { number: next.header.orderNumber })
-          : t("website.orders.cancelledToast", { number: next.header.orderNumber }),
+          : kind === "collect"
+            ? t("website.orders.collectedToast", {
+                number: next.header.orderNumber,
+                amount: formatMoney(
+                  next.commerce?.payment?.amountMinor ?? next.header.totalMinor,
+                  next.header.currency,
+                  locale,
+                ),
+              })
+            : t("website.orders.cancelledToast", { number: next.header.orderNumber }),
       );
     } catch (err) {
       toast.error(describeWebsiteError(err, t));
@@ -562,6 +637,7 @@ function OnlineOrderDialog({
                 <StatusPill
                   status={detail.header.status}
                   fulfillment={detail.fulfillmentProgress.status}
+                  payment={payment?.status ?? null}
                 />
                 <span className="muted">{formatDateTime(detail.header.placedAt, locale)}</span>
                 <strong>{money(detail.header.totalMinor)}</strong>
@@ -657,10 +733,19 @@ function OnlineOrderDialog({
                       <Row label={t("website.orders.method")}>
                         {t(`website.orders.method.${payment.method}`)}
                       </Row>
-                      <Row label={t("website.orders.paymentStatus")}>{payment.status}</Row>
+                      <Row label={t("website.orders.paymentStatus")}>
+                        <span data-testid="website-order-payment-status">
+                          {t(`website.orders.payment.${payment.status}`)}
+                        </span>
+                      </Row>
                       <Row label={t("website.orders.amount")}>
                         {formatMoney(payment.amountMinor, payment.currency, locale)}
                       </Row>
+                      {payment.status === "captured" && payment.capturedAt ? (
+                        <Row label={t("website.orders.collectedOn")}>
+                          {formatDateTime(payment.capturedAt, locale)}
+                        </Row>
+                      ) : null}
                     </dl>
                   ) : (
                     <p className="muted">{t("website.orders.noPayment")}</p>
@@ -744,6 +829,11 @@ function OnlineOrderDialog({
                   {t("website.orders.noFulfilAccess")}
                 </p>
               ) : null}
+              {awaitingCollection && !canCollect ? (
+                <p className="notice website-inline-notice" role="status">
+                  {t("website.orders.noCollectAccess")}
+                </p>
+              ) : null}
             </>
           )}
 
@@ -761,6 +851,16 @@ function OnlineOrderDialog({
             <button className="button button--quiet" onClick={onClose} disabled={busy}>
               {t("website.orders.close")}
             </button>
+            {canCollectNow ? (
+              <button
+                className="button"
+                data-testid="website-order-collect"
+                disabled={busy}
+                onClick={() => openConfirm("collect")}
+              >
+                {t("website.orders.collect")}
+              </button>
+            ) : null}
             {canShipNow ? (
               <button
                 className="button"
@@ -786,6 +886,24 @@ function OnlineOrderDialog({
           busy={busy}
           onCancel={() => setConfirm(null)}
           onConfirm={() => void run("fulfil")}
+        />
+      ) : null}
+
+      {confirm === "collect" && detail ? (
+        <ConfirmDialog
+          tone="primary"
+          title={t("website.orders.collectTitle", { number: detail.header.orderNumber })}
+          message={t("website.orders.collectMessage", {
+            amount: formatMoney(
+              codPayment?.amountMinor ?? detail.header.totalMinor,
+              codPayment?.currency ?? detail.header.currency,
+              locale,
+            ),
+          })}
+          confirmLabel={t("website.orders.collectConfirm")}
+          busy={busy}
+          onCancel={() => setConfirm(null)}
+          onConfirm={() => void run("collect")}
         />
       ) : null}
 
@@ -815,6 +933,8 @@ function OnlineOrderDialog({
     </>
   );
 }
+
+type Action = "fulfil" | "cancel" | "collect";
 
 function shipDefaults(detail: OrderDetailResponse): Record<number, string> {
   return Object.fromEntries(

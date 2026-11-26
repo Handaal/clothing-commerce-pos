@@ -18,6 +18,10 @@ export function describeWebsiteError(error: unknown, t: Translate): string {
         return t("website.err.orderShipped");
       case "ORDER_CANCELLED":
         return t("website.err.orderCancelled");
+      case "ORDER_NOT_FULLY_SHIPPED":
+        return t("website.err.notFullyShipped");
+      case "PAYMENT_NOT_CASH_ON_DELIVERY":
+        return t("website.err.notCod");
       case "OVER_FULFILLMENT":
         return t("website.err.overFulfilment");
       case "INSUFFICIENT_STOCK":

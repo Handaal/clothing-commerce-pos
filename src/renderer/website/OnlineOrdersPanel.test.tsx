@@ -140,6 +140,7 @@ function makeClient(overrides: Partial<Record<keyof OnlineOrdersClient, unknown>
     getOrder: vi.fn(async (id: string) => details.get(id)),
     fulfillOrder: vi.fn().mockResolvedValue(detail(OPEN, "W-1001", [2, 1])),
     cancelOrder: vi.fn().mockResolvedValue(detail(OPEN, "W-1001", [0, 0], "cancelled")),
+    collectOrderPayment: vi.fn(),
   };
   return { ...base, ...overrides } as typeof base;
 }
@@ -165,6 +166,9 @@ describe("online order helpers", () => {
     expect(orderView({ status: "placed" }, "fulfilled")).toBe("fulfilled");
     expect(orderView({ status: "placed" }, "partially_fulfilled")).toBe("toFulfil");
     expect(orderView({ status: "placed" }, null)).toBe("toFulfil");
+    expect(orderView({ status: "placed" }, "fulfilled", "pending")).toBe("toCollect");
+    expect(orderView({ status: "placed" }, "fulfilled", "captured")).toBe("fulfilled");
+    expect(orderView({ status: "placed" }, "partially_fulfilled", "pending")).toBe("toFulfil");
   });
 
   it("computes what is left to ship per line", () => {
@@ -186,7 +190,8 @@ describe("OnlineOrdersPanel", () => {
     // Cancelled orders are complete as listed: no detail fetch for them.
     expect(client.getOrder).not.toHaveBeenCalledWith(VOID);
 
-    fireEvent.click(screen.getByTestId("website-orders-view-fulfilled"));
+    // Shipped but the courier's cash is not recorded yet: out for delivery, not complete.
+    fireEvent.click(screen.getByTestId("website-orders-view-toCollect"));
     expect(await screen.findByTestId(`website-order-${DONE}`)).toBeTruthy();
     fireEvent.click(screen.getByTestId("website-orders-view-cancelled"));
     expect(await screen.findByTestId(`website-order-${VOID}`)).toBeTruthy();
@@ -340,6 +345,82 @@ describe("OnlineOrdersPanel", () => {
     expect(within(dialog).queryByTestId("website-order-fulfil")).toBeNull();
     expect(within(dialog).queryByTestId("website-order-cancel")).toBeNull();
     expect(within(dialog).getByText(/can't fulfil orders/)).toBeTruthy();
+  });
+});
+
+function collected(): OrderDetailResponse {
+  const next = detail(DONE, "W-1000", [2, 1]);
+  return {
+    ...next,
+    commerce: {
+      ...next.commerce!,
+      payment: {
+        ...next.commerce!.payment!,
+        status: "captured",
+        capturedAt: "2026-11-19T12:00:00.000Z",
+      },
+    },
+  } as OrderDetailResponse;
+}
+
+describe("delivered + cash collected (SDK 0.54)", () => {
+  it("records the courier's cash with one key and moves the order to Completed", async () => {
+    const client = makeClient({ collectOrderPayment: vi.fn().mockResolvedValue(collected()) });
+    wrap(<OnlineOrdersPanel client={client as never} canFulfill canCancel canCollect />);
+    fireEvent.click(await screen.findByTestId("website-orders-view-toCollect"));
+    const dialog = await openOrder(DONE);
+    expect(within(dialog).getByTestId("website-order-payment-status").textContent).toBe(
+      "Not collected yet",
+    );
+    expect(within(dialog).getByText("Out for delivery")).toBeTruthy();
+    fireEvent.click(within(dialog).getByTestId("website-order-collect"));
+    expect(await screen.findByText("Order #W-1000 delivered?")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("website-confirm"));
+    await waitFor(() => expect(client.collectOrderPayment).toHaveBeenCalledTimes(1));
+    const call = client.collectOrderPayment.mock.calls[0]![0] as {
+      orderId: string;
+      idempotencyKey: string;
+    };
+    expect(call.orderId).toBe(DONE);
+    expect(call.idempotencyKey).toMatch(/[0-9a-f-]{36}/);
+    expect(await screen.findByText(/Order #W-1000 delivered —/)).toBeTruthy();
+    expect(within(dialog).getByTestId("website-order-payment-status").textContent).toBe(
+      "Collected",
+    );
+    expect(within(dialog).queryByTestId("website-order-collect")).toBeNull();
+    fireEvent.click(within(dialog).getByText("Close"));
+    await waitFor(() => expect(screen.queryByTestId(`website-order-${DONE}`)).toBeNull());
+    fireEvent.click(screen.getByTestId("website-orders-view-fulfilled"));
+    const row = await screen.findByTestId(`website-order-${DONE}`);
+    expect(within(row).getByText("Delivered")).toBeTruthy();
+  });
+
+  it("offers no collect button before everything ships or without the grant", async () => {
+    const client = makeClient({ collectOrderPayment: vi.fn() });
+    wrap(<OnlineOrdersPanel client={client as never} canFulfill canCancel canCollect={false} />);
+    const open = await openOrder(OPEN);
+    expect(within(open).queryByTestId("website-order-collect")).toBeNull();
+    fireEvent.click(within(open).getByText("Close"));
+    fireEvent.click(await screen.findByTestId("website-orders-view-toCollect"));
+    const done = await openOrder(DONE);
+    expect(within(done).queryByTestId("website-order-collect")).toBeNull();
+    expect(within(done).getByText(/can't record deliveries/)).toBeTruthy();
+  });
+
+  it("explains a not-fully-shipped refusal", async () => {
+    const client = makeClient({
+      collectOrderPayment: vi
+        .fn()
+        .mockRejectedValue(new ApiHttpError("x", 409, "ORDER_NOT_FULLY_SHIPPED", null)),
+    });
+    wrap(<OnlineOrdersPanel client={client as never} canFulfill canCancel canCollect />);
+    fireEvent.click(await screen.findByTestId("website-orders-view-toCollect"));
+    await openOrder(DONE);
+    fireEvent.click(screen.getByTestId("website-order-collect"));
+    fireEvent.click(await screen.findByTestId("website-confirm"));
+    expect(
+      await screen.findByText("Ship every item before marking the order delivered."),
+    ).toBeTruthy();
   });
 });
 

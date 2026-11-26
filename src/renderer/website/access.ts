@@ -21,6 +21,8 @@ export interface WebsiteAccess {
   ordersRead: boolean;
   ordersFulfill: boolean;
   ordersCancel: boolean;
+  /** Mark a shipped cash-on-delivery order delivered + collected (orders.fulfill; SDK 0.54 canCollect). */
+  ordersCollect: boolean;
 }
 
 export const NO_WEBSITE_ACCESS: WebsiteAccess = {
@@ -32,6 +34,7 @@ export const NO_WEBSITE_ACCESS: WebsiteAccess = {
   ordersRead: false,
   ordersFulfill: false,
   ordersCancel: false,
+  ordersCollect: false,
 };
 
 export function websiteAccess(context: Pick<MeContextResponse, "access">): WebsiteAccess {
@@ -48,6 +51,8 @@ export function websiteAccess(context: Pick<MeContextResponse, "access">): Websi
     ordersRead: orders?.canRead ?? false,
     ordersFulfill: (orders?.canRead ?? false) && (orders?.canFulfill ?? false),
     ordersCancel: (orders?.canRead ?? false) && (orders?.canCancel ?? false),
+    ordersCollect:
+      (orders?.canRead ?? false) && (orders?.canCollect ?? orders?.canFulfill ?? false),
   };
 }
 

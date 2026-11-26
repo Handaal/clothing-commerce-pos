@@ -205,6 +205,7 @@ describe("website access", () => {
       ordersRead: false,
       ordersFulfill: false,
       ordersCancel: false,
+      ordersCollect: false,
     });
     expect(hasAnyWebsiteAccess(access)).toBe(false);
   });
@@ -222,6 +223,12 @@ describe("website access", () => {
     expect(hasAnyWebsiteAccess(full)).toBe(true);
     const blind = orders({ canRead: false, canFulfill: true, canCancel: true });
     expect([blind.ordersFulfill, blind.ordersCancel]).toEqual([false, false]);
+    // Collect follows canCollect (SDK 0.54), falling back to canFulfill on an older server.
+    expect(orders({ canRead: true, canFulfill: true }).ordersCollect).toBe(true);
+    expect(orders({ canRead: true, canFulfill: true, canCollect: false }).ordersCollect).toBe(
+      false,
+    );
+    expect(blind.ordersCollect).toBe(false);
     // Older servers omit the flags: read-only.
     const legacy = orders({ canRead: true });
     expect([legacy.ordersRead, legacy.ordersFulfill, legacy.ordersCancel]).toEqual([
