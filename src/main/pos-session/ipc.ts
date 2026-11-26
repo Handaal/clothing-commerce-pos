@@ -1,5 +1,6 @@
 import { ipcMain, type IpcMainInvokeEvent } from "electron";
 
+import { isTransportablePosPin } from "../../shared/pos-auth";
 import { POS_SESSION_IPC_CHANNELS } from "../../shared/pos-session";
 import { isAllowedRendererNavigation } from "../renderer-origin";
 import type { PosSessionManager } from "./manager";
@@ -8,6 +9,15 @@ function assertTrustedSender(event: IpcMainInvokeEvent, rendererUrl: string): vo
   if (!event.senderFrame || !isAllowedRendererNavigation(event.senderFrame.url, rendererUrl)) {
     throw new Error("POS-session IPC rejected an untrusted renderer origin.");
   }
+}
+
+/**
+ * ADR-043 §6: a PIN must be ASCII digits, at least 4, with no product maximum; the only ceiling is the
+ * credential transport bound (a malformed/oversized message is refused, never truncated).
+ */
+function requirePin(value: unknown): string {
+  if (!isTransportablePosPin(value)) throw new TypeError("pin is invalid.");
+  return value;
 }
 
 function requireString(value: unknown, field: string, maximumLength = 64): string {
@@ -29,15 +39,12 @@ export function registerPosSessionIpc(
   };
 
   ipcMain.handle(POS_SESSION_IPC_CHANNELS.login, (event, username: unknown, pin: unknown) =>
-    manager(event).login(requireString(username, "username", 32), requireString(pin, "pin", 64)),
+    manager(event).login(requireString(username, "username", 32), requirePin(pin)),
   );
   ipcMain.handle(
     POS_SESSION_IPC_CHANNELS.verifyCredentials,
     (event, username: unknown, pin: unknown) =>
-      manager(event).verifyCredentials(
-        requireString(username, "username", 32),
-        requireString(pin, "pin", 64),
-      ),
+      manager(event).verifyCredentials(requireString(username, "username", 32), requirePin(pin)),
   );
   ipcMain.handle(POS_SESSION_IPC_CHANNELS.getSession, (event) => manager(event).getSession());
   ipcMain.handle(POS_SESSION_IPC_CHANNELS.getToken, (event) => manager(event).getToken());

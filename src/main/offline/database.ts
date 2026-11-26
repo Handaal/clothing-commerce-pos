@@ -105,9 +105,25 @@ export class LocalDatabase {
     if (!this.acceptingRequests) throw new Error("Local persistence is shutting down.");
   }
 
+  private transactionDepth = 0;
+
+  /**
+   * Run `operation` atomically. Re-entrant: a nested call joins the outer transaction (any throw
+   * propagates and the OUTERMOST call rolls everything back), so composed services — e.g. a review
+   * action that records an audit row plus a signed intent — commit all-or-nothing.
+   */
   transaction<T>(operation: () => T): T {
     this.assertAccepting();
+    if (this.transactionDepth > 0) {
+      this.transactionDepth += 1;
+      try {
+        return operation();
+      } finally {
+        this.transactionDepth -= 1;
+      }
+    }
     this.connection.exec("BEGIN IMMEDIATE");
+    this.transactionDepth = 1;
     try {
       const result = operation();
       this.connection.exec("COMMIT");
@@ -115,6 +131,8 @@ export class LocalDatabase {
     } catch (error) {
       this.connection.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.transactionDepth = 0;
     }
   }
 

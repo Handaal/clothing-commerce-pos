@@ -5,6 +5,7 @@ import type { IngestOfflineAttendanceResponse } from "@shifted/clothing-commerce
 };
 
 import { LocalDatabase } from "./database";
+import { recordServerConflict } from "./server-conflict-receipt";
 
 export interface AttendanceOutboxWorkItem {
   readonly syncCommandId: string;
@@ -137,6 +138,11 @@ export class AttendanceOutboxStore {
          WHERE sync_command_id = ? AND state = 'leased' AND lease_id = ?`,
         [response.ingestionId, this.now().toISOString(), syncCommandId, leaseId],
       );
+      if (response.syncStatus === "conflict_recorded") {
+        // ADR-042 §13.5: duplicate / unmatched clock event preserved by the server as evidence. The local
+        // event is server-received (true) and the conflict receipt says it was NOT applied to the timeline.
+        recordServerConflict(this.database, this.now(), syncCommandId, "attendance", response);
+      }
       const event = this.database.connection
         .prepare(
           `UPDATE local_attendance_event SET lifecycle = 'received', server_ingestion_id = ?,

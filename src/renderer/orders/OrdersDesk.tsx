@@ -10,6 +10,7 @@ import { classifyCommerceError } from "../commerce/errors";
 import { formatMoney } from "../money";
 import { formatDateTime } from "../format";
 import { DateRangeFilter } from "../shell/DateRangeFilter";
+import { Select } from "../shell/Select";
 import { useI18n, type TVars } from "../shell/i18n";
 import { SkeletonLines } from "../shell/Skeleton";
 
@@ -69,6 +70,7 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
   const [listLoading, setListLoading] = useState(true);
   const [listError, setListError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [orderView, setOrderView] = useState<"all" | "pos" | "online">("all");
   // Date-range filter mirrors the Reports desk's From/To. The orders list API has no date params,
   // so (like the order-number search above) this filters the already-loaded pages client-side on
   // each order's placedAt. It starts empty — no range — so every loaded order shows by default.
@@ -86,14 +88,18 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
     setListLoading(true);
     setListError(null);
     try {
-      // No channel/status filter: the Orders page lists every order the operator may read.
-      setList(await client.listOrders({ limit: 50 }));
+      setList(
+        await client.listOrders({
+          limit: 50,
+          ...(orderView === "all" ? {} : { channel: orderView === "pos" ? "pos" : "online" }),
+        }),
+      );
     } catch (err) {
       setListError(classifyCommerceError(err).message);
     } finally {
       setListLoading(false);
     }
-  }, [client]);
+  }, [client, orderView]);
 
   // Initial load deliberately exposes the loading transition before the async result settles.
   useEffect(() => {
@@ -107,13 +113,14 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
     try {
       const next = await client.listOrders({
         limit: 50,
+        ...(orderView === "all" ? {} : { channel: orderView === "pos" ? "pos" : "online" }),
         cursor: list.pageInfo.nextCursor ?? undefined,
       });
       setList({ ...next, items: [...list.items, ...next.items] });
     } catch (err) {
       setListError(classifyCommerceError(err).message);
     }
-  }, [client, list]);
+  }, [client, list, orderView]);
 
   // Tracks the most recently requested order so a slow response for a previously-clicked order can
   // never overwrite the detail the operator is actually looking at.
@@ -219,6 +226,23 @@ export function OrdersDesk({ client }: { client: TenantCommerceClient }) {
             onFromChange={setStartDate}
             onToChange={setEndDate}
           />
+          <label>
+            {t("orders.view")}
+            <Select<typeof orderView>
+              ariaLabel={t("orders.view")}
+              value={orderView}
+              onChange={(next) => {
+                setOrderView(next);
+                setSelectedId(null);
+                setList(null);
+              }}
+              options={[
+                { value: "all", label: t("orders.view.all") },
+                { value: "pos", label: t("orders.view.pos") },
+                { value: "online", label: t("orders.view.online") },
+              ]}
+            />
+          </label>
           {hasDateFilter ? (
             <button
               className="button button--quiet"
@@ -444,7 +468,12 @@ function OrderDetail({
                     <td className="muted">{line.lineNumber}</td>
                     <td>
                       <strong>{line.productName}</strong>
-                      <small>{t("cashier.sku", { sku: line.sku })}</small>
+                      <small>
+                        {line.optionSummary || line.variantName
+                          ? `${line.optionSummary ?? line.variantName} · `
+                          : ""}
+                        {t("cashier.sku", { sku: line.sku })}
+                      </small>
                     </td>
                     <td className="end">{line.quantity}</td>
                     <td className="end muted">

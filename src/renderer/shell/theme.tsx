@@ -65,6 +65,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (typeof document === "undefined") return;
     document.documentElement.dataset.theme = theme;
     window.localStorage.setItem(STORAGE_KEY, theme);
+    // Keep the native OS frame (title bar/border) in step with the app theme.
+    window.view?.setNativeTheme?.(theme).catch(() => undefined);
   }, [theme]);
 
   useEffect(() => {

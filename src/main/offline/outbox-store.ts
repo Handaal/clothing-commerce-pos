@@ -73,6 +73,12 @@ export class OutboxStore {
         .prepare(
           `SELECT sync_command_id FROM outbox
            WHERE state IN ('pending', 'retry_wait') AND next_attempt_at <= ?
+             -- A command that depends on an offline-created customer waits until that customer is accepted.
+             AND NOT EXISTS (
+               SELECT 1 FROM local_customer_dependency d
+               WHERE d.dependent_lane = 'sale' AND d.dependent_sync_command_id = outbox.sync_command_id
+                 AND d.state <> 'ready'
+             )
            ORDER BY next_attempt_at, created_at LIMIT 1`,
         )
         .get(nowIso) as { sync_command_id: string } | undefined;

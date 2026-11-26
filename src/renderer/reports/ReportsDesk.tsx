@@ -1,5 +1,6 @@
 import type {
   InventoryReportResponse,
+  PayrollReportResponse,
   InventoryView,
   ProductLevel,
   ProductsReportResponse,
@@ -27,7 +28,15 @@ import { SkeletonLines } from "../shell/Skeleton";
 import { OfflineLocalReport } from "./OfflineLocalReport";
 
 type T = (key: string, vars?: TVars) => string;
-type Tab = "summary" | "sales" | "products" | "inventory" | "returns" | "promotions" | "suppliers";
+type Tab =
+  | "summary"
+  | "sales"
+  | "products"
+  | "inventory"
+  | "returns"
+  | "promotions"
+  | "suppliers"
+  | "workforce";
 
 const TABS: readonly { id: Tab; labelKey: string }[] = [
   { id: "summary", labelKey: "reports.tab.summary" },
@@ -37,6 +46,7 @@ const TABS: readonly { id: Tab; labelKey: string }[] = [
   { id: "returns", labelKey: "reports.tab.returns" },
   { id: "promotions", labelKey: "reports.tab.promotions" },
   { id: "suppliers", labelKey: "reports.tab.suppliers" },
+  { id: "workforce", labelKey: "reports.tab.workforce" },
 ];
 
 // One loaded report. The union keeps each response strongly typed while a single loader drives the view.
@@ -47,7 +57,8 @@ type Payload =
   | { kind: "inventory"; data: InventoryReportResponse }
   | { kind: "returns"; data: ReturnsReportResponse }
   | { kind: "promotions"; data: PromotionsReportResponse }
-  | { kind: "suppliers"; data: SuppliersReportResponse };
+  | { kind: "suppliers"; data: SuppliersReportResponse }
+  | { kind: "workforce"; data: PayrollReportResponse };
 
 // Which canonical CSV dataset (if any) the current tab exports. Sales/summary/promotions have none.
 const EXPORT_DATASET: Partial<Record<Tab, ReportExportQuery["dataset"]>> = {
@@ -214,6 +225,11 @@ export function ReportsDesk({ client }: { client: TenantCommerceClient }) {
               limit: PAGE_LIMIT,
               ...(cursor ? { cursor } : {}),
             }),
+          };
+        case "workforce":
+          return {
+            kind: "workforce",
+            data: await client.getPayrollReport({ from: startDate, to: endDate }),
           };
       }
     },
@@ -520,7 +536,70 @@ function ReportBody({ payload, salesView }: { payload: Payload; salesView: Sales
       return <PromotionsReport data={payload.data} />;
     case "suppliers":
       return <SuppliersReport data={payload.data} />;
+    case "workforce":
+      return <WorkforceReport data={payload.data} />;
   }
+}
+
+function WorkforceReport({ data }: { data: PayrollReportResponse }) {
+  const { t, locale } = useI18n();
+  const currency = data.items[0]?.currency ?? BUSINESS_CURRENCY;
+  const hours = data.items.reduce((sum, row) => sum + row.workedHours, 0);
+  const overtimeHours = data.items.reduce((sum, row) => sum + row.overtimeHours, 0);
+  return (
+    <section className="staff-card">
+      <div className="staff-stats">
+        <div className="staff-stat">
+          <span>{t("reports.workforce.people")}</span>
+          <strong>{data.items.length}</strong>
+        </div>
+        <div className="staff-stat">
+          <span>{t("reports.workforce.hours")}</span>
+          <strong>{hours.toFixed(1)}</strong>
+        </div>
+        <div className="staff-stat">
+          <span>{t("reports.workforce.overtimeHours")}</span>
+          <strong>{overtimeHours.toFixed(1)}</strong>
+        </div>
+        <div className="staff-stat">
+          <span>{t("reports.workforce.overtimePay")}</span>
+          <strong>{formatMoney(data.totals.overtimeAmountMinor, currency, locale)}</strong>
+        </div>
+        <div className="staff-stat staff-stat--accent">
+          <span>{t("reports.workforce.netPay")}</span>
+          <strong>{formatMoney(data.totals.netPayMinor, currency, locale)}</strong>
+        </div>
+      </div>
+      <div className="staff-table-wrap">
+        <table className="staff-table">
+          <thead>
+            <tr>
+              <th>{t("staff.col.employee")}</th>
+              <th>{t("reports.workforce.hours")}</th>
+              <th>{t("reports.workforce.overtimeHours")}</th>
+              <th>{t("reports.workforce.overtimePay")}</th>
+              <th>{t("staff.col.bonus")}</th>
+              <th>{t("staff.col.deductions")}</th>
+              <th>{t("reports.workforce.netPay")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.items.map((row) => (
+              <tr key={row.membershipId}>
+                <td>{row.memberDisplayName ?? row.memberEmail ?? row.membershipId}</td>
+                <td>{row.workedHours.toFixed(1)}</td>
+                <td>{row.overtimeHours.toFixed(1)}</td>
+                <td>{formatMoney(row.overtimeAmountMinor, row.currency, locale)}</td>
+                <td>{formatMoney(row.bonusMinor, row.currency, locale)}</td>
+                <td>{formatMoney(row.deductionMinor, row.currency, locale)}</td>
+                <td>{formatMoney(row.netPayMinor, row.currency, locale)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
 }
 
 function SummaryReport({ data }: { data: ReportSummaryResponse }) {

@@ -14,6 +14,27 @@ afterEach(() => {
 // provisional (accepted_pending_sync) and never as server-confirmed payroll. Server acceptance is proven
 // separately by the isolated real-API attendance integration suite.
 describe("offline attendance capture", () => {
+  it("keeps a team member's signed clock events separate from the operator's own clock", async () => {
+    const harness = makeHarness();
+    harnesses.push(harness);
+    const member = "2a000012-0000-4000-8000-000000000002";
+    const accepted = harness.sales.recordAttendanceEvent({
+      membershipId: member,
+      eventType: "clock_in",
+    });
+    expect(accepted).toMatchObject({ operatorMembershipId: ids.membership, membershipId: member });
+    expect(harness.sales.getLocalAttendance().lastEvent).toBeNull();
+    expect(harness.sales.getLocalAttendance(member).lastEvent?.eventType).toBe("clock_in");
+    const row = harness.database.connection
+      .prepare("SELECT membership_id FROM local_attendance_event WHERE local_event_id = ?")
+      .get(accepted.localEventId) as { membership_id: string };
+    expect(row.membership_id).toBe(member);
+    const request = harness.database.connection
+      .prepare("SELECT request_json FROM attendance_outbox WHERE sync_command_id = ?")
+      .get(accepted.syncCommandId) as { request_json: string };
+    expect(JSON.parse(request.request_json).command.membershipId).toBe(member);
+  });
+
   it("persists an immutable signed clock event to the local table and outbox in one transaction", async () => {
     const harness = makeHarness();
     harnesses.push(harness);

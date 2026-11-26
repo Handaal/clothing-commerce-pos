@@ -1,19 +1,16 @@
 import { useState } from "react";
 
+import { isPosPinFormat } from "../../shared/pos-auth";
 import { useI18n } from "./i18n";
 import { useModalA11y } from "./useModalA11y";
 
-// A reusable admin-credential gate for revealing sensitive figures or approving a sensitive action.
-// It verifies a username + PIN and only resolves when the matched operator is an admin — mirroring
-// shifted-cafe-v2's `requireAdmin`.
-//
-// Connected tills sign in with server (pos_pin) accounts, so the authoritative step-up check is the
-// server — `posSession.verifyCredentials`, which validates WITHOUT replacing the live session (a
-// supervisor can approve on a cashier's till without hijacking it). The offline roster (`posAuth`) is
-// a separate credential store with its own locally-created PINs, so checking it for a connected
-// operator wrongly rejected their real credentials. We fall back to it only when the server is
-// unreachable, so an offline operator can still unlock. When neither bridge exists (e.g. a
-// non-Electron test host), the gate resolves immediately so the permissive default is unchanged.
+// A reusable admin-credential gate for revealing sensitive figures or approving a sensitive action (the
+// shifted-cafe `requireAdmin`). ADR-043: the API is the only POS credential authority, so the step-up check is
+// `posSession.verifyCredentials` — verified by the server WITHOUT minting or replacing the live session (a
+// supervisor approves on a cashier's till without taking it over). There is no device-local account store to
+// fall back to any more. When the server is unreachable the gate FAILS CLOSED with a clear message: offline
+// device verifiers carry no POS role, so admin authority cannot be proven offline (ADR-043 §10, owner decision).
+// A definitive rejection is always a denial. Only a non-Electron test host (no session bridge) resolves directly.
 export function AdminGate({
   title,
   onVerified,
@@ -32,51 +29,35 @@ export function AdminGate({
 
   async function verify() {
     const sessionBridge = window.posSession;
-    const rosterBridge = window.posAuth;
-    if (!sessionBridge && !rosterBridge) {
-      // No auth configured at all: nothing to verify against, so allow the reveal.
+    if (!sessionBridge) {
+      // Non-Electron test host: no auth configured at all, so the permissive default is unchanged.
       onVerified();
       return;
     }
     const name = username.trim();
-    const code = pin.trim();
-    if (name === "" || code === "") {
+    if (name === "" || pin === "") {
       setError(t("adminGate.err.required"));
+      return;
+    }
+    if (!isPosPinFormat(pin)) {
+      setPin("");
+      setError(t("login.pinTooShort"));
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      // Authoritative connected check first. A wrong credential here is definitive (deny); only an
-      // unreachable/unconfigured server falls through to the offline roster.
-      if (sessionBridge) {
-        const result = await sessionBridge.verifyCredentials(name, code);
-        if (result.ok) {
-          if (result.role !== "admin") {
-            setError(t("adminGate.err.denied"));
-            return;
-          }
-          onVerified();
-          return;
-        }
-        if (result.reason === "INVALID_CREDENTIALS") {
-          setError(t("adminGate.err.denied"));
-          return;
-        }
-        // OFFLINE / NOT_CONFIGURED / ERROR → try the offline roster below.
-      }
-      if (rosterBridge) {
-        const result = await rosterBridge.login(name, code);
-        if (!result.ok || result.user.role !== "admin") {
-          setError(t("adminGate.err.denied"));
-          return;
-        }
+      const result = await sessionBridge.verifyCredentials(name, pin);
+      if (result.ok && result.role === "admin") {
         onVerified();
         return;
       }
-      // Server was unreachable and there is no offline roster to fall back to.
-      setError(t("adminGate.err.denied"));
+      setPin("");
+      if (!result.ok && result.reason === "OFFLINE") setError(t("adminGate.err.offline"));
+      else if (!result.ok && result.reason === "ERROR") setError(t("login.serverError"));
+      else setError(t("adminGate.err.denied"));
     } catch {
+      setPin("");
       setError(t("adminGate.err.denied"));
     } finally {
       setBusy(false);
@@ -108,6 +89,7 @@ export function AdminGate({
               value={pin}
               disabled={busy}
               onChange={(e) => setPin(e.target.value)}
+              aria-describedby={error ? "admin-gate-error" : undefined}
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
@@ -117,7 +99,7 @@ export function AdminGate({
             />
           </label>
           {error ? (
-            <div className="notice notice--error" role="alert">
+            <div className="notice notice--error" role="alert" id="admin-gate-error">
               {error}
             </div>
           ) : null}

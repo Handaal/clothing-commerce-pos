@@ -9,7 +9,6 @@ import { useI18n } from "../shell/i18n";
 // PIN is an access gate. Failures are collapsed to one message so a probe cannot tell whether the
 // username or the PIN was wrong; a throttled username shows a distinct "try again shortly" hint.
 const PAD = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "C", "0", "⌫"] as const;
-const MAX_PIN = 8;
 
 interface OfflineStaffPinSignInProps {
   readonly bridge: OfflineBridge;
@@ -58,7 +57,7 @@ export function OfflineStaffPinSignIn({ bridge, onSignedIn, onBack }: OfflineSta
     const onKey = (event: KeyboardEvent) => {
       if (event.key >= "0" && event.key <= "9") {
         setError("none");
-        setPin((current) => (current.length < MAX_PIN ? current + event.key : current));
+        setPin((current) => current + event.key);
       } else if (event.key === "Backspace") {
         setError("none");
         setPin((current) => current.slice(0, -1));
@@ -145,7 +144,7 @@ export function OfflineStaffPinSignIn({ bridge, onSignedIn, onBack }: OfflineSta
               setError("none");
               if (key === "C") setPin("");
               else if (key === "⌫") setPin((current) => current.slice(0, -1));
-              else setPin((current) => (current.length < MAX_PIN ? current + key : current));
+              else setPin((current) => current + key);
             }}
           >
             {key}

@@ -7,8 +7,9 @@ import type { OfflineBootstrapResponse } from "@shifted/clothing-commerce-sdk" w
 import type { OfflineBootstrapInput, OfflineBootstrapResult } from "../../shared/offline";
 import { OfflineAuthorityStore } from "./authority-store";
 import { DeviceKeyStore } from "./device-key";
+import type { OverrideRosterEntry, OverrideRosterStore } from "./override-roster";
 
-function compareVersions(left: string, right: string): number {
+export function compareVersions(left: string, right: string): number {
   const parse = (value: string) =>
     value
       .split("-", 1)[0]
@@ -29,6 +30,7 @@ export class OfflineBootstrapService {
     private readonly authority: OfflineAuthorityStore,
     private readonly keys: DeviceKeyStore,
     private readonly now: () => Date = () => new Date(),
+    private readonly overrideRoster?: OverrideRosterStore,
   ) {}
 
   async bootstrap(input: OfflineBootstrapInput): Promise<OfflineBootstrapResult> {
@@ -71,6 +73,8 @@ export class OfflineBootstrapService {
 
     const device = this.authority.getActiveDevice();
     const bootstrapKey = this.authority.prepareBootstrapIdempotencyKey();
+    // ADR-042 §13: no per-till stock or voucher grant exists, so nothing must be "closed" before the next
+    // sign-in/bootstrap; unsynced offline sales simply keep syncing against the shared stock.
     const bootstrap = await client.createOfflineBootstrap({
       idempotencyKey: bootstrapKey,
       deviceId: device.deviceId,
@@ -80,6 +84,12 @@ export class OfflineBootstrapService {
     const releasedProjectionCount = this.authority.installBootstrap(
       bootstrap,
       this.now().toISOString(),
+    );
+    // ADR-042 §6.3: admin override verifiers live in the OS-sealed roster file, never in SQLite.
+    this.overrideRoster?.install(
+      bootstrap.grantId,
+      bootstrap.deviceId,
+      (bootstrap as unknown as { overrideRoster?: OverrideRosterEntry[] }).overrideRoster ?? [],
     );
     return {
       deviceId: bootstrap.deviceId,

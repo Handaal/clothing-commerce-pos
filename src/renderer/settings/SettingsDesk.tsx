@@ -16,16 +16,18 @@ import { SkeletonLines, SkeletonTable } from "../shell/Skeleton";
 import { useTheme } from "../shell/theme";
 import { useToast } from "../shell/Toast";
 import { useModalA11y } from "../shell/useModalA11y";
+import { OverridePasswordPanel } from "./OverridePasswordPanel";
 import { PosUsersManager } from "./PosUsersManager";
 import type { PosAuthBridge, PosUser } from "../../shared/pos-auth";
 
-type Tab = "business" | "branches" | "registers" | "returns" | "appearance" | "team";
+type Tab = "business" | "branches" | "registers" | "returns" | "override" | "appearance" | "team";
 
 const TABS: readonly { id: Tab; labelKey: string }[] = [
   { id: "business", labelKey: "settings.tab.business" },
   { id: "branches", labelKey: "settings.tab.branches" },
   { id: "registers", labelKey: "settings.tab.registers" },
   { id: "returns", labelKey: "settings.tab.returns" },
+  { id: "override", labelKey: "overridePassword.title" },
   { id: "appearance", labelKey: "settings.tab.appearance" },
 ];
 
@@ -80,6 +82,8 @@ export function SettingsDesk({
         <RegistersTab client={client} />
       ) : activeTab === "returns" ? (
         <ReturnsTab client={client} currency={currency} />
+      ) : activeTab === "override" ? (
+        <OverridePasswordPanel client={client} />
       ) : activeTab === "team" ? (
         <PosUsersManager client={client} rosterBridge={posAuthBridge} operator={operator ?? null} />
       ) : (
@@ -323,6 +327,9 @@ interface ReturnsDraft {
   manualRefundsEnabled: boolean;
   maxManualRefund: string;
   allowedReasons: string;
+  // ADR-042 D-7: per-grant offline refund budget (blank = offline return grants are off).
+  offlineRefundBudget: string;
+  offlineRequiresApproval: boolean;
 }
 
 function toReturnsDraft(settings: ReturnSettings): ReturnsDraft {
@@ -335,10 +342,24 @@ function toReturnsDraft(settings: ReturnSettings): ReturnsDraft {
         ? ""
         : minorToMajorInput(settings.maxManualRefundMinor),
     allowedReasons: settings.allowedReasons.join(", "),
+    offlineRefundBudget:
+      settings.offlineRefundBudgetMinor === null || settings.offlineRefundBudgetMinor === undefined
+        ? ""
+        : minorToMajorInput(settings.offlineRefundBudgetMinor),
+    offlineRequiresApproval: settings.offlineRequiresAdminCredentials === true,
   };
 }
 
-function ReturnsTab({ client, currency }: { client: TenantCommerceClient; currency: string }) {
+export function ReturnsTab({
+  client,
+  currency,
+  readOnly = false,
+}: {
+  client: Pick<TenantCommerceClient, "getReturnSettings" | "updateReturnSettings">;
+  currency: string;
+  /** Show the policy without editing (an operator who can read but not manage settings). */
+  readOnly?: boolean;
+}) {
   const { t, locale } = useI18n();
   const [settings, setSettings] = useState<ReturnSettings | null>(null);
   const [draft, setDraft] = useState<ReturnsDraft | null>(null);
@@ -396,6 +417,15 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
       }
       maxManualRefundMinor = parsed;
     }
+    let offlineRefundBudgetMinor: number | null = null;
+    if (draft.offlineRefundBudget.trim() !== "") {
+      const parsed = parseMajorToMinor(draft.offlineRefundBudget);
+      if (parsed === null) {
+        toast.error(t("settings.err.refundCap"));
+        return;
+      }
+      offlineRefundBudgetMinor = parsed;
+    }
     const allowedReasons = draft.allowedReasons
       .split(",")
       .map((reason) => reason.trim())
@@ -410,6 +440,8 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
         manualRefundsEnabled: draft.manualRefundsEnabled,
         maxManualRefundMinor,
         allowedReasons,
+        offlineRefundBudgetMinor,
+        offlineRequiresAdminCredentials: draft.offlineRequiresApproval,
       });
       setSettings(result);
       setDraft(toReturnsDraft(result));
@@ -444,6 +476,7 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
             <input
               type="checkbox"
               checked={draft.enabled}
+              disabled={readOnly}
               onChange={(event) => update({ enabled: event.target.checked })}
             />
             {t("settings.allowReturns")}
@@ -454,14 +487,16 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
               inputMode="numeric"
               value={draft.windowDays}
               placeholder={t("settings.noLimit")}
-              disabled={!draft.enabled}
+              disabled={readOnly || !draft.enabled}
               onChange={(event) => update({ windowDays: event.target.value })}
             />
+            <span className="muted">{t("settings.returnWindowHint")}</span>
           </label>
           <label className="field settings-check">
             <input
               type="checkbox"
               checked={draft.manualRefundsEnabled}
+              disabled={readOnly}
               onChange={(event) => update({ manualRefundsEnabled: event.target.checked })}
             />
             {t("settings.allowManualRefunds")}
@@ -472,31 +507,54 @@ function ReturnsTab({ client, currency }: { client: TenantCommerceClient; curren
               inputMode="decimal"
               value={draft.maxManualRefund}
               placeholder={t("settings.noCap")}
-              disabled={!draft.manualRefundsEnabled}
+              disabled={readOnly || !draft.manualRefundsEnabled}
               onChange={(event) => update({ maxManualRefund: event.target.value })}
             />
+          </label>
+          <label className="field">
+            {t("settings.offlineRefundBudget", { sym: currencySymbol(currency, locale) })}
+            <input
+              inputMode="decimal"
+              value={draft.offlineRefundBudget}
+              placeholder={t("settings.offlineReturnsOff")}
+              disabled={readOnly || !draft.enabled}
+              data-testid="settings-offline-refund-budget"
+              onChange={(event) => update({ offlineRefundBudget: event.target.value })}
+            />
+          </label>
+          <label className="field settings-check">
+            <input
+              type="checkbox"
+              checked={draft.offlineRequiresApproval}
+              disabled={readOnly || !draft.enabled}
+              onChange={(event) => update({ offlineRequiresApproval: event.target.checked })}
+            />
+            {t("settings.offlineReturnsApproval")}
           </label>
           <label className="field settings-grid__wide">
             {t("settings.allowedReasons")}
             <input
               value={draft.allowedReasons}
               placeholder={t("settings.reasonsPlaceholder")}
+              disabled={readOnly}
               onChange={(event) => update({ allowedReasons: event.target.value })}
             />
           </label>
         </div>
-        <div className="staff-modal__actions">
-          <button
-            className="button button--quiet"
-            disabled={!dirty || busy}
-            onClick={() => setDraft(toReturnsDraft(settings))}
-          >
-            {t("settings.discard")}
-          </button>
-          <button className="button" disabled={!dirty || busy} onClick={() => void save()}>
-            {busy ? t("settings.saving") : t("settings.saveChanges")}
-          </button>
-        </div>
+        {readOnly ? null : (
+          <div className="staff-modal__actions">
+            <button
+              className="button button--quiet"
+              disabled={!dirty || busy}
+              onClick={() => setDraft(toReturnsDraft(settings))}
+            >
+              {t("settings.discard")}
+            </button>
+            <button className="button" disabled={!dirty || busy} onClick={() => void save()}>
+              {busy ? t("settings.saving") : t("settings.saveChanges")}
+            </button>
+          </div>
+        )}
       </section>
     </>
   );

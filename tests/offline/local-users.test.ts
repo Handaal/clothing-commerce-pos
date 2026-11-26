@@ -1,139 +1,120 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { LocalUserStore } from "../../src/main/local-users/store";
+import { parseRosterCache } from "../../src/main/local-users/ipc";
 import { LocalDatabase } from "../../src/main/offline/database";
-import { LocalUserStore, PosAuthError } from "../../src/main/local-users/store";
+import { applyLocalMigrations } from "../../src/main/offline/migrations";
 
-// Each store gets its own throwaway on-disk ledger (WAL needs a real file), cleaned up after the test.
-const cleanups: Array<() => void> = [];
+// ADR-043: `pos_users` is a DISPLAY-ONLY roster cache. It must never authenticate, never hold a PIN hash, and an
+// upgrade must erase any hash a retired cafe-style local account left behind.
+const directories: string[] = [];
+const closers: Array<() => void> = [];
 afterEach(() => {
-  for (const cleanup of cleanups.splice(0)) cleanup();
+  for (const close of closers.splice(0)) close();
+  for (const directory of directories.splice(0))
+    rmSync(directory, { recursive: true, force: true });
 });
 
-function makeStore(): LocalUserStore {
-  const directory = mkdtempSync(path.join(os.tmpdir(), "commerce-pos-users-test-"));
-  const database = new LocalDatabase(path.join(directory, "ledger.sqlite3"));
-  cleanups.push(() => {
-    database.close();
-    rmSync(directory, { recursive: true, force: true });
-  });
-  return new LocalUserStore(database);
+function databasePath(): string {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "commerce-pos-roster-test-"));
+  directories.push(directory);
+  return path.join(directory, "ledger.sqlite3");
 }
 
-describe("local POS user store", () => {
-  it("starts empty and requires the first account to be an admin", () => {
-    const store = makeStore();
+function open(file = databasePath()): { store: LocalUserStore; database: LocalDatabase } {
+  const database = new LocalDatabase(file);
+  closers.push(() => database.close());
+  return { store: new LocalUserStore(database), database };
+}
+
+describe("display-only POS roster cache", () => {
+  it("exposes no credential capability at all", () => {
+    const { store } = open();
+    for (const method of [
+      "login",
+      "createUser",
+      "updateUser",
+      "setPin",
+      "verifyUserPin",
+      "verifyPin",
+    ]) {
+      expect((store as unknown as Record<string, unknown>)[method]).toBeUndefined();
+    }
+  });
+
+  it("mirrors the server roster without any secret and offers only active accounts", () => {
+    const { store, database } = open();
     expect(store.count()).toBe(0);
-    expect(() =>
-      store.createUser({ username: "dana", name: "Dana", role: "cashier", pin: "1234" }),
-    ).toThrow(PosAuthError);
-  });
-
-  it("creates an account and signs in with the correct PIN only", () => {
-    const store = makeStore();
-    const admin = store.createUser({
-      username: "Owner",
-      name: "Owner",
-      role: "admin",
-      pin: "4321",
-    });
-    expect(admin.role).toBe("admin");
-    // Username is normalised to lower-case; the stored hash is never exposed on the public user.
-    expect(admin.username).toBe("owner");
-    expect(store.login("owner", "4321")).toEqual({ ok: true, user: admin });
-    expect(store.login("  OWNER ", "4321").ok).toBe(true);
-    expect(store.login("owner", "0000")).toEqual({ ok: false });
-    expect(store.login("ghost", "4321")).toEqual({ ok: false });
-  });
-
-  it("rejects a duplicate username and an out-of-range PIN", () => {
-    const store = makeStore();
-    store.createUser({ username: "dana", name: "Dana", role: "admin", pin: "1234" });
-    expect(() =>
-      store.createUser({ username: "dana", name: "Other", role: "cashier", pin: "5678" }),
-    ).toThrow(new PosAuthError("USERNAME_TAKEN"));
-    expect(() =>
-      store.createUser({ username: "sam", name: "Sam", role: "cashier", pin: "12" }),
-    ).toThrow(new PosAuthError("INVALID_PIN"));
-  });
-
-  it("only lists active accounts in the roster and verifies a specific account's PIN", () => {
-    const store = makeStore();
-    const admin = store.createUser({ username: "dana", name: "Dana", role: "admin", pin: "1234" });
-    const cashier = store.createUser({
-      username: "sam",
-      name: "Sam",
-      role: "cashier",
-      pin: "5678",
-      permissions: ["orders", "reports"],
-    });
-    expect(
-      store
-        .roster()
-        .map((entry) => entry.username)
-        .sort(),
-    ).toEqual(["dana", "sam"]);
-    expect(store.verifyUserPin(cashier.id, "5678")).toBe(true);
-    expect(store.verifyUserPin(cashier.id, "0000")).toBe(false);
-
-    store.updateUser(cashier.id, { active: false });
-    expect(store.roster().map((entry) => entry.username)).toEqual(["dana"]);
-    // A deactivated account can no longer sign in even with the right PIN.
-    expect(store.login("sam", "5678")).toEqual({ ok: false });
-    expect(admin.permissions).toBeNull();
-  });
-
-  it("keeps a cashier's granted sections and resets a PIN", () => {
-    const store = makeStore();
-    store.createUser({ username: "dana", name: "Dana", role: "admin", pin: "1111" });
-    const cashier = store.createUser({
-      username: "sam",
-      name: "Sam",
-      role: "cashier",
-      pin: "2222",
-      permissions: ["orders"],
-    });
-    expect(store.getById(cashier.id)?.permissions).toEqual(["orders"]);
-    store.setPin(cashier.id, "9999");
-    expect(store.login("sam", "2222").ok).toBe(false);
-    expect(store.login("sam", "9999").ok).toBe(true);
-  });
-
-  it("replaces the roster display cache from the server list (display-only, no usable PIN)", () => {
-    const store = makeStore();
-    store.createUser({ username: "old", name: "Old", role: "admin", pin: "1234" });
     store.replaceRosterCache([
-      { username: "Dana", name: "Dana", role: "admin", active: true },
-      { username: "sam", name: "Sam", role: "cashier", active: true },
+      { username: "Mariam", name: "Mariam", role: "admin", active: true },
+      { username: "omar", name: "Omar", role: "cashier", active: true },
       { username: "gone", name: "Gone", role: "cashier", active: false },
     ]);
-    // The prior local account is wiped; the cache is a full replacement of the server's pos_pin accounts.
     expect(store.count()).toBe(3);
-    expect(
-      store
-        .roster()
-        .map((entry) => entry.username)
-        .sort(),
-    ).toEqual(["dana", "sam"]);
-    // Cache rows never authenticate — verification is the server (online) or staff_roster (offline).
-    expect(store.login("dana", "1234").ok).toBe(false);
-    expect(store.login("old", "1234").ok).toBe(false);
+    expect(store.roster().map((entry) => entry.username)).toEqual(["mariam", "omar"]);
+    const rows = database.connection.prepare("SELECT pin_hash FROM pos_users").all() as Array<{
+      pin_hash: string;
+    }>;
+    expect(rows.every((row) => row.pin_hash === "")).toBe(true);
+    // Replacing again drops anyone the server no longer lists.
+    store.replaceRosterCache([{ username: "omar", name: "Omar", role: "cashier", active: true }]);
+    expect(store.roster().map((entry) => entry.username)).toEqual(["omar"]);
   });
 
-  it("refuses to demote or deactivate the last active admin", () => {
-    const store = makeStore();
-    const admin = store.createUser({ username: "dana", name: "Dana", role: "admin", pin: "1234" });
-    expect(() => store.updateUser(admin.id, { role: "cashier" })).toThrow(
-      new PosAuthError("LAST_ADMIN"),
-    );
-    expect(() => store.updateUser(admin.id, { active: false })).toThrow(
-      new PosAuthError("LAST_ADMIN"),
-    );
-    // With a second admin present, the first may be demoted.
-    store.createUser({ username: "sam", name: "Sam", role: "admin", pin: "5678" });
-    expect(store.updateUser(admin.id, { role: "cashier" }).role).toBe("cashier");
+  it("refuses to store a PIN hash even through a direct write (v24 triggers)", () => {
+    const { database } = open();
+    const now = new Date().toISOString();
+    expect(() =>
+      database.connection
+        .prepare(
+          `INSERT INTO pos_users(id, username, name, role, pin_hash, permissions_json, active, created_at, updated_at)
+           VALUES ('x', 'evil', 'Evil', 'admin', 'aa:bb', NULL, 1, ?, ?)`,
+        )
+        .run(now, now),
+    ).toThrow(/display-only/);
+    database.connection
+      .prepare(
+        `INSERT INTO pos_users(id, username, name, role, pin_hash, permissions_json, active, created_at, updated_at)
+         VALUES ('y', 'ok', 'Ok', 'cashier', '', NULL, 1, ?, ?)`,
+      )
+      .run(now, now);
+    expect(() =>
+      database.connection.prepare("UPDATE pos_users SET pin_hash = 'aa:bb' WHERE id = 'y'").run(),
+    ).toThrow(/display-only/);
+  });
+
+  it("upgrade from v23 erases legacy device-local PIN hashes (no second credential store survives)", () => {
+    const file = databasePath();
+    const legacy = new DatabaseSync(file);
+    applyLocalMigrations(legacy, { targetVersion: 23 });
+    const now = new Date().toISOString();
+    legacy
+      .prepare(
+        `INSERT INTO pos_users(id, username, name, role, pin_hash, permissions_json, active, created_at, updated_at)
+         VALUES ('legacy', 'oldadmin', 'Old Admin', 'admin', 'deadbeef:cafebabe', NULL, 1, ?, ?)`,
+      )
+      .run(now, now);
+    legacy.close();
+
+    const { store, database } = open(file);
+    const row = database.connection
+      .prepare("SELECT pin_hash FROM pos_users WHERE id = 'legacy'")
+      .get() as { pin_hash: string };
+    expect(row.pin_hash).toBe("");
+    // The account still appears on the picker (display only) — signing in goes to the server.
+    expect(store.roster().map((entry) => entry.username)).toEqual(["oldadmin"]);
+  });
+
+  it("IPC parsing keeps only display fields (a stray pin on the payload is dropped)", () => {
+    const parsed = parseRosterCache([
+      { username: "omar", name: "Omar", role: "cashier", active: true, pin: "1234", pinHash: "x" },
+    ]);
+    expect(parsed).toEqual([{ username: "omar", name: "Omar", role: "cashier", active: true }]);
+    expect(JSON.stringify(parsed)).not.toContain("1234");
   });
 });

@@ -22,7 +22,7 @@ describe("Electron renderer security", () => {
     expect(PRODUCTION_RENDERER_ORIGIN).not.toMatch(/^file:/);
   });
 
-  it("allows Clerk to return within the renderer origin without permitting external navigation", () => {
+  it("allows same-origin renderer navigation without permitting external navigation", () => {
     const rendererUrl = "http://127.0.0.1:5173";
 
     expect(isAllowedRendererNavigation("http://127.0.0.1:5173/?handshake=value", rendererUrl)).toBe(

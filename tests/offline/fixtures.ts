@@ -91,6 +91,7 @@ export function ingestionResponse(
       capturedAt: receivedAt,
       createdAt: receivedAt,
       updatedAt: receivedAt,
+      confirmation: "cashier_recorded",
     },
     fulfillment:
       syncStatus === "synced"
@@ -172,6 +173,13 @@ export function bootstrapFixture(
       maxQuantityPerLine: 20,
       maxPendingOfflineSales: 50,
       maxOfflineCreditExposureMinor: 200_000,
+      // A subset is opted in so intent tests exercise both enabled and not-enabled operations.
+      intentOperations: [
+        "inventory.receive",
+        "inventory.count",
+        "suppliers.payment_intent",
+        "review.resolution_request",
+      ],
     },
     catalog: [
       {

@@ -35,7 +35,7 @@ export async function startRendererServer(rendererRoot: string): Promise<Server>
         "Cache-Control": "no-store",
         "Content-Length": fileStat.size,
         "Content-Security-Policy":
-          "default-src 'self'; script-src 'self' https:; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https:; img-src 'self' data: https:; frame-src https:; font-src 'self' https:; object-src 'none'; base-uri 'self'; form-action https:",
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https:; img-src 'self' data: https:; frame-src 'none'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'none'",
         "Content-Type": contentTypes[path.extname(filePath)] ?? "application/octet-stream",
         "X-Content-Type-Options": "nosniff",
       });

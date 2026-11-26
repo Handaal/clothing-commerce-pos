@@ -87,6 +87,53 @@ export interface OfflineSaleInput {
   // for a normal fully-settled sale.
   readonly customerId?: string;
   readonly amountPaidMinor?: number;
+  // ADR-042 §5: an offline voucher (by code, or by grant id for an automatic one). When the voucher needs
+  // approval, a manager types their POS username + override password here; it is checked in the main
+  // process and never stored.
+  readonly voucher?: {
+    readonly code?: string;
+    readonly voucherGrantId?: string;
+    readonly approver?: { readonly username: string; readonly password: string };
+  };
+}
+
+export interface OfflineVoucherPreviewInput {
+  readonly lines: ReadonlyArray<{ readonly variantId: string; readonly quantity: number }>;
+  readonly code: string;
+}
+
+export interface OfflineVoucherPreview {
+  readonly label: string;
+  readonly discountTotalMinor: number;
+  readonly netTotalMinor: number;
+  readonly requiresApproval: boolean;
+  /**
+   * ADR-042 §13.6: freshness of the cached policy the discount was priced from. The discount is PROVISIONAL:
+   * the server confirms it at sync against live shared usage (the Website may use the same voucher meanwhile);
+   * if it disagrees the sale still stands as recorded and a voucher conflict is reported.
+   */
+  readonly policy?: {
+    readonly fetchedAt: string;
+    readonly expiresAt: string;
+    /** Shared remaining usage the server reported at fetch (null = no finite limit). */
+    readonly remainingAtFetch: number | null;
+    /** This till's own uses counted against that number since the fetch. */
+    readonly localUsesSinceFetch: number;
+    readonly provisional: true;
+  };
+}
+
+/** ADR-042 §8: a new customer captured offline. */
+export interface OfflineNewCustomerInput {
+  readonly name: string;
+  readonly phone: string;
+}
+
+export interface AcceptedOfflineCustomer {
+  readonly localCustomerId: string;
+  readonly name: string;
+  readonly phone: string;
+  readonly acceptedAt: string;
 }
 
 export interface AcceptedOfflineSale {
@@ -132,6 +179,20 @@ export interface LocalReceipt {
     readonly unitPriceMinor: number;
     readonly lineTotalMinor: number;
   }>;
+  /**
+   * ADR-042 §13.3: tenders as signed. No payment gateway exists: each tender is cashier-recorded.
+   * 'recorded_locally' until the sale syncs; 'recorded_in_server_ledger' afterwards.
+   */
+  readonly tenders: ReadonlyArray<{
+    readonly method: "cash" | "card" | "instapay" | "wallet";
+    readonly amountMinor: number;
+    readonly confirmation: "recorded_locally" | "recorded_in_server_ledger";
+  }>;
+  /**
+   * ADR-042 §4.6: a sale whose new customer was rejected is never sent as a sale; its terminal hold is
+   * pending, acknowledged by the server (held_for_reconciliation) or refused. Null for every other sale.
+   */
+  readonly reconciliationHold: "hold_pending" | "held_for_reconciliation" | "hold_refused" | null;
 }
 
 export interface OfflineCustomerPaymentInput {
@@ -160,12 +221,18 @@ export interface OfflineCustomer {
    * has rung for them. This is advisory — the server reconciles the true balance on sync.
    */
   readonly projectedOutstandingMinor: number;
+  /** Created on this till while offline (name + phone only); absent for snapshot customers. */
+  readonly createdOffline?: true;
+  /** True until the server has accepted this offline-created customer. */
+  readonly pendingSync?: boolean;
 }
 
 export type OfflineAttendanceEventType = "clock_in" | "clock_out";
 
 export interface OfflineAttendanceEventInput {
   readonly eventType: OfflineAttendanceEventType;
+  /** Team member being clocked; omitted for the signed-in operator's own clock. */
+  readonly membershipId?: string;
 }
 
 /**
@@ -179,6 +246,7 @@ export interface AcceptedOfflineAttendanceEvent {
   readonly localEventId: string;
   readonly syncCommandId: string;
   readonly operatorMembershipId: string;
+  readonly membershipId: string;
   readonly eventType: OfflineAttendanceEventType;
   readonly eventAt: string;
   readonly acceptedAt: string;
@@ -187,6 +255,7 @@ export interface AcceptedOfflineAttendanceEvent {
 export interface LocalAttendanceEvent {
   readonly localEventId: string;
   readonly operatorMembershipId: string;
+  readonly membershipId: string;
   readonly eventType: OfflineAttendanceEventType;
   readonly eventAt: string;
   /** `accepted_pending_sync` = queued locally; `received` = server acknowledged durable receipt. */
@@ -202,6 +271,103 @@ export interface LocalAttendanceState {
   readonly lastEvent: LocalAttendanceEvent | null;
   readonly pending: number;
   readonly recent: readonly LocalAttendanceEvent[];
+}
+
+/** Ask main to fetch (online, with the operator session) and cache an offline return grant for an order. */
+export interface PrepareReturnGrantInput {
+  readonly tenantId: string;
+  readonly accessToken: string;
+  readonly orderId: string;
+}
+
+export interface OfflineReturnGrantLineView {
+  readonly orderLineId: string;
+  readonly lineNumber: number;
+  readonly variantId: string;
+  readonly productName: string | null;
+  readonly sku: string | null;
+  readonly optionSummary: string | null;
+  /** Server-frozen remaining-eligible quantity at grant issuance. */
+  readonly grantedQuantity: number;
+  /** grantedQuantity minus what this device has already captured against the order since issuance. */
+  readonly remainingQuantity: number;
+}
+
+/**
+ * A cached, server-issued offline return grant. It authorizes capturing a return of these lines up to
+ * `remainingQuantity` until `expiresAt`. It carries no refund amount authority: the refund is computed
+ * by the server on sync and created PENDING (never settled offline).
+ */
+export interface OfflineReturnGrantView {
+  readonly returnGrantId: string;
+  readonly orderId: string;
+  readonly orderNumber: string;
+  readonly currency: string;
+  readonly issuedAt: string;
+  readonly expiresAt: string;
+  /** Null ⇒ any non-empty reason; otherwise the reason must be one of these. */
+  readonly allowedReasons: readonly string[] | null;
+  /** ADR-042 §6/§7: a manager's POS username + override password is needed to capture the return. */
+  readonly requiresAdminCredentials: boolean;
+  readonly lines: readonly OfflineReturnGrantLineView[];
+}
+
+export interface OfflineReturnLineInput {
+  readonly orderLineId: string;
+  readonly quantity: number;
+  readonly reason: string;
+  readonly disposition: "restock" | "non_restock";
+}
+
+export interface OfflineReturnInput {
+  readonly returnGrantId: string;
+  readonly lines: readonly OfflineReturnLineInput[];
+  // ADR-042 §6/§7: required when the grant says requiresAdminCredentials. Checked in the main process.
+  readonly approver?: { readonly username: string; readonly password: string };
+}
+
+export type LocalReturnLifecycle = "accepted_pending_sync" | "synced" | "needs_reconciliation";
+
+/** A return captured offline. `refund` is present only once the server computed it (always PENDING). */
+export interface LocalOfflineReturn {
+  readonly localReturnId: string;
+  readonly orderId: string;
+  readonly orderNumber: string;
+  readonly currency: string;
+  readonly acceptedAt: string;
+  readonly lifecycle: LocalReturnLifecycle;
+  readonly serverReturnId: string | null;
+  readonly refund: {
+    readonly id: string;
+    readonly amountMinor: number;
+    readonly currency: string;
+    readonly status: "pending";
+  } | null;
+  readonly reconciliationReason: string | null;
+  readonly lines: ReadonlyArray<{
+    readonly orderLineId: string;
+    readonly lineNumber: number | null;
+    readonly productName: string | null;
+    readonly sku: string | null;
+    readonly quantity: number;
+    readonly reason: string;
+    readonly disposition: "restock" | "non_restock";
+  }>;
+}
+
+export interface AcceptedOfflineReturn {
+  readonly lifecycle: "accepted_pending_sync";
+  readonly localReturnId: string;
+  readonly syncCommandId: string;
+  readonly orderId: string;
+  readonly orderNumber: string;
+  readonly acceptedAt: string;
+}
+
+export interface LocalReturnsState {
+  /** Offline return commands still waiting to sync (pending + leased + retry-waiting). */
+  readonly pending: number;
+  readonly recent: readonly LocalOfflineReturn[];
 }
 
 export interface PendingSyncSummary {
@@ -301,6 +467,166 @@ export interface OfflineBootstrapResult {
   readonly releasedProjectionCount: number;
 }
 
+// ---- Offline operation intents (all-desks lane) ----------------------------------------------------
+// A desk action recorded offline. It is signed, stored and queued locally and never changes anything on
+// the till. On sync the server decides AUTOMATICALLY under the register's handler policy: applied
+// (typed business effect committed), rejected, needs_reconciliation or blocked_policy (fails closed when
+// no owner-approved policy exists). There is no human approval step. "review.resolution_request" is
+// retired: the server always rejects it and the till never offers it.
+export const OFFLINE_INTENT_OPERATIONS = [
+  "inventory.receive",
+  "inventory.adjust",
+  "inventory.count",
+  "suppliers.purchase_draft",
+  "suppliers.goods_receipt",
+  "suppliers.payment_intent",
+  "staff.attendance_correction_request",
+  "staff.role_change_request",
+  "settings.change_request",
+  "settings.device_revoke_request",
+  "customers.create",
+  "customers.update",
+  "review.resolution_request",
+] as const;
+export type OfflineIntentOperation = (typeof OFFLINE_INTENT_OPERATIONS)[number];
+
+export type OfflineIntentPayloadValue =
+  string | number | boolean | null | OfflineIntentPayloadObject | OfflineIntentPayloadValue[];
+export interface OfflineIntentPayloadObject {
+  readonly [key: string]: OfflineIntentPayloadValue;
+}
+
+export interface OfflineIntentInput {
+  readonly operation: OfflineIntentOperation;
+  readonly subjectId: string | null;
+  readonly baseVersion: string | null;
+  readonly dependsOnSyncCommandId: string | null;
+  readonly payload: OfflineIntentPayloadObject;
+}
+
+export interface AcceptedOfflineIntent {
+  readonly lifecycle: "accepted_pending_sync";
+  readonly localIntentId: string;
+  readonly syncCommandId: string;
+  readonly operation: OfflineIntentOperation;
+  readonly acceptedAt: string;
+}
+
+export interface LocalIntent {
+  readonly localIntentId: string;
+  readonly syncCommandId: string;
+  readonly operation: OfflineIntentOperation;
+  readonly subjectId: string | null;
+  readonly payload: OfflineIntentPayloadObject;
+  readonly acceptedAt: string;
+  /** `received` = the server stored it AND decided it automatically (see `disposition`). */
+  readonly lifecycle: "accepted_pending_sync" | "received";
+  readonly outboxState: "pending" | "leased" | "retry_wait" | "delivered" | "blocked";
+  readonly serverReceivedAt: string | null;
+  readonly lastErrorCode: string | null;
+  /**
+   * The server's final machine disposition (null until synced). There is no human approval step:
+   * applied (business effect committed) | rejected (never applied) | needs_reconciliation (conflict
+   * with canonical state; nothing applied) | blocked_policy (no approved handler policy; nothing applied).
+   */
+  readonly disposition: OfflineIntentDisposition | null;
+  readonly dispositionCode: string | null;
+}
+
+export type OfflineIntentDisposition =
+  "applied" | "rejected" | "needs_reconciliation" | "blocked_policy";
+
+export interface LocalIntentsState {
+  /** Operations the active grant's register policy opts into (empty ⇒ none can be recorded offline). */
+  readonly enabledOperations: ReadonlyArray<OfflineIntentOperation>;
+  readonly pending: number;
+  readonly recent: ReadonlyArray<LocalIntent>;
+}
+
+// ---- Review / reconciliation center ----------------------------------------------------------------
+export type ReviewLane = "sale" | "payment" | "attendance" | "return" | "intent";
+/**
+ * One honest status per command, derived from the durable outbox + local lifecycle + server disposition:
+ * queued (saved locally, not sent) | syncing | retry_wait (transient failure, will retry) |
+ * blocked (transport refused the command; exact retry possible) | server_received (stored provisionally,
+ * e.g. attendance awaiting payroll policy; never a person's approval) | accepted (server applied it
+ * canonically) | needs_review (server marked a conflict for operator reconciliation; nothing applied) |
+ * rejected (server refused it deterministically; never applied) | policy_blocked (no approved handler
+ * policy; fails closed, nothing applied).
+ */
+export type ReviewStatus =
+  | "queued"
+  | "syncing"
+  | "retry_wait"
+  | "blocked"
+  | "server_received"
+  | "accepted"
+  | "needs_review"
+  | "rejected"
+  | "policy_blocked";
+export type ReviewActionKind = "retry" | "resolution_request";
+export type ReviewResolutionKind =
+  "investigate" | "confirm_physical_evidence" | "void_request" | "other";
+
+export interface ReviewActionRecord {
+  readonly actionId: string;
+  readonly action: ReviewActionKind;
+  readonly outcome: "requeued" | "requested" | "refused";
+  readonly outcomeDetail: string | null;
+  readonly note: string | null;
+  readonly relatedSyncCommandId: string | null;
+  readonly createdAt: string;
+}
+
+export interface ReviewItem {
+  readonly lane: ReviewLane;
+  readonly syncCommandId: string;
+  readonly localId: string;
+  /** Lane-specific short label (operation, receipt id, clock event…), safe to display. */
+  readonly label: string;
+  readonly status: ReviewStatus;
+  readonly attempts: number;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+  readonly serverIngestionId: string | null;
+  readonly serverReceivedAt: string | null;
+  readonly lastErrorCode: string | null;
+  readonly lastErrorMessage: string | null;
+  readonly payloadHash: string;
+  /** Safe evidence only: identifiers, amounts in minor units, reasons. Never keys/signatures/PII. */
+  readonly evidence: ReadonlyArray<{ readonly key: string; readonly value: string }>;
+  readonly allowedActions: ReadonlyArray<ReviewActionKind>;
+  readonly actions: ReadonlyArray<ReviewActionRecord>;
+}
+
+export interface ReviewQuery {
+  readonly lane?: ReviewLane | "all";
+  /** "attention" = blocked + needs_review + retry_wait + rejected + policy_blocked. */
+  readonly status?: ReviewStatus | "all" | "attention";
+  readonly search?: string;
+}
+
+export interface ReviewRetryInput {
+  readonly actionId: string;
+  readonly lane: ReviewLane;
+  readonly syncCommandId: string;
+}
+
+export interface ReviewResolutionInput {
+  readonly actionId: string;
+  readonly lane: ReviewLane;
+  readonly syncCommandId: string;
+  readonly requestKind: ReviewResolutionKind;
+  readonly note: string;
+}
+
+export interface ReviewActionResult {
+  readonly actionId: string;
+  readonly outcome: "requeued" | "requested" | "refused";
+  readonly detail: string | null;
+  readonly relatedSyncCommandId: string | null;
+}
+
 export interface OfflineBridge {
   getReadiness(): Promise<OfflineReadiness>;
   getCachedCatalog(): Promise<ReadonlyArray<CachedCatalogItem>>;
@@ -310,12 +636,26 @@ export interface OfflineBridge {
   /** Record a customer installment paydown offline; it is queued and synced when connected. */
   recordCustomerPayment(input: OfflineCustomerPaymentInput): Promise<AcceptedOfflinePayment>;
   acceptCashSale(input: OfflineSaleInput): Promise<AcceptedOfflineSale>;
+  previewOfflineVoucher(input: OfflineVoucherPreviewInput): Promise<OfflineVoucherPreview>;
+  addOfflineCustomer(input: OfflineNewCustomerInput): Promise<AcceptedOfflineCustomer>;
   /** Capture a signed, append-only attendance clock event offline; queued and synced when connected. */
   recordAttendanceEvent(
     input: OfflineAttendanceEventInput,
   ): Promise<AcceptedOfflineAttendanceEvent>;
   /** The device-local attendance state for the active offline operator (last event + pending + recent). */
-  getLocalAttendance(): Promise<LocalAttendanceState>;
+  getLocalAttendance(membershipId?: string): Promise<LocalAttendanceState>;
+  /**
+   * ONLINE: fetch a server-issued offline return grant for an order (plus its server line labels) with
+   * the operator's session and cache it durably, so the return can still be captured if the link drops.
+   * Reuses a cached grant for the order while it remains comfortably inside its window.
+   */
+  prepareReturnGrant(input: PrepareReturnGrantInput): Promise<OfflineReturnGrantView>;
+  /** Cached return grants still inside their window, with locally remaining quantities. */
+  getReturnGrants(): Promise<ReadonlyArray<OfflineReturnGrantView>>;
+  /** Capture a signed return offline under a cached grant; queued and synced when connected. */
+  recordReturn(input: OfflineReturnInput): Promise<AcceptedOfflineReturn>;
+  /** Device-local offline returns (pending count + recent history with server outcomes). */
+  getLocalReturns(): Promise<LocalReturnsState>;
   getLocalReceipt(localSaleId: string): Promise<LocalReceipt | null>;
   /**
    * Locally accepted sales the cashier has not yet acknowledged, oldest first. On restart this is
@@ -336,6 +676,23 @@ export interface OfflineBridge {
    * main process against the active grant's roster; the renderer never receives the stored verifier.
    */
   verifyStaffPin(input: OfflineStaffPinInput): Promise<OfflineStaffPinResult>;
+  /** ADR-043 §5.1: end the offline staff session (clears the main-process operator stamped into sales). */
+  endStaffSession(): Promise<void>;
+  /**
+   * Offline PIN v2 (ONLINE): enrol the signed-in person's own NEW offline PIN on this till. The PIN is turned
+   * into a device-bound verifier in the main process and sealed with the OS key store; it is never sent to the
+   * server. Effective after the next online bootstrap.
+   */
+  /** Record a provisional offline operation intent (only operations the grant enables). */
+  recordIntent(input: OfflineIntentInput): Promise<AcceptedOfflineIntent>;
+  /** Enabled intent operations + device-local intent history. */
+  getLocalIntents(): Promise<LocalIntentsState>;
+  /** Every offline command across lanes with its honest status, evidence and allowed actions. */
+  getReviewItems(query: ReviewQuery): Promise<ReadonlyArray<ReviewItem>>;
+  /** Re-queue the EXACT same blocked command (idempotent by actionId; audited). */
+  reviewRetry(input: ReviewRetryInput): Promise<ReviewActionResult>;
+  /** Submit an explicit, signed resolution request for a blocked/needs-review command (audited). */
+  reviewRequestResolution(input: ReviewResolutionInput): Promise<ReviewActionResult>;
 }
 
 export const OFFLINE_IPC_CHANNELS = Object.freeze({
@@ -345,8 +702,14 @@ export const OFFLINE_IPC_CHANNELS = Object.freeze({
   customers: "offline:get-offline-customers",
   recordPayment: "offline:record-customer-payment",
   acceptCash: "offline:accept-cash-sale",
+  previewVoucher: "offline:preview-voucher",
+  addCustomer: "offline:add-customer",
   recordAttendance: "offline:record-attendance-event",
   localAttendance: "offline:get-local-attendance",
+  prepareReturnGrant: "offline:prepare-return-grant",
+  returnGrants: "offline:get-return-grants",
+  recordReturn: "offline:record-return",
+  localReturns: "offline:get-local-returns",
   receipt: "offline:get-local-receipt",
   unacknowledged: "offline:get-unacknowledged-sales",
   acknowledge: "offline:acknowledge-sale",
@@ -356,4 +719,10 @@ export const OFFLINE_IPC_CHANNELS = Object.freeze({
   requestSync: "offline:request-sync",
   bootstrap: "offline:bootstrap",
   verifyPin: "offline:verify-staff-pin",
+  endStaffSession: "offline:end-staff-session",
+  recordIntent: "offline:record-intent",
+  localIntents: "offline:get-local-intents",
+  reviewItems: "offline:get-review-items",
+  reviewRetry: "offline:review-retry",
+  reviewResolution: "offline:review-request-resolution",
 });

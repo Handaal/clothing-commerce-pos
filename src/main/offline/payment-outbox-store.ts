@@ -5,6 +5,7 @@ import type { IngestOfflineCustomerPaymentResponse } from "@shifted/clothing-com
 };
 
 import { LocalDatabase } from "./database";
+import { recordServerConflict } from "./server-conflict-receipt";
 
 export interface PaymentOutboxWorkItem {
   readonly syncCommandId: string;
@@ -54,6 +55,13 @@ export class PaymentOutboxStore {
         .prepare(
           `SELECT sync_command_id FROM payment_outbox
            WHERE state IN ('pending', 'retry_wait') AND next_attempt_at <= ?
+             -- A paydown for an offline-created customer waits until that customer is accepted.
+             AND NOT EXISTS (
+               SELECT 1 FROM local_customer_dependency d
+               WHERE d.dependent_lane = 'payment'
+                 AND d.dependent_sync_command_id = payment_outbox.sync_command_id
+                 AND d.state <> 'ready'
+             )
            ORDER BY next_attempt_at, created_at LIMIT 1`,
         )
         .get(nowIso) as { sync_command_id: string } | undefined;
@@ -134,6 +142,28 @@ export class PaymentOutboxStore {
          WHERE sync_command_id = ? AND state = 'leased' AND lease_id = ?`,
         [response.ingestionId, this.now().toISOString(), syncCommandId, leaseId],
       );
+      if (response.syncStatus === "conflict_recorded") {
+        // ADR-042 §13.5: the server preserved the cashier-recorded paydown as evidence (its debt changed
+        // while this till was offline). Terminal and visible; the recorded tender is never dropped.
+        recordServerConflict(
+          this.database,
+          this.now(),
+          syncCommandId,
+          "customer_payment",
+          response,
+        );
+        const flagged = this.database.connection
+          .prepare(
+            `UPDATE local_customer_payment SET lifecycle = 'needs_reconciliation',
+              server_received_at = ?, synchronized_at = ?
+             WHERE local_payment_id = ? AND lifecycle = 'accepted_pending_sync'`,
+          )
+          .run(response.receivedAt, this.now().toISOString(), response.localPaymentId);
+        if (flagged.changes !== 1) {
+          throw new Error("The claimed local payment is not pending synchronization.");
+        }
+        return;
+      }
       const payment = this.database.connection
         .prepare(
           `UPDATE local_customer_payment SET lifecycle = 'synced', server_payment_id = ?,

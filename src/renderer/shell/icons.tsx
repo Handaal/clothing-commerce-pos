@@ -56,6 +56,12 @@ export const Icons = {
       <path d="M12 6v12" strokeDasharray="2 2" />
     </Svg>
   ),
+  website: () => (
+    <Svg>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M3 12h18M12 3c2.5 2.7 3.8 5.7 3.8 9s-1.3 6.3-3.8 9c-2.5-2.7-3.8-5.7-3.8-9S9.5 5.7 12 3z" />
+    </Svg>
+  ),
   suppliers: () => (
     <Svg>
       <path d="M1 6h13v9H1zM14 9h4l3 3v3h-7z" />
@@ -72,6 +78,19 @@ export const Icons = {
   activity: () => (
     <Svg>
       <path d="M3 12h4l2 6 4-14 2 8h6" />
+    </Svg>
+  ),
+  sync: () => (
+    <Svg>
+      <path d="M20 11a8 8 0 0 0-14.7-4.3L3 9" />
+      <path d="M3 4v5h5" />
+      <path d="M4 13a8 8 0 0 0 14.7 4.3L21 15" />
+      <path d="M21 20v-5h-5" />
+    </Svg>
+  ),
+  chevronDown: () => (
+    <Svg>
+      <path d="m6 9 6 6 6-6" />
     </Svg>
   ),
   settings: () => (
@@ -142,6 +161,16 @@ export const Icons = {
       <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c6 0 10 7 10 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-.6a3 3 0 0 1-4.24-4.24" />
       <path d="M6.61 6.61A18.5 18.5 0 0 0 2 12s4 7 10 7a9.12 9.12 0 0 0 4.26-1.04" />
       <path d="M2 2l20 20" />
+    </Svg>
+  ),
+  minus: () => (
+    <Svg>
+      <path d="M5 12h14" />
+    </Svg>
+  ),
+  chevronBack: () => (
+    <Svg>
+      <path d="M15 6l-6 6 6 6" />
     </Svg>
   ),
   plus: () => (

@@ -1,7 +1,8 @@
-// Device-local POS floor-staff auth (the shifted-cafe model): username + numeric PIN accounts stored
-// and verified entirely in the main process, independent of Clerk. This is the visible login gate and
-// per-operator section access; the underlying API session (Clerk) is untouched. The renderer never
-// receives a PIN hash — only public user shapes cross this boundary.
+// POS operator shapes + the display-only roster-cache bridge (ADR-043). The API is the ONLY POS credential
+// authority: online sign-in and admin step-up go through `window.posSession` (server), offline sign-in through
+// the device-bound offline verifier (`window.offline.verifyStaffPin`). There is no device-local account store
+// any more: `pos_users` caches who appears on the pre-auth roster picker (no PIN, no hash). Clerk plays no
+// part in the POS.
 
 export type PosRole = "admin" | "cashier";
 
@@ -38,50 +39,17 @@ export interface PosRosterCacheEntry {
 }
 
 /**
- * Login outcome. Success carries the public operator. Failure is collapsed to a single shape so the
- * UI cannot (and does not) distinguish an unknown username from a wrong PIN.
- */
-export type PosLoginResult = { readonly ok: true; readonly user: PosUser } | { readonly ok: false };
-
-export interface PosUserInput {
-  readonly username: string;
-  readonly name: string;
-  readonly role: PosRole;
-  readonly pin: string;
-  readonly permissions?: readonly string[] | null;
-}
-
-export interface PosUserUpdate {
-  readonly name?: string;
-  readonly role?: PosRole;
-  readonly permissions?: readonly string[] | null;
-  readonly active?: boolean;
-}
-
-/**
- * Local-auth bridge exposed to the renderer as `window.posAuth`. When this bridge is absent (e.g. a
- * non-Electron test host), the renderer leaves the local gate inactive and behaves exactly as before.
+ * Display-only roster-cache bridge exposed to the renderer as `window.posAuth`. It never authenticates: it has
+ * no login, PIN or verify method. When absent (a non-Electron test host) the floor login stays inactive.
  */
 export interface PosAuthBridge {
-  /** Number of local accounts that exist — 0 means first-run (seed the first admin). */
+  /** Number of cached roster entries (active or not) — 0 means a fresh till with no cached roster yet. */
   count(): Promise<number>;
-  /** Active, login-capable accounts for the username picker. */
+  /** Active cached accounts for the username picker (inactive accounts never appear). */
   roster(): Promise<readonly PosRosterEntry[]>;
-  /** Verify username + PIN entirely in the main process. */
-  login(username: string, pin: string): Promise<PosLoginResult>;
-  /** Full account list for the admin management screen (no PIN hashes). */
-  listUsers(): Promise<readonly PosUser[]>;
-  /** Create an account. The very first account (count === 0) must be an admin. */
-  createUser(input: PosUserInput): Promise<PosUser>;
-  /** Edit name/role/permissions/active. Cannot demote or deactivate the last active admin. */
-  updateUser(id: string, update: PosUserUpdate): Promise<PosUser>;
-  /** Reset an account's PIN. */
-  setPin(id: string, pin: string): Promise<void>;
-  /** Re-verify a specific account's PIN — used for admin approval of sensitive actions. */
-  verifyPin(id: string, pin: string): Promise<boolean>;
   /**
-   * Replace the display-only roster cache with the server's pos_pin accounts (called by the admin Team
-   * desk after a server read/write), so the pre-auth floor picker stays populated and offline-capable.
+   * Replace the display-only roster cache with the server's pos_pin accounts (called by the admin Team desk
+   * after a server read/write). Entries carry no secret.
    */
   replaceRosterCache(entries: readonly PosRosterCacheEntry[]): Promise<void>;
 }
@@ -89,25 +57,28 @@ export interface PosAuthBridge {
 export const POS_AUTH_IPC_CHANNELS = Object.freeze({
   count: "pos-auth:count",
   roster: "pos-auth:roster",
-  login: "pos-auth:login",
-  listUsers: "pos-auth:list-users",
-  createUser: "pos-auth:create-user",
-  updateUser: "pos-auth:update-user",
-  setPin: "pos-auth:set-pin",
-  verifyPin: "pos-auth:verify-pin",
   replaceRosterCache: "pos-auth:replace-roster",
 });
 
-/** Error codes thrown by management mutations (surfaced to the admin screen). */
-export type PosAuthErrorCode =
-  | "USERNAME_TAKEN"
-  | "INVALID_USERNAME"
-  | "INVALID_NAME"
-  | "INVALID_PIN"
-  | "INVALID_ROLE"
-  | "USER_NOT_FOUND"
-  | "LAST_ADMIN"
-  | "FIRST_USER_MUST_BE_ADMIN";
-
+/**
+ * ADR-043 §6 — THE POS PIN rule (mirrors the API's `PosPinSchema`): ASCII digits 0-9 only, at least 4, and NO
+ * product maximum. Nothing may truncate a PIN.
+ */
 export const POS_PIN_MIN_LENGTH = 4;
-export const POS_PIN_MAX_LENGTH = 8;
+
+/**
+ * Transport ceiling for a credential string crossing IPC — the same bound as the API's 16 KiB request body for
+ * credential routes (a PIN that cannot fit that request could never be verified). An INFRASTRUCTURE limit
+ * against oversized messages, NOT a PIN-length rule; exceeding it is a malformed message, never a truncation.
+ */
+export const POS_CREDENTIAL_MAX_CHARS = 16_384;
+
+/** True for a well-formed POS PIN (digits only, min 4, no product maximum). */
+export function isPosPinFormat(value: unknown): value is string {
+  return typeof value === "string" && value.length >= POS_PIN_MIN_LENGTH && /^[0-9]+$/.test(value);
+}
+
+/** True when `value` is a well-formed POS PIN that also fits the credential transport ceiling. */
+export function isTransportablePosPin(value: unknown): value is string {
+  return isPosPinFormat(value) && value.length <= POS_CREDENTIAL_MAX_CHARS;
+}

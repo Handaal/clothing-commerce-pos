@@ -15,7 +15,10 @@ declare global {
       readonly platform: string;
       readonly versions: Readonly<{ electron: string; chrome: string }>;
     };
-    readonly view?: { readonly setZoom: (factor: number) => void };
+    readonly view?: {
+      readonly setZoom: (factor: number) => void;
+      readonly setNativeTheme?: (theme: "light" | "dark") => Promise<void>;
+    };
     readonly offline: OfflineBridge;
     readonly returns: ReturnsBridge;
     readonly sales: SalesBridge;

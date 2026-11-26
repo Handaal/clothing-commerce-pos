@@ -95,6 +95,13 @@ export function parseConnectedSaleIntent(value: unknown): ConnectedSaleIntent {
     input.customer === undefined || input.customer === null
       ? undefined
       : parseCustomer(input.customer);
+  // Installment deposit: the tenders settle only this amount and the API records the remainder as the
+  // customer's debt. It MUST survive parsing — dropping it made every installment look like a full sale
+  // whose tenders didn't add up to the total, so the API rejected it and no balance was ever recorded.
+  const amountPaidMinor =
+    input.amountPaidMinor === undefined || input.amountPaidMinor === null
+      ? undefined
+      : safeNonNegativeInteger(input.amountPaidMinor, "amountPaidMinor");
   return {
     registerId: boundedString(input.registerId, "registerId"),
     expectedTotalMinor: safeNonNegativeInteger(input.expectedTotalMinor, "expectedTotalMinor"),
@@ -110,5 +117,6 @@ export function parseConnectedSaleIntent(value: unknown): ConnectedSaleIntent {
     ...(cashReceivedMinor !== undefined ? { cashReceivedMinor } : {}),
     ...(promotionCode !== undefined ? { promotionCode } : {}),
     ...(customer !== undefined ? { customer } : {}),
+    ...(amountPaidMinor !== undefined ? { amountPaidMinor } : {}),
   };
 }

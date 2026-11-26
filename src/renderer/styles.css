@@ -459,6 +459,17 @@ h3 {
 .button--complete:hover:not(:disabled) {
   background: var(--accent-strong);
 }
+/* Support reference under an error message: the raw code, kept quiet. */
+.error-ref {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+}
+.error-ref code {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.95em;
+}
 .button-row {
   display: flex;
   gap: 0.7rem;
@@ -552,6 +563,24 @@ h3 {
 .shell-nav__item svg {
   flex: none;
 }
+.shell-nav__group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.shell-nav__group + .shell-nav__group {
+  margin-top: 0.6rem;
+}
+.shell-nav__group-label {
+  margin: 0;
+  padding: 0.2rem 0.75rem 0.25rem;
+  color: var(--sidebar-text-dim);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
 .shell-nav__signout {
   margin-top: 0.4rem;
   border-top: 1px solid var(--sidebar-border);
@@ -610,9 +639,66 @@ h3 {
   display: flex;
   align-items: center;
   gap: 0.55rem;
-  padding: 0.3rem 0.65rem 0.3rem 0.35rem;
+  border: 1px solid transparent;
+  padding: 0.3rem 0.55rem 0.3rem 0.35rem;
   border-radius: 999px;
+  color: var(--text);
   background: var(--bg);
+  font-weight: 700;
+}
+.shell-user:hover,
+.shell-user-menu--open .shell-user {
+  border-color: var(--border);
+}
+.shell-user > svg {
+  color: var(--text-faint);
+  transition: transform var(--t-fast) var(--ease);
+}
+.shell-user-menu--open .shell-user > svg {
+  transform: rotate(180deg);
+}
+.shell-user-menu {
+  position: relative;
+}
+.shell-user-menu__list {
+  position: absolute;
+  z-index: 70;
+  top: calc(100% + 0.4rem);
+  inset-inline-end: 0;
+  display: flex;
+  min-width: 12rem;
+  flex-direction: column;
+  padding: 0.3rem;
+  border: 1px solid var(--border);
+  border-radius: 0.8rem;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow-md);
+}
+.shell-user-menu__list button {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  border: 0;
+  border-radius: 0.55rem;
+  padding: 0.55rem 0.65rem;
+  color: var(--text-dim);
+  background: transparent;
+  font-weight: 650;
+  text-align: start;
+}
+.shell-user-menu__list button:hover:not(:disabled) {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.shell-user-menu__list button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.shell-user-menu__list .shell-user-menu__danger {
+  margin-top: 0.2rem;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 0.55rem 0.55rem;
+  color: var(--bad);
 }
 .shell-user__avatar {
   display: grid;
@@ -1030,6 +1116,24 @@ h3 {
   gap: var(--space-4);
   overflow-y: auto;
 }
+/* Strip above a desk (connection banner, desk tabs): same width and side inset as the desk shell below,
+   so nothing in the content area ever touches the sidebar or the window edge. */
+.desk-preamble {
+  width: 100%;
+  max-width: var(--content-max);
+  margin-inline: auto;
+  padding: var(--space-5) var(--space-5) 0;
+}
+.desk-preamble > .desk-status,
+.desk-preamble > .report-tabs {
+  margin-bottom: 0;
+}
+/* The desk below already gets the preamble's top inset; tighten its own top padding. */
+.desk-preamble + .desk-preamble,
+.desk-preamble + .staff-shell,
+.desk-preamble + .orders-shell {
+  padding-top: var(--space-4);
+}
 .staff-topbar {
   display: flex;
   flex-wrap: wrap;
@@ -1363,6 +1467,7 @@ h3 {
 }
 .staff-stat {
   position: relative;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   padding: 0.85rem 1rem;
@@ -1377,6 +1482,157 @@ h3 {
 }
 .staff-stat strong {
   font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.inventory-pagination {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 1rem;
+}
+.inventory-pagination__active {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.held-cart-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 0;
+}
+.held-carts-panel {
+  max-width: 38rem;
+}
+.held-cart-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.8rem 0;
+  border-top: 1px solid var(--border);
+}
+.held-cart-row > div {
+  flex: 1;
+  min-width: 10rem;
+}
+.held-cart-row span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+/* Doubled class so the width beats the shared .modal-card rule declared later in this file. */
+.modal-card.barcode-label-modal {
+  width: min(40rem, 100%);
+}
+.barcode-label-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.barcode-label-modal__head h3 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+}
+.barcode-label-modal__sub {
+  margin: 0.25rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  overflow-wrap: anywhere;
+}
+.barcode-label-modal__caption {
+  margin: 0 0 -0.5rem;
+  color: var(--text-faint);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.barcode-label-modal__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-soft);
+}
+.team-clock-modal {
+  max-width: 32rem;
+  max-height: 75vh;
+  overflow: auto;
+}
+.barcode-label-quantity {
+  margin: 0;
+}
+/* On screen the sheet doubles as a shaded preview panel; the print rules below strip that back off. */
+.barcode-print-sheet {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, 52mm);
+  justify-content: center;
+  gap: 5mm;
+  max-height: 45vh;
+  overflow: auto;
+  padding: 1.25rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+.barcode-label {
+  width: 52mm;
+  min-height: 32mm;
+  border: 1px solid #222;
+  padding: 2mm;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1mm;
+  text-align: center;
+  background: white;
+  color: #111;
+  break-inside: avoid;
+}
+.barcode-label > strong,
+.barcode-label > small {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.barcode-label > svg {
+  max-width: 100%;
+}
+@media print {
+  body:has(.barcode-print-sheet) .shell {
+    visibility: hidden;
+  }
+  body:has(.barcode-print-sheet) .barcode-label-overlay {
+    visibility: visible;
+    position: fixed;
+    inset: 0;
+    background: white;
+  }
+  body:has(.barcode-print-sheet) .barcode-label-modal {
+    visibility: visible;
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    max-height: none;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+  }
+  body:has(.barcode-print-sheet) .barcode-label-modal > :not(.barcode-print-sheet) {
+    display: none;
+  }
+  body:has(.barcode-print-sheet) .barcode-print-sheet {
+    max-height: none;
+    overflow: visible;
+    justify-content: start;
+    padding: 0;
+    border: 0;
+    border-radius: 0;
+    background: none;
+  }
 }
 .staff-stat--accent {
   border-color: var(--accent, #4f46e5);
@@ -1480,6 +1736,27 @@ h3 {
   font-weight: 600;
   color: var(--text-faint, #9ca3af);
   font-size: 0.74rem;
+}
+/* Stock table barcode cell: the code on the start side and a compact "Print labels" action pushed to the
+   end, so every row's button lines up in one column whatever the barcode's length. */
+.barcode-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.barcode-cell__code {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.barcode-cell__print {
+  padding: 0.3rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 650;
+  white-space: nowrap;
 }
 .staff-table td small {
   display: block;
@@ -1960,6 +2237,29 @@ h3 {
   font-size: 1.1rem;
   line-height: 1;
 }
+/* Keyboard shortcut hint chips (F2 search, F12 take payment). */
+.key-hint {
+  display: inline-block;
+  margin-inline-start: 0.55rem;
+  border: 1px solid currentColor;
+  border-radius: 0.35rem;
+  padding: 0 0.3rem;
+  font-family: inherit;
+  font-size: 0.68em;
+  font-weight: 700;
+  line-height: 1.5;
+  vertical-align: middle;
+  opacity: 0.6;
+}
+.catalog-search__hint {
+  position: absolute;
+  inset-inline-end: 0.7rem;
+  top: 50%;
+  margin: 0;
+  color: var(--text-faint);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
 .catalog-search__clear:hover {
   background: var(--accent-soft);
   color: var(--text);
@@ -1998,6 +2298,94 @@ h3 {
 .product-card small {
   margin-top: 0.3rem;
   color: var(--text-faint);
+}
+.category-card {
+  min-height: 8rem;
+  justify-content: center;
+}
+/* Persistent category bar above the product grid: "All" + one chip per category, one tap to switch. */
+.category-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin: -0.35rem 0 1rem;
+}
+.category-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 2.4rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0.35rem 0.6rem 0.35rem 0.95rem;
+  color: var(--text-dim);
+  background: var(--surface);
+  font-size: 0.86rem;
+  font-weight: 650;
+  transition:
+    background-color var(--t-fast) var(--ease),
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease);
+}
+.category-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.category-chip--active,
+.category-chip--active:hover {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+.category-chip__count {
+  min-width: 1.5rem;
+  border-radius: var(--radius-pill);
+  padding: 0.05rem 0.4rem;
+  background: var(--surface-2);
+  color: var(--text-faint);
+  font-size: 0.74rem;
+  text-align: center;
+}
+.category-chip--active .category-chip__count {
+  background: rgb(255 255 255 / 0.22);
+  color: inherit;
+}
+/* Price + stock footer on each product card. */
+.product-card__foot {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.1rem 0.5rem;
+  margin-top: 0.55rem;
+  padding-top: 0.5rem;
+  border-top: 1px dashed var(--border);
+}
+.product-card .product-card__price {
+  min-width: 0;
+  color: var(--accent);
+  font-family: var(--font-sans, inherit);
+  font-size: 0.98rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.product-card .product-card__stock {
+  flex: none;
+  margin-top: 0;
+  font-size: 0.75rem;
+}
+.product-card--out,
+.product-card:disabled {
+  opacity: 0.45;
+  filter: grayscale(1);
+  cursor: not-allowed;
+}
+.product-card--out:hover,
+.product-card:disabled:hover {
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
 }
 /* Category-first layout: each group is a labelled band of product cards. */
 .catalog-group + .catalog-group {
@@ -2293,6 +2681,72 @@ h3 {
   border-radius: 0.7rem;
   padding: 0.8rem;
   background: var(--field-bg);
+}
+/* One-tap "cash received" amounts: exact + common banknote round-ups. */
+.pay-quick-cash {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.55rem;
+}
+.pay-quick-cash__button {
+  flex: 1 1 5.5rem;
+  min-height: 2.6rem;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  padding: 0.45rem 0.6rem;
+  color: var(--text);
+  background: var(--surface);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.pay-quick-cash__button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.pay-quick-cash__button--exact {
+  flex-basis: 100%;
+}
+.pay-quick-cash__button--active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #fff;
+}
+/* Existing-customer typeahead under the phone/name fields. */
+.pay-customer__suggestions {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--surface-raised);
+}
+.pay-customer__suggestion {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--text);
+  text-align: start;
+  cursor: pointer;
+}
+.pay-customer__suggestion:hover:not(:disabled),
+.pay-customer__suggestion:focus-visible {
+  background: var(--surface-2);
+}
+.pay-customer__suggestion span {
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
 }
 .change-row {
   display: flex;
@@ -2594,7 +3048,50 @@ h3 {
     display: none !important;
   }
 }
-@media (max-width: 1040px) {
+/* Smaller tills (1024/1280-wide screens): the sidebar collapses to icons and the cart column narrows so
+   catalog and cart stay side by side and "Take payment" never drops below the fold. */
+@media (max-width: 1280px) {
+  .shell-sidebar {
+    width: 76px;
+    padding-inline: 0.6rem;
+  }
+  .shell-brand {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .shell-brand__text,
+  .shell-nav__item span,
+  .shell-nav__signout span,
+  .shell-nav__group-label {
+    display: none;
+  }
+  .shell-nav__item {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .shell-nav__group + .shell-nav__group {
+    margin-top: 0.35rem;
+    padding-top: 0.35rem;
+    border-top: 1px solid var(--sidebar-border);
+  }
+  .workspace {
+    grid-template-columns: minmax(0, 1.25fr) minmax(19rem, 0.75fr);
+  }
+  .pos-shell .catalog-panel,
+  .pos-shell .checkout-panel {
+    padding: 1rem 1.1rem;
+  }
+  .shell-header {
+    padding-inline: 1rem;
+  }
+  .shell-user__name {
+    display: none;
+  }
+}
+@media (max-width: 760px) {
+  .pos-shell {
+    overflow-y: auto;
+  }
   .workspace {
     grid-template-columns: 1fr;
     /* Stacked: let both panels take their natural height and the page scroll as a whole. */
@@ -2617,14 +3114,6 @@ h3 {
     display: none;
   }
   .context-summary {
-    display: none;
-  }
-  .shell-sidebar {
-    width: 76px;
-  }
-  .shell-brand__text,
-  .shell-nav__item span,
-  .shell-nav__signout span {
     display: none;
   }
 }
@@ -2773,8 +3262,18 @@ h3 {
   color: var(--text-dim, #6b7280);
 }
 .pay-customer__status--match {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
   color: var(--good, #15803d);
   font-weight: 600;
+}
+.pay-customer__owes {
+  color: var(--bad);
+}
+/* "Use another phone" sits at the row's inline end: right in LTR (English), left in RTL (Arabic). */
+.pay-customer__status--match > button {
+  margin-inline-start: auto;
 }
 .pay-customer__status--hint {
   color: var(--text-faint, #9ca3af);
@@ -2911,6 +3410,22 @@ h3 {
 }
 
 /* Connected return forms keep server quantities and consequences beside each selection. */
+/* Returns as their own screen inside the till: scrolls on its own; the sale workspace is hidden, not unmounted. */
+.returns-screen {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 1.5rem;
+}
+.returns-screen__bar {
+  padding: 1rem 2rem 0;
+}
+.returns-screen .returns-panel {
+  margin-top: 0.75rem;
+}
+.workspace--hidden {
+  display: none;
+}
 .returns-panel {
   margin: 1rem 2rem;
   padding: 1.5rem;
@@ -3220,6 +3735,10 @@ h3 {
   color: var(--accent, #4f46e5);
   font: inherit;
   padding: 0;
+}
+.voucher-card__actions .link--danger {
+  margin-inline-start: auto;
+  color: var(--danger-text);
 }
 .voucher-card__actions .link:disabled {
   opacity: 0.5;
@@ -3826,4 +4345,1367 @@ h3,
 }
 .palette-swatch__chips span:first-child {
   margin-inline-start: 0;
+}
+
+/* ---- Sync review center + offline request panel (all-desks offline program) ---- */
+.review-center,
+.intent-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-block-end: 1rem;
+}
+.intent-panel {
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+  border-radius: 0.9rem;
+  padding: 1rem;
+}
+.intent-panel__honesty,
+.review-center__intro {
+  margin: 0;
+}
+.intent-actions,
+.review-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: end;
+}
+.review-filters label,
+.intent-form label,
+.review-resolution label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-weight: 600;
+}
+.intent-form,
+.review-resolution {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 34rem;
+}
+.intent-form__hint {
+  margin: 0;
+  font-size: 0.9em;
+}
+.review-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.review-table th,
+.review-table td {
+  text-align: start;
+  padding: 0.45rem 0.5rem;
+  border-block-end: 1px solid var(--border-soft);
+}
+.review-table tr[aria-selected="true"] {
+  background: var(--surface-2);
+}
+.review-status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.85em;
+  border: 1px solid var(--border);
+}
+.review-status--good {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+  color: var(--success-text);
+}
+.review-status--warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+.review-status--bad {
+  background: var(--danger-bg);
+  border-color: var(--danger-border);
+  color: var(--danger-text);
+}
+.review-status--info {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+  color: var(--info-text);
+}
+
+/* ---- Server sync-conflict report (ADR-042 §13.5), top of the Review desk ---- */
+.conflicts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  margin-block-end: var(--space-6);
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.conflicts__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4) var(--space-5);
+}
+.conflicts__heading {
+  flex: 1 1 26rem;
+  min-width: 0;
+  display: flex;
+  gap: var(--space-3);
+  align-items: flex-start;
+}
+.conflicts__icon {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: var(--radius-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.conflicts__icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+.conflicts__titles {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.conflicts__titles h2 {
+  margin: 0;
+  font-size: var(--text-h2);
+  line-height: 1.2;
+}
+.conflicts__intro {
+  margin: 0;
+  max-width: 80ch;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+.conflicts__toolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.conflicts__toolbar > :first-child {
+  min-width: 13rem;
+}
+.conflicts__refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.conflicts__refresh svg {
+  width: 1rem;
+  height: 1rem;
+  display: block;
+}
+.conflicts__spin {
+  display: inline-flex;
+  animation: conflicts-spin 0.9s linear infinite;
+}
+@keyframes conflicts-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conflicts__spin {
+    animation: none;
+  }
+}
+
+.conflicts__stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: var(--space-3);
+}
+.conflicts-stat {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--border-soft);
+  border-inline-start: 3px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+}
+.conflicts-stat dt {
+  color: var(--text-faint);
+  font-size: var(--text-caption);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.conflicts-stat dd {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 1.4rem;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.conflicts-stat--small dd {
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+.conflicts-stat--good {
+  border-inline-start-color: var(--success-border);
+}
+.conflicts-stat--good dd {
+  color: var(--success-text);
+}
+.conflicts-stat--warn {
+  border-inline-start-color: var(--warn-border);
+}
+.conflicts-stat--warn dd {
+  color: var(--warn-text);
+}
+.conflicts-stat--bad {
+  border-inline-start-color: var(--danger-border);
+}
+.conflicts-stat--bad dd {
+  color: var(--danger-text);
+}
+.conflicts__dot {
+  flex: 0 0 auto;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.conflicts__notice {
+  margin: 0;
+}
+
+.conflicts__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-6) var(--space-4);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-dim);
+  text-align: center;
+  font-size: 0.88rem;
+}
+.conflicts__empty strong {
+  color: var(--text);
+  font-size: 1rem;
+}
+.conflicts__empty-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  margin-block-end: var(--space-2);
+  border-radius: 50%;
+  background: var(--success-bg);
+  color: var(--success-text);
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.conflicts__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 26rem), 1fr));
+  gap: var(--space-3);
+}
+.conflicts__list[aria-busy="true"] {
+  opacity: 0.6;
+  transition: opacity var(--t-med) var(--ease);
+}
+.conflict-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border-soft);
+  border-inline-start: 4px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-raised);
+}
+.conflict-card--open {
+  border-inline-start-color: var(--warn-border);
+}
+.conflict-card--info {
+  border-inline-start-color: var(--info-border);
+}
+.conflict-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.conflict-card__kind {
+  font-size: var(--text-h3);
+}
+.conflict-card__when {
+  margin-inline-start: auto;
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+.conflict-card__reason {
+  margin: 0;
+  line-height: 1.5;
+}
+.conflict-card__facts {
+  margin: 0;
+  display: grid;
+  gap: 0.45rem;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  font-size: 0.85rem;
+}
+.conflict-card__fact {
+  display: grid;
+  grid-template-columns: minmax(6.5rem, 30%) 1fr;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.conflict-card__fact dt {
+  color: var(--text-faint);
+}
+.conflict-card__fact dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.conflict-card__mono {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 0.8rem;
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.conflict-card__next {
+  margin: 0;
+  padding-block-start: var(--space-3);
+  border-block-start: 1px solid var(--border-soft);
+  color: var(--accent-strong);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.conflicts__fetched {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  text-align: end;
+}
+.review-detail {
+  border: 1px solid var(--border);
+  border-radius: 0.9rem;
+  padding: 1rem;
+  background: var(--surface-raised);
+}
+.review-evidence {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.3rem 1rem;
+}
+.review-evidence dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.review-evidence__mono {
+  font-family: ui-monospace, monospace;
+}
+.button--link {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.pay-offline-notice {
+  margin: 0 0 0.75rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 0.6rem;
+  border: 1px solid var(--warn-border);
+  background: var(--warn-bg);
+  color: var(--warn-text);
+}
+.payroll-cycle__controls,
+.payroll-cycle__due {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+  margin-top: 0.75rem;
+}
+
+.payroll-cycle__controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.payroll-cycle__controls input[type="number"] {
+  width: 4.5rem;
+}
+
+.payroll-cycle__due strong {
+  overflow-wrap: anywhere;
+}
+
+/* ---------- POS layout v2: one header row, roomy catalog + cart ---------- */
+/* Section slots in the shared app header (POS puts its register + status + actions here). */
+.shell-header__start {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.shell-header__actions {
+  margin-inline-start: auto;
+}
+.shell-header__section-actions {
+  display: flex;
+  align-items: center;
+  padding-inline-end: 0.6rem;
+  margin-inline-end: 0.1rem;
+  border-inline-end: 1px solid var(--border);
+}
+.register-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.register-bar__identity {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  min-width: 0;
+  white-space: nowrap;
+}
+.register-bar__identity strong {
+  font-size: 0.92rem;
+  font-weight: 750;
+}
+.register-bar__identity span {
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  text-overflow: ellipsis;
+}
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+  max-width: 18rem;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  padding: 0.22rem 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.status-chip__dot {
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-chip--good {
+  color: var(--success-text);
+  background: var(--success-bg);
+}
+.status-chip--bad {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+}
+.status-chip--warn {
+  color: var(--warn-text);
+  background: var(--warn-bg);
+}
+.status-chip--quiet {
+  color: var(--text-dim);
+  background: var(--bg);
+}
+.shell-header .operator-actions {
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+}
+.shell-header .operator-actions .button {
+  padding: 0.38rem 0.75rem;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+.shell-header .attendance-clock {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* Tighter section padding + headings so products and cart lines get the space. */
+.pos-shell .catalog-panel,
+.pos-shell .checkout-panel {
+  padding: 1.25rem 1.5rem;
+}
+.pos-shell .section-heading {
+  align-items: center;
+  margin-bottom: 1rem;
+}
+.pos-shell .section-heading h2,
+.cart-head h2 {
+  font-size: 1.6rem;
+  line-height: 1.1;
+}
+.pos-shell .catalog-search {
+  margin-bottom: 1rem;
+}
+
+/* Category drill-down: small back chip sharing a row with the category name. */
+.catalog-group__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+.catalog-group__bar .catalog-group__heading {
+  margin: 0;
+}
+.back-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0.25rem 0.7rem 0.25rem 0.45rem;
+  color: var(--text-dim);
+  background: var(--surface);
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.back-chip svg {
+  width: 15px;
+  height: 15px;
+}
+.back-chip:hover {
+  background: var(--accent-soft);
+}
+[dir="rtl"] .back-chip svg {
+  transform: scaleX(-1);
+}
+
+/* Cart header: title + line count on the left, compact hold actions on the right. */
+.cart-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 0.75rem;
+  margin-bottom: 0.9rem;
+}
+.cart-head__title {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+  white-space: nowrap;
+}
+.cart-head__count {
+  color: var(--text-faint);
+  font-size: 0.78rem;
+}
+.cart-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.chip-button {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 0.3rem 0.7rem;
+  color: var(--text-dim);
+  background: transparent;
+  font-size: 0.76rem;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.chip-button:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.chip-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chip-button--danger:hover:not(:disabled) {
+  border-color: var(--bad);
+  background: transparent;
+  color: var(--bad);
+}
+.chip-button--armed,
+.chip-button--armed:hover:not(:disabled) {
+  border-color: var(--bad);
+  background: var(--bad);
+  color: #fff;
+}
+.pos-shell .cart-body {
+  margin-bottom: 0.75rem;
+}
+
+/* Cart line card: name + remove on top; stepper, unit price and line total underneath. */
+.cart-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-raised);
+}
+.cart-item__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.cart-item__top strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.92rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cart-item__remove {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0.2rem;
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+.cart-item__remove svg {
+  width: 16px;
+  height: 16px;
+}
+.cart-item__remove:hover:not(:disabled) {
+  color: var(--danger-text);
+  background: var(--danger-bg);
+}
+.cart-item__bottom {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+.qty-stepper {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--field-bg);
+}
+.qty-stepper button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border: 0;
+  color: var(--text-dim);
+  background: transparent;
+  cursor: pointer;
+}
+.qty-stepper button svg {
+  width: 15px;
+  height: 15px;
+}
+.qty-stepper button:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--accent-soft);
+}
+.qty-stepper button:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.qty-stepper input {
+  width: 2.4rem;
+  border: 0;
+  padding: 0;
+  color: var(--text);
+  background: transparent;
+  font-size: 0.92rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+.qty-stepper input::-webkit-outer-spin-button,
+.qty-stepper input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+.qty-stepper input:focus-visible {
+  box-shadow: none;
+}
+.cart-item__unit {
+  color: var(--text-faint);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.cart-item__total {
+  margin-inline-start: auto;
+  font-size: 0.98rem;
+  font-weight: 750;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Summary footer: compact promo row and a tight totals stack above the pay button. */
+.pos-shell .promotion-panel {
+  margin-top: 0;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-soft);
+}
+.pos-shell .promotion-code-row {
+  align-items: center;
+}
+.pos-shell .promotion-code-field input {
+  padding: 0.5rem 0.7rem;
+  font-size: 0.85rem;
+}
+.pos-shell .promotion-code-row .button {
+  padding: 0.5rem 0.95rem;
+  font-size: 0.82rem;
+}
+.pos-shell .total-row {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 0.6rem;
+  font-size: 0.9rem;
+}
+.pos-shell .total-row strong {
+  font-family: var(--font-sans);
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+.pos-shell .total-row--discount,
+.pos-shell .total-row--due {
+  margin-top: 0.35rem;
+  padding-top: 0;
+  border-top: 0;
+}
+.pos-shell .total-row--due > span {
+  color: var(--text);
+  font-size: 0.95rem;
+}
+.pos-shell .total-row--due strong {
+  font-family: var(--font-serif);
+  font-size: 1.5rem;
+}
+.pos-shell .checkout-panel > .button--complete {
+  margin-top: 0.9rem;
+  padding-block: 1rem;
+  font-size: 1.05rem;
+}
+.pos-shell .promotion-code-field input::placeholder {
+  color: var(--text-faint);
+  text-transform: none;
+}
+
+/* ---------- Website Management desk ---------- */
+.button--danger {
+  background: var(--danger-text, #8f2a1c);
+}
+.button--danger:hover:not(:disabled) {
+  background: #6f1f14;
+}
+/* Desk tabs sit right under the page title; the shell's gap already spaces them from the cards. */
+.website-desk > .report-tabs {
+  margin-bottom: 0;
+}
+/* Card header: title (+ count) and a one-line explanation stacked on the left, actions on the right. */
+.website-panel-head {
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  padding: 1rem 1.25rem;
+}
+.website-panel-head__text {
+  flex: 1 1 22rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.website-panel-head h2 {
+  display: flex;
+  align-items: center;
+}
+.website-panel-head__intro {
+  margin: 0;
+  max-width: 78ch;
+  color: var(--text-dim);
+  font-size: 0.86rem;
+  line-height: 1.5;
+}
+.website-panel-head__actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+/* Small count badge: next to a card title and inside the view tabs. */
+.website-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.6rem;
+  height: 1.4rem;
+  margin-inline-start: 0.5rem;
+  padding: 0 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--text-dim);
+  font-size: 0.74rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.report-tab--active .website-count {
+  border-color: transparent;
+  background: rgb(255 255 255 / 22%);
+  color: #fff;
+}
+/* Toolbar band between the header and the list: view tabs / filters on one side, search on the other. */
+.website-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1rem;
+  padding: 0.9rem 1.25rem;
+  border-bottom: 1px solid var(--border-soft);
+}
+.website-toolbar .report-tabs {
+  margin: 0;
+}
+.website-views .report-tab {
+  display: inline-flex;
+  align-items: center;
+  padding-block: 0.45rem;
+}
+.website-search {
+  flex: 0 1 24rem;
+  min-width: 12rem;
+  min-height: 2.5rem;
+  padding: 0.5rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--field-bg);
+  color: var(--text);
+}
+.website-search:hover {
+  border-color: var(--accent);
+}
+/* Everything inside a desk card that is not full-bleed (notices, loaders, empty states) lines up with
+   the header's 1.25rem inset. */
+.website-desk .staff-card > .notice {
+  margin: 1rem 1.25rem;
+}
+.website-desk .staff-card > .skeleton-block,
+.website-desk .staff-card > .skeleton-table {
+  margin: 1rem 1.25rem;
+}
+.website-desk .staff-card > .staff-empty {
+  padding: 2.5rem 1.25rem;
+}
+.website-inline-notice {
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.website-desk-intro {
+  margin: 0;
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+  color: var(--text-dim);
+}
+/* Desk tables: roomier rows, first/last columns aligned with the card inset. */
+.website-desk .staff-card .staff-table th,
+.website-desk .staff-card .staff-table td {
+  padding-block: 0.8rem;
+  vertical-align: middle;
+}
+.website-desk .staff-card .staff-table thead th {
+  padding-block: 0.7rem;
+  background: var(--surface);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.7rem;
+}
+.website-desk .staff-card .staff-table th:first-child,
+.website-desk .staff-card .staff-table td:first-child {
+  padding-inline-start: 1.25rem;
+}
+.website-desk .staff-card .staff-table th:last-child,
+.website-desk .staff-card .staff-table td:last-child {
+  padding-inline-end: 1.25rem;
+}
+.website-row--open {
+  cursor: pointer;
+}
+.website-cell-primary {
+  display: block;
+  font-weight: 600;
+}
+.website-desk .staff-table td small.website-phone {
+  margin-top: 0.15rem;
+  font-size: 0.78rem;
+}
+.website-cell-money {
+  font-weight: 650;
+  white-space: nowrap;
+}
+.website-open-button {
+  padding: 0.35rem 0.95rem;
+  font-size: 0.82rem;
+}
+.website-desk .staff-card > .settings-grid {
+  align-items: start;
+}
+.website-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  padding: 1.25rem;
+}
+.website-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.35rem;
+  text-align: start;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface, #fff);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  min-height: 6rem;
+}
+.website-card:hover:not(.website-card--static),
+.website-card:focus-visible {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.website-card--static {
+  cursor: default;
+}
+.website-card .muted {
+  font-size: 0.82rem;
+}
+.website-row-actions {
+  white-space: nowrap;
+}
+.website-row-actions .link + .link {
+  margin-inline-start: 0.75rem;
+}
+.website-field-error {
+  margin: 0;
+  color: var(--danger-text, #b91c1c);
+  font-size: 0.78rem;
+}
+.field textarea {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.5rem 0.6rem;
+  background-color: var(--field-bg);
+  font: inherit;
+  font-size: 0.9rem;
+  color: var(--text, #111);
+  resize: vertical;
+}
+.website-hero-image {
+  height: 11rem;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2, #f8f8fb);
+  border: 1px dashed var(--border);
+}
+.website-hero-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.website-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+.website-picker__pane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.website-picker__list,
+.website-picker__selected {
+  margin: 0;
+  padding: 0;
+  max-height: 16rem;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.website-picker__list {
+  list-style: none;
+}
+.website-picker__selected {
+  padding-inline-start: 2rem;
+}
+.website-picker__option,
+.website-picker__selected li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.45rem 0.6rem;
+  font-size: 0.88rem;
+  border-bottom: 1px solid var(--border);
+}
+.website-picker__selected li {
+  display: list-item;
+}
+.website-picker__selected li > span:first-child {
+  display: inline-block;
+  max-width: calc(100% - 6rem);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+.website-picker__option small {
+  margin-inline-start: auto;
+}
+.website-picker__actions {
+  float: inline-end;
+  display: inline-flex;
+  gap: 0.6rem;
+}
+.website-sale-preview {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+.website-sale-preview strong {
+  color: var(--danger-text, #b91c1c);
+}
+.website-sale-badge {
+  color: #fff;
+  background: #e5322d;
+  font-weight: 800;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+.website-savebar {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.75rem 0;
+  background: linear-gradient(transparent, var(--bg, #fff) 35%);
+}
+
+/* Website Management — promotion editor / detail */
+.website-promo-editor {
+  width: min(960px, 94vw);
+  max-height: 90vh;
+  overflow-y: auto;
+}
+.website-fieldset {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem 1rem;
+  margin: 0 0 0.9rem;
+}
+.website-fieldset legend {
+  padding: 0 0.4rem;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+.website-readonly {
+  display: block;
+  padding: 0.45rem 0;
+  color: var(--text);
+}
+.website-picker__option--button {
+  width: 100%;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.website-picker__option--open {
+  background: var(--accent-soft);
+}
+.website-target-variants {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.9rem;
+  padding: 0.45rem 0.6rem 0.6rem 1.4rem;
+  font-size: 0.85rem;
+}
+.website-promo-headline {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+.website-promo-kv {
+  margin: 0.9rem 0;
+}
+.website-promo-addcode {
+  margin-top: 0.75rem;
+  align-items: end;
+}
+
+.website-promo-targets {
+  margin: 0.35rem 0 0;
+  padding-inline-start: 1.1rem;
+}
+
+/* Website Management: online orders fulfilment queue */
+.website-order-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+  margin: 1rem 0 1.25rem;
+}
+.website-order-grid > section {
+  min-width: 0;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.website-order-grid h4,
+.website-order-items {
+  margin: 0 0 0.6rem;
+  color: var(--text-faint);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.website-order-headline {
+  flex-wrap: wrap;
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.website-order-headline > strong {
+  margin-inline-start: auto;
+  font-size: 1.1rem;
+  font-variant-numeric: tabular-nums;
+}
+.website-order-whatsapp {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 0.85rem;
+  padding: 0.45rem 0.95rem;
+  font-size: 0.82rem;
+  text-decoration: none;
+}
+.website-order-dialog .notice {
+  margin: 0.75rem 0 0;
+}
+.website-order-qty {
+  width: 5rem;
+  text-align: end;
+}
+
+/* ---------- Card figures that shrink to fit ----------
+   Figures inside cards stay on one line; shell/autoFitText.ts scales the font down until the value
+   fits its card (to 55% of its designed size), and the ellipsis is the last resort past that floor.
+   Keep this selector list in step with FIT_TEXT_SELECTOR there. */
+[data-fit],
+.staff-stat > strong,
+.voucher-stat > strong,
+.local-report__figure-value,
+.supplier-money-summary strong,
+.total-row > strong,
+.pay-due > strong,
+.pay-remaining > strong,
+.pay-change > strong {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  overflow-wrap: normal;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums;
+}
+/* Grid/flex cells must be allowed to be narrower than their content, or the card grows instead. */
+.staff-stats > *,
+.voucher-stats > *,
+.local-report__grid > *,
+.supplier-money-summary > *,
+.order-detail__grid > *,
+.website-cards > *,
+.product-grid > * {
+  min-width: 0;
+}
+/* Fixed three-up stat rows drop to fewer columns in a narrow panel rather than crushing a money value. */
+.voucher-stats,
+.supplier-money-summary {
+  grid-template-columns: repeat(auto-fit, minmax(7.5rem, 1fr));
+}
+/* Label + value rows (cart totals, pay modal): the label wraps, the value keeps its line and shrinks. */
+.total-row,
+.pay-due,
+.pay-remaining,
+.pay-change {
+  gap: 0.75rem;
+}
+.total-row > span,
+.pay-due > span,
+.pay-remaining > span,
+.pay-change > span {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.total-row > strong,
+.pay-due > strong,
+.pay-remaining > strong,
+.pay-change > strong {
+  flex: 0 1 auto;
+  max-width: 75%;
+}
+/* Key/value lists in order cards: long emails, IDs and addresses wrap inside the card. */
+.order-kv dt {
+  flex-shrink: 0;
+}
+.order-kv dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* Long single-word product names and card text wrap instead of spilling past the card edge. */
+.product-card span,
+.product-card small,
+.website-card > * {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+/* Sale complete: Print receipt beside New sale (New sale stays the wide primary action). */
+.receipt-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 0.75rem;
+  align-items: stretch;
+}
+.receipt-actions .button--quiet {
+  padding: 1rem;
+}
+/* Online order items: the chosen size/colour under the product name (what to pick). */
+.website-line-variant {
+  display: block;
+  color: var(--muted, #6b6259);
+  font-size: 0.82em;
+}
+/* Nav badge: work waiting in a section (website orders to ship). */
+.shell-nav__item {
+  position: relative;
+}
+.shell-nav__badge {
+  margin-inline-start: auto;
+  min-width: 1.4rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.3rem;
+  text-align: center;
+}
+@media (max-width: 1280px) {
+  /* Icon-only sidebar: the count sits on the icon's corner. */
+  .shell-nav__item .shell-nav__badge {
+    display: block;
+    position: absolute;
+    top: 0.2rem;
+    inset-inline-end: 0.2rem;
+    min-width: 1.1rem;
+    padding: 0 0.3rem;
+    font-size: 0.62rem;
+    line-height: 1.1rem;
+  }
+}
+
+/* Website → Site text: list fields (promo messages, FAQ, page sections). */
+.website-site-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.website-site-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.12));
+  border-radius: 12px;
 }

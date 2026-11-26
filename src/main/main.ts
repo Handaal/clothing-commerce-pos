@@ -14,6 +14,7 @@ import { isAllowedRendererNavigation, PRODUCTION_RENDERER_ORIGIN } from "./rende
 import { startRendererServer } from "./renderer-server";
 import { resolveMainApiOrigin } from "./runtime-config";
 import { secureWebPreferences } from "./security";
+import { registerViewIpc } from "./view-ipc";
 
 function createWindow(rendererUrl: string): void {
   const window = new BrowserWindow({
@@ -92,11 +93,23 @@ if (!hasSingleInstanceLock) {
       registerSalesIpc(() => offlineRuntime!.getSales(), rendererUrl);
       registerActivityIpc(() => offlineRuntime!.getActivityStore(), rendererUrl);
       registerPosAuthIpc(() => offlineRuntime!.getUserStore(), rendererUrl);
+      registerViewIpc(rendererUrl);
       // POS-native (pos_pin) connected session: username + PIN → server access token, cached OS-encrypted
-      // in the main process. This is the connected floor login that replaced Clerk for POS staff.
+      // in the main process. This is the connected floor login (ADR-043: the POS has no Clerk).
       posSessionManager = new PosSessionManager(
         commerceApiUrl,
         new PosSessionStore(app.getPath("userData"), osSecureStorage),
+        undefined,
+        // Offline PIN v2, same PIN as sign-in (shifted-cafe model). The server only records it when
+        // POS_OFFLINE_PIN_V2=enabled; otherwise the refresh is refused and nothing is sealed.
+        async (credential) => {
+          // ADR-043 §5.1: an online sign-in takes over from any offline PIN session on this till.
+          offlineRuntime?.endStaffSession();
+          return offlineRuntime?.refreshOfflinePinAfterSignIn(credential);
+        },
+      );
+      offlineRuntime.setSessionOperatorResolver(
+        () => posSessionManager?.getSession()?.operator.membershipId ?? null,
       );
       registerPosSessionIpc(() => posSessionManager, rendererUrl);
       createWindow(rendererUrl);

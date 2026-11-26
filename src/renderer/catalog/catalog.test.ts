@@ -1,7 +1,7 @@
 import type { TenantCommerceClient } from "@shifted/clothing-commerce-sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { loadSellableCatalog } from "./catalog";
+import { classifyProduct, loadSellableCatalog } from "./catalog";
 
 describe("sellable catalog", () => {
   it("loads active products and only active variants priced in the register currency", async () => {
@@ -46,5 +46,32 @@ describe("sellable catalog", () => {
       }),
     ]);
     expect(client.listProducts).toHaveBeenCalledWith({ status: "active", limit: 100 });
+  });
+});
+
+describe("classifyProduct", () => {
+  const product = { id: "p1", brandId: "b1" } as never;
+  const base = () => ({
+    brands: new Map([["b1", "Zee Store"]]),
+    vendors: new Map([["v1", "Zara"]]),
+    categories: new Map<string, { name: string; parentId: string | null }>([
+      ["men", { name: "Men", parentId: null }],
+      ["tees", { name: "T-Shirts", parentId: "men" }],
+    ]),
+    collectionsByProduct: new Map([["p1", ["Summer edit"]]]),
+  });
+
+  it("groups by the most specific category and labels by vendor", () => {
+    expect(
+      classifyProduct({ product, categoryIds: ["men", "tees"], vendorId: "v1" }, base()),
+    ).toEqual({ brandName: "Zara", categories: ["T-Shirts"] });
+  });
+
+  it("falls back to collections and the tenant brand when those aren't set up", () => {
+    const classifier = { ...base(), categories: new Map(), vendors: new Map() };
+    expect(classifyProduct({ product, categoryIds: [], vendorId: null }, classifier)).toEqual({
+      brandName: "Zee Store",
+      categories: ["Summer edit"],
+    });
   });
 });

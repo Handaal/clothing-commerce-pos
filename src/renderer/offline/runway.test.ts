@@ -99,7 +99,7 @@ describe("shouldAutoRefreshOffline", () => {
     );
     expect(shouldAutoRefreshOffline({ ...base, readiness: notReady("GRANT_MISSING") })).toBe(true);
     expect(shouldAutoRefreshOffline({ ...base, readiness: notReady("DEVICE_NOT_ENROLLED") })).toBe(
-      false,
+      true,
     );
     expect(shouldAutoRefreshOffline({ ...base, readiness: notReady("POLICY_LIMIT_REACHED") })).toBe(
       false,

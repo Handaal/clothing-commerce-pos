@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createConfiguredCommerceClient } from "./client";
 
 describe("Commerce SDK boundary", () => {
-  it("supplies the current Clerk token and lets the SDK own client and tenant headers", async () => {
+  it("supplies the current POS session token and lets the SDK own client and tenant headers", async () => {
     const getToken = vi.fn(async () => "session-token");
     const fetch = vi.fn<typeof globalThis.fetch>(async (input) => {
       const url = String(input);

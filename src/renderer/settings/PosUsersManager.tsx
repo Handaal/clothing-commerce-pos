@@ -9,7 +9,7 @@ import type {
 import { ApiHttpError } from "@shifted/clothing-commerce-sdk";
 
 import type { PosAuthBridge, PosRole, PosUser } from "../../shared/pos-auth";
-import { POS_PIN_MAX_LENGTH, POS_PIN_MIN_LENGTH } from "../../shared/pos-auth";
+import { isPosPinFormat } from "../../shared/pos-auth";
 import { useI18n } from "../shell/i18n";
 import { Select } from "../shell/Select";
 import { SECTIONS } from "../shell/sections";
@@ -19,8 +19,6 @@ import { SECTIONS } from "../shell/sections";
 // through the SDK; the device-local `pos_users` table is kept only as a display cache for the pre-auth
 // floor roster picker, mirrored here after every read/write. This screen never sees a stored PIN.
 const GRANTABLE_SECTIONS = SECTIONS.filter((section) => section.id !== "pos");
-
-const PIN_PATTERN = new RegExp(`^[0-9]{${POS_PIN_MIN_LENGTH},${POS_PIN_MAX_LENGTH}}$`);
 
 interface DraftState {
   id: string | null;
@@ -124,43 +122,24 @@ export function PosUsersManager({
   const mapError = useCallback(
     (caught: unknown): string => {
       if (caught instanceof ApiHttpError) {
+        // ADR-043: the server guards the last active POS admin (409 LAST_POS_ADMIN) on demotion AND deactivation.
+        if (caught.code === "LAST_POS_ADMIN" || caught.code === "LAST_STAFF_ADMIN")
+          return t("posUsers.lastAdmin");
         if (caught.code === "USERNAME_TAKEN" || caught.status === 409)
           return t("login.usernameTaken");
         if (caught.status === 400) return t("posUsers.invalidPin");
-        if (caught.status === 403) return t("posUsers.lastAdmin");
+        if (caught.status === 403) return t("posUsers.escalationDenied");
       }
       return t("posUsers.saveError");
     },
     [t],
   );
 
-  // Provision the same PIN for offline unlock so one PIN works online and offline. Best-effort: if the
-  // tenant's offline key is still dormant (no KEK configured yet) the server has nowhere to wrap the PIN,
-  // so swallow that one case and leave a non-blocking note. Any other failure is a real error — rethrow it
-  // to the caller's catch so it surfaces like a failed save.
-  const provisionOfflinePin = useCallback(
-    async (membershipId: string, pin: string) => {
-      try {
-        await client.setStaffOfflinePin({ idempotencyKey: newKey(), membershipId, pin });
-      } catch (caught) {
-        if (
-          caught instanceof ApiHttpError &&
-          (caught.code === "OFFLINE_PIN_NOT_CONFIGURED" || caught.status === 503)
-        ) {
-          setNote(t("posUsers.offlinePinDeferred"));
-          return;
-        }
-        throw caught;
-      }
-    },
-    [client, t],
-  );
-
   const save = useCallback(async () => {
     if (!draft || busy) return;
     const isNew = draft.id === null;
     if (draft.name.trim() === "" || (isNew && draft.username.trim() === "")) return;
-    if (isNew && !PIN_PATTERN.test(draft.pin)) {
+    if (isNew && !isPosPinFormat(draft.pin)) {
       setError(t("posUsers.invalidPin"));
       return;
     }
@@ -174,7 +153,7 @@ export function PosUsersManager({
     try {
       const posPermissions = draft.role === "cashier" ? draft.permissions : [];
       if (isNew) {
-        const created = await client.createPosLogin({
+        await client.createPosLogin({
           idempotencyKey: newKey(),
           username: draft.username.trim(),
           pin: draft.pin,
@@ -184,7 +163,9 @@ export function PosUsersManager({
           posRole: draft.role,
           posPermissions,
         });
-        await provisionOfflinePin(created.membershipId, draft.pin);
+        // Offline unlock is NOT provisioned from here any more (server-sealed PINs are retired): each person
+        // enrols their own offline PIN on the till while online.
+        setNote(t("posUsers.offlinePinSelfEnroll"));
       } else {
         await client.updatePosLogin({
           idempotencyKey: newKey(),
@@ -194,7 +175,7 @@ export function PosUsersManager({
           posPermissions,
         });
         if (draft.pin !== "") {
-          if (!PIN_PATTERN.test(draft.pin)) {
+          if (!isPosPinFormat(draft.pin)) {
             setError(t("posUsers.invalidPin"));
             setBusy(false);
             return;
@@ -204,7 +185,7 @@ export function PosUsersManager({
             membershipId: draft.id!,
             pin: draft.pin,
           });
-          await provisionOfflinePin(draft.id!, draft.pin);
+          setNote(t("posUsers.offlinePinSelfEnroll"));
         }
       }
       setDraft(null);
@@ -214,7 +195,7 @@ export function PosUsersManager({
     } finally {
       setBusy(false);
     }
-  }, [draft, busy, client, role, scope, refresh, mapError, provisionOfflinePin, t]);
+  }, [draft, busy, client, role, scope, refresh, mapError, t]);
 
   const toggleActive = useCallback(
     async (user: PosLoginSummary) => {
@@ -402,12 +383,14 @@ function UserDraftForm({
         </label>
         <label className="field">
           {isNew ? t("login.pin") : t("posUsers.newPinOptional")}
+          {/* ADR-043: masked, never filtered or truncated — the exact value is validated (digits, min 4, no max). */}
           <input
+            type="password"
             inputMode="numeric"
-            autoComplete="off"
+            autoComplete="new-password"
             value={draft.pin}
             placeholder={t("login.pinRule")}
-            onChange={(e) => onChange({ ...draft, pin: e.target.value.replace(/[^0-9]/g, "") })}
+            onChange={(e) => onChange({ ...draft, pin: e.target.value })}
           />
         </label>
       </div>

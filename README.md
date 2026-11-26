@@ -1,8 +1,8 @@
 # Clothing Commerce POS
 
 Secure Electron cashier application with Connected POS Sale V1 and the complete Phase 2I offline
-cashier and synchronization slice. An authenticated Clerk operator can select an authorized tenant
-and register, sell through the connected Commerce API, enable offline selling from real server
+cashier and synchronization slice. A signed-in POS operator (POS-native PIN account, ADR-043) can select an authorized tenant
+and register, sell through the connected Commerce API, receive offline authority automatically from the server,
 authority, accept durable local cash sales without the API, and synchronize those sales later.
 
 ## Boundaries and ownership
@@ -18,23 +18,41 @@ and synchronization. The sandboxed renderer can invoke only fixed typed operatio
 keys, tokens, database access, arbitrary IPC, or an unrestricted SDK. **Connected** sales support
 server-authoritative promotions (Phase 2P); the server evaluates automatic promotions plus one
 optional entered code and applies the greatest eligible saving. Hardware integration, card or split
-tender, manual cashier discounts, loyalty, barcode scanning, receipt printing, cash-drawer control,
+manual cashier discounts, loyalty, cash-drawer control,
 a tax engine, and any offline promotions remain absent.
 
 ## Technology and contract
 
-Electron, React, TypeScript, Vite, Clerk React, Vitest, ESLint, Prettier, electron-builder, and pnpm.
-The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.25.0**:
+Electron, React, TypeScript, Vite, Vitest, ESLint, Prettier, electron-builder, and pnpm.
+The application consumes only the vendored, packed `@shifted/clothing-commerce-sdk` **0.30.0**:
 
-- artifact: `vendor/shifted-clothing-commerce-sdk-0.25.0.tgz`
-- SHA-256: `5de0460701ddf4a612b58b68ae3a77b66e0c497bf6afc2ed0e6ff5bd7252af28`
-- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.25.0.tgz`
+- artifact: `vendor/shifted-clothing-commerce-sdk-0.30.0.tgz`
+- SHA-256: `dd214dbb94c7c9eaa402c7c99fcaaa4245c65ac94daa4977e64325718276210e`
+- dependency: `file:vendor/shifted-clothing-commerce-sdk-0.30.0.tgz`
 
-The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. SDK 0.25.0 adds the POS-native
-`pos_pin` authentication surface — `posPinLogin` plus the staff-login management methods
-(`listStaffLogins`/`createStaffLogin`/`updateStaffLogin`/`setStaffLoginPin`/`deactivateStaffLogin`) —
-on top of the existing selling/workforce/customer/collections/installments surface. (This 0.25.0 tarball
-is a provisional local pack; replace it with the canonical CI artifact at release.)
+The pinned artifact and SHA are enforced by `tests/boundaries.test.ts`. This local 0.30.0 pack adds
+staff without login, monthly payroll settlement, register stock availability, and automatic offline
+team attendance application. Replace it with the canonical release artifact at release.
+
+## Register and workforce workflow
+
+The cashier browses category cards before product cards. The connected register reads on-hand stock
+through the POS availability API, which checks selling access for that register; the offline register
+uses its projected local inventory. Product cards show total variant stock, variant choices show their
+own stock, and known zero-stock choices are disabled. Search accepts exact barcodes as well as SKUs.
+
+Held carts are kept per register in renderer local storage. A cashier can hold the current cart, serve
+another customer, then resume it; prices and stock are checked again before the resumed sale. The
+inventory desk shows up to 20 loaded rows per page and prints Code 128 barcode labels. The API assigns
+new variant barcodes from a tenant-wide sequence starting at 1000.
+
+The Staff page distinguishes employees without a system login from POS login accounts. Team profiles
+include editable tenant-scoped name, position, and phone. Managers can deactivate staff without a login
+from the team roster; POS login accounts are managed in the separate Accounts tab. Team clocking
+uses staff attendance management permissions when connected. After a connected roster has been cached,
+authorized managers can clock the team while offline using signed, queued events. On sync, the API applies valid events
+to canonical attendance, which feeds payroll. A sequence conflict is blocked for review. The payroll
+cycle panel shows the last completed period, amount due, and paid status.
 
 ## Supplier payables desk
 
@@ -46,8 +64,8 @@ windows, authorization, and exact replay. Standalone payments appear against pur
 oldest-first without being stored as invoice allocations. The renderer uses only SDK `0.19.0` and
 does not add preload, Node, Electron, SQLite, or server-secret access.
 
-There is no API workspace link or API source import. The renderer supplies only the current Clerk
-session-token callback to the SDK. The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and
+There is no API workspace link or API source import. The renderer supplies only the current POS-native
+session-token callback to the SDK (the token itself is held by the main process). The SDK owns `Authorization`, `X-Client-*`, `X-Tenant-Id`, and
 `Idempotency-Key` transport behavior.
 
 ## Authentication and selling bootstrap
@@ -61,9 +79,16 @@ exact amount is then displayed. Authorized cash settlement requires explicit han
 and a settlement reference. Electronic refunds remain pending. The offline cashier disables returns;
 no return is queued or applied to local inventory. See [Phase 2M details](docs/phase-2m-returns.md).
 
-`@clerk/react` restores the real operator session and presents Clerk sign-in when unauthenticated.
-Only `VITE_CLERK_PUBLISHABLE_KEY` is embedded in the renderer; no Clerk secret or API/server secret
-belongs in this repository.
+**ADR-043 — POS-native accounts, no Clerk in the POS.** The till boots straight to a roster-first PIN
+login (`src/renderer/auth/LocalLogin.tsx`). The username + PIN (ASCII digits, at least 4, no maximum) is
+verified by the Commerce API (`POST /api/v1/pos/auth/login`), which returns a short-lived `iss="pos"`
+token held OS-encrypted in the Electron main process. Offline sign-in is attempted only when the server is
+genuinely unreachable, through the device-bound offline verifier and within the bounded offline authority
+(12 h normal, 24 h hard cap). A definitive rejection never falls back offline. Admin step-up verifies an
+admin on the server without replacing the signed-in operator, and fails closed offline. The first POS admin
+is created by the business owner in Admin Mobile (Staff → POS sign-in accounts); POS admins manage the team
+in the Team desk. The local `pos_users` table is a display-only roster cache (no PIN, no hash). No Clerk
+package, key, provider or session exists in this app; no API/server secret belongs in this repository.
 
 After authentication the application:
 
@@ -79,9 +104,9 @@ conflict, network, contract, and server errors are surfaced without mock fallbac
 
 ## Offline selling and synchronization
 
-From the connected cashier, **Enable offline selling** enrolls or reuses the device and installs one
+While connected, the POS automatically enrolls or reuses the device and installs one
 atomic server generation containing the register binding, bounded grant, catalog/prices, and advisory
-inventory. Connected selling remains available when this optional bootstrap is unavailable. Main
+inventory. Connected selling remains available when bootstrap is unavailable. Main
 derives readiness and the renderer presents Connected, Offline ready/unavailable, Pending sync,
 Synchronizing, and attention states with non-authoritative “projected available” stock wording.
 
@@ -93,16 +118,14 @@ Offline selling is a server-issued capability: a register cannot sell offline un
 dependency on connectivity — if the connection is down the first time a till opens and it was never
 armed, there is no cached grant, roster, catalog, or key to fall back to.
 
-The connected shell distinguishes this never-armed state from a lapsed grant. When the register has
-never been commissioned it shows a **commissioning prompt** and an **Arm offline selling** action
-(rather than the terse "offline unavailable" line used for genuine faults). Arming is the same
-bootstrap as **Refresh offline data**; it enrolls the device, installs the grant/catalog/advisory
-inventory, and delivers the staff roster that lets a cashier unlock the till offline with a PIN.
+The connected shell commissions automatically: it installs the grant/catalog/advisory inventory
+and delivers the staff roster that lets a cashier unlock the till offline with a PIN. It displays
+connection and readiness status without a manual enable button.
 
 Commissioning runbook (per register, before go-live):
 
 1. On a reliable connection, sign in as an authorized operator and select the register.
-2. Click **Arm offline selling** and confirm the strip changes to **Offline ready** with a staff
+2. Confirm the strip changes to **Offline ready** with a staff
    roster installed (the offline PIN sign-in option then appears on the sign-in card).
 3. Verify the runway note shows a healthy remaining window ("offline valid ~Nh"). Once armed, every
    later window of connectivity opportunistically tops the grant back up, so the runway does not
@@ -110,17 +133,13 @@ Commissioning runbook (per register, before go-live):
 4. Repeat for each register that must sell offline. The arming is device- and register-bound; it is
    not shared between installs.
 
-Re-arming is safe and idempotent — it reuses the enrolled device and simply installs the newest
-server generation.
+Automatic refresh reuses the enrolled device and installs the newest server generation.
 
 ### Returns and promotions offline
 
-Returns and promotions are **not** available offline, by design — both are server-authoritative and
-the client never computes refund or discount money. The offline cashier disables returns and directs
-the operator to reconnect; switching to offline invalidates any connected promotion pricing. Offline
-returns are deferred pending a server-issued signed offline-return authority (analogous to the
-offline-sale grant); the rationale and exact unblock path are in
-[`docs/offline-returns-promotions.md`](docs/offline-returns-promotions.md).
+Offline returns require a server-issued, order-specific grant cached while connected. The cashier
+captures the returned goods and a refund request locally; the API settles it after reconnecting.
+Promotions remain server-authoritative and are unavailable during offline selling.
 
 An offline cash checkout calls the main-process acceptance service. One durable transaction validates
 the installed authority and policy, allocates the local receipt, stores the immutable sale/tender and
@@ -243,10 +262,11 @@ Copy-Item .env.example .env
 pnpm.cmd dev
 ```
 
-| Variable                     | Purpose                                    |
-| ---------------------------- | ------------------------------------------ |
-| `COMMERCE_API_URL`           | Reachable Commerce API base URL            |
-| `VITE_CLERK_PUBLISHABLE_KEY` | Public key for the operator Clerk instance |
+| Variable           | Purpose                         |
+| ------------------ | ------------------------------- |
+| `COMMERCE_API_URL` | Reachable Commerce API base URL |
+
+No Clerk variable is read (ADR-043); a stale `VITE_CLERK_PUBLISHABLE_KEY` in a local `.env` is ignored.
 
 ### One canonical packaged API origin
 
@@ -296,13 +316,13 @@ invalid origins are rejected and a missing production origin fails closed.
 The API repository remains separate. From its merged main checkout:
 
 1. start the API-capable local Supabase stack and reset migrations;
-2. provision a real Clerk development user through `dev:provision-identity`;
-3. provision the deterministic commerce fixture through `dev:provision-commerce-fixture`;
-4. configure the exact two origins above and start Next.js; and
-5. run this Electron app with the matching Clerk publishable key and sign in as that real user.
+2. provision the deterministic commerce fixture through `dev:provision-commerce-fixture`;
+3. set `POS_AUTH_SIGNING_KEY` on the API, create the first POS admin from Admin Mobile (or the API's
+   authorized `createPosLogin`), configure the exact two origins above and start Next.js; and
+4. run this Electron app and sign in on the roster with that POS username + PIN.
 
-Never place the Clerk subject, user password, Clerk secret, Supabase service-role key, or bearer token
-in this repository or acceptance notes.
+Never place a PIN, signing key, Supabase service-role key, or bearer token in this repository or
+acceptance notes.
 
 The latest real connected-runtime result is recorded in
 [`docs/runtime-acceptance.md`](docs/runtime-acceptance.md).

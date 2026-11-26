@@ -28,15 +28,21 @@
     "acceptance:sale-recovery": "pnpm build:main && node scripts/run-sale-recovery-acceptance.mjs",
     "acceptance:offline-ack": "pnpm build:main && node scripts/run-offline-ack-acceptance.mjs",
     "acceptance:attendance": "pnpm build:main && node scripts/run-attendance-acceptance.mjs",
+    "acceptance:offline-returns": "pnpm build:main && node scripts/run-offline-returns-acceptance.mjs",
+    "acceptance:offline-intents": "pnpm build:main && node scripts/run-offline-intents-acceptance.mjs",
+    "acceptance:customer-installment": "pnpm build:main && node scripts/run-customer-installment-acceptance.mjs",
+    "acceptance:sale-hold": "pnpm build:main && node scripts/run-sale-hold-acceptance.mjs",
+    "acceptance:voucher-crash": "pnpm build:main && node scripts/run-voucher-crash-acceptance.mjs",
+    "acceptance:offline-pin": "pnpm build:main && node scripts/run-offline-pin-acceptance.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json"
   },
   "dependencies": {
-    "@clerk/react": "6.15.1",
     "@fontsource-variable/cairo": "^5.3.0",
     "@fontsource-variable/fraunces": "^5.3.0",
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
-    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.27.0.tgz",
+    "@shifted/clothing-commerce-sdk": "file:vendor/shifted-clothing-commerce-sdk-0.54.0.tgz",
+    "jsbarcode": "3.12.3",
     "react": "19.2.3",
     "react-dom": "19.2.3"
   },
@@ -44,6 +50,7 @@
     "@eslint/js": "9.39.1",
     "@testing-library/dom": "10.4.1",
     "@testing-library/react": "16.3.0",
+    "@types/jsbarcode": "^3.11.4",
     "@types/node": "26.2.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
@@ -67,6 +74,8 @@
     "appId": "com.shifted.commerce.pos",
     "productName": "Commerce POS",
     "asar": true,
+    "electronDist": "node_modules/electron/dist",
+    "afterPack": "scripts/electron-after-pack.cjs",
     "directories": {
       "output": "release"
     },

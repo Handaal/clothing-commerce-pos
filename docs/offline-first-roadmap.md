@@ -1442,3 +1442,895 @@ APPROVED / NOT PROVEN** (open owner decision; the slice claims no payroll effect
 `tests/runtime/attendance/*` + `scripts/run-attendance-acceptance.mjs` + `package.json` (packaged acceptance).
 The POS as a whole is **not** fully offline — the other management desks remain online-only/cached per §15; the
 next slice is **returns** (§16.8).
+
+---
+
+## 17. Phase 0 re-verification (independent, from code — 2026-11-12)
+
+Re-proved the prior report's claims against live source and a live test run (not from this roadmap's prose).
+
+### 17.1 Verified repo state (committed)
+
+| Repo                  | Branch                  | HEAD      | Verified                                                                                                       |
+| --------------------- | ----------------------- | --------- | -------------------------------------------------------------------------------------------------------------- |
+| clothing-commerce-pos | `feat/pos-pin-login`    | `dc2a7d2` | HEAD = "offline all-desks status shell + offline attendance capture"; working tree clean. SDK 0.27.0 vendored. |
+| clothing-commerce-api | `feat/pos-pin-provider` | `0cf0738` | HEAD = "offline attendance ingestion + restore SDK source + isolated test harnesses"; working tree clean.      |
+
+The §16/§16A work is now **committed** (prior roadmap sections described it while uncommitted). No branch/
+reset/stash/commit/push/deploy performed this session.
+
+### 17.2 Claims re-proved from code (not docs)
+
+- **Attendance migration present & fixed:** `supabase/migrations/20261111120000_offline_attendance.sql` on disk;
+  the §16A.2 ownership fix is in source (lines 123–126: `grant create … → alter owner → revoke create`), plus the
+  append-only `offline_attendance_ingestions`, idempotent `record_offline_attendance` RPC, and
+  `offline_pos_writer` RLS. Never writes `attendance_entries` (payroll) — `received`/`pending_policy` only.
+- **All-desks shell present:** POS `src/renderer/offline/{desk-status.ts,desk-capabilities.ts,OfflineDeskBanner.tsx}`
+  - `reports/OfflineLocalReport.tsx`, all in HEAD `dc2a7d2`, with their tests.
+- **Attendance POS lane present:** `src/main/offline/{attendance-outbox-store.ts,offline-service.ts,sync-worker.ts}`,
+  `AttendanceClock.tsx` offline path, `tests/offline/{attendance,attendance-sync}.test.ts`, packaged
+  `tests/runtime/attendance/*` + `scripts/run-attendance-acceptance.mjs`.
+- **POS DB-free suite GREEN (re-run this session):** `pnpm test` → **228 passed / 4 skipped / 0 failed** (real
+  SQLite, real main-process offline service). Matches §16.5.
+- **Host/isolation state:** 19 containers up — shared `clothing-commerce-api` stack (incl. `supabase_vector`
+  in a restart loop) + two historical `rt-4468a861…` / `rt-ef31d4a4…` stacks, both Up 17h. Left untouched;
+  a disposable minimal stack can still boot for acceptance (§16A.3).
+
+**Verdict:** the prior report's core claims (cashier sale/sync + offline attendance implemented; attendance
+proven end-to-end real-HTTP + packaged crash; all-desks shell + local Reports/Activity; attendance remains
+`received`/`pending_policy`, not payroll-final) are **CONFIRMED from code**. 1 of 10 desks (cashier) is fully
+offline; attendance capture is the 2nd offline write path; the other desks remain online-only/cached per §15.3.
+
+### 17.3 Next work packet — returns (Phase 5), unchanged from §16.8
+
+A full vertical: SDK `canonicalizeOfflineReturnCommand` + `issueReturnGrant` + `recordOfflineReturn`; API
+`offline_return_grants` table + `issue_return_grant` RPC (per-line server-computed eligible qty + max
+refundable, net basis incl. promotions, device/register/location-bound, short window) + `record_offline_return`
+RPC (idempotent, revalidate eligibility server-side, create Return + refund `status=pending` **withheld**,
+eligibility drift → reconciliation) + RLS; OpenAPI regen + SDK pack + re-vendor + `boundaries.test.ts` SHA;
+POS outbox lane + `returns/ReturnDesk.tsx` offline path (grant-pre-authorized lines only, "refund pending —
+settle on reconnect"); isolated real-API acceptance (grant binding; signed replay exactly once; eligibility
+drift → reconciliation; settlement only after attestation; RLS; crash recovery). Templates to mirror:
+`20260919180000_create_returns_refunds.sql`, `20260924180200_returns_net_refund_basis.sql`,
+`issue_grant`/ingestion in `20260906120000_create_offline_pos.sql`, and the attendance slice (§16/§16A).
+Owner sub-decisions (implement with safe defaults + proposed ADR-041-A, do not block): A-i refund budget/max,
+A-ii grant window, A-iii refund-only first (recommended). Feature-flagged `offline_returns`, default off =
+today's fail-closed.
+
+---
+
+## 18. Phase 5 — offline returns SERVER CONTRACT built & proven on real Postgres (2026-11-12)
+
+First working code + real-API acceptance for the returns slice. The **server half** (migration + RPCs + RLS +
+SDK + routes + OpenAPI) is complete and proven end-to-end on a disposable PostgreSQL; the **POS client lane**
+(durable outbox + UI + packaged acceptance) is the remaining half (§18.5).
+
+### 18.1 Design (grounded in the connected return engine; no refund math on the client)
+
+`record_offline_return` **delegates canonical creation to `returns_private.accept_return(refundMode='pending')`**
+— the existing net-basis (largest-remainder) engine (migrations `20260919180000` + `20260924180200`) recomputes
+the refund **server-side**, so the client never computes refund money. Key invariants enforced:
+
+- **Settlement withheld:** every offline refund is created `status='pending'`, `settled_at=null`. No cash handed,
+  no provider capture offline. Connected `settle_manual_refund` attestation remains the only settlement path.
+- **No canonical stock posted at ingestion:** every offline return line is forced to `non_restock`; the
+  operator's intended disposition is preserved in `return_provenance` for a later connected inspection/restock.
+- **Bounded server-issued authority:** `issue_return_grant` (ONLINE) freezes `return_eligibility` (per-line
+  eligible qty + net-basis ceiling) into an immutable, device/register/location/order-bound grant. Window =
+  the approved `offline_pos_policies.operator_lease_seconds` (A-ii default, reuses an approved bound);
+  `max_refundable_minor` = the true eligibility ceiling (A-i default, no fabricated budget). Refund-only (A-iii).
+- **Drift → reconciliation:** if eligibility drifted since issuance (concurrent return, expired window, disabled
+  policy) `accept_return` raises RTQTY/RT409/RT422 → caught as `eligibility_drift_at_ingestion`, no canonical
+  return, settlement withheld. A revoked device → `device_revoked_at_ingestion`, signed command retained.
+- **Idempotent exactly-once** by `(tenant, syncCommandId)` + fingerprint; append-only immutable ingestion.
+
+### 18.2 Files (API repo `feat/pos-pin-provider`, all additive/forward-only; uncommitted)
+
+- Migration `supabase/migrations/20261112120000_offline_returns.sql` — `offline_return_grants`,
+  `offline_return_ingestions`, `offline_return_reconciliations(+_events)`; `issue_return_grant` +
+  `record_offline_return` RPCs; same `offline_pos_writer` ownership/RLS/least-privilege + immutability triggers.
+- Contracts `src/contracts/pos.ts` (OfflineReturnGrant/Command/ingest schemas) + `offline-signing.ts`
+  (`canonicalizeOfflineReturnCommand`) + `index.ts` re-exports.
+- Service/repo `src/pos/offline-service.ts` (`issueReturnGrant`, `ingestReturn`),
+  `offline-repository.ts` (+iface), `supabase-offline-pos-repository.ts` (RPC mapping, drift reason read).
+- Routes `app/api/v1/pos/offline-return-grants/route.ts` (human-authorized) + `offline-returns/route.ts`
+  (device-signed). OpenAPI `src/openapi/document.ts` (2 paths + 4 schemas) + structure test updated.
+- SDK `packages/sdk/src/index.ts` (`issueOfflineReturnGrant` + `ingestOfflineReturn` + types/canonicalizer),
+  **bumped 0.27.0 → 0.28.0**, packed and re-vendored to POS **byte-identical** (sha256
+  `b3d2aeeed354450370cbad5e3313d63ec4a5efcb4455076e51ab7d2d1200139e`), POS `boundaries.test.ts` + pin updated.
+
+### 18.3 Tests actually run (this session)
+
+| Suite                                                                                            | Result                                                                                                                               |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| API `pnpm typecheck` (+ SDK typecheck)                                                           | **clean**                                                                                                                            |
+| API `pnpm test` (vitest, DB-free)                                                                | **413 passed**                                                                                                                       |
+| API `pnpm test:openapi` (drift + structure)                                                      | **16 passed**                                                                                                                        |
+| API `pnpm test:api:contracts`                                                                    | **22 passed**                                                                                                                        |
+| API `pnpm sdk:pack`                                                                              | **green**, 0.28.0, vendor byte-identical (`b3d2aeee…`)                                                                               |
+| **API `pnpm test:pos:offline:http`** (real Next.js + disposable PostgreSQL, over the packed SDK) | **25 passed** — 8 sale/tender + 8 attendance + **9 new offline-return (R0–R8)**                                                      |
+| **API `pnpm test:pos:offline:rls`** (pgTAP privilege graph, disposable PostgreSQL)               | **PASS** (plan 10; 9 hardened writer-owned SECDEF fns; new return tables non-forced RLS, no client policies, service-role read-only) |
+
+Offline-return HTTP cases proven on the real server + DB: R0 grant freezes eligibility; R1 accepted → canonical
+Return + **PENDING refund**, **stock unchanged** (DB-verified); R2 exact-replay idempotent + changed-intent 409;
+R3 wrong-register binding reject; R4 schema-version reject (no write); R5 line exceeds grant eligibility reject;
+R6 **eligibility drift → needs_reconciliation, no refund (settlement withheld)**; R7 tampered signature 401;
+R8 anon RLS invisibility of all three return tables.
+
+### 18.4 Isolation & cleanup proof
+
+Each run minted a unique disposable `rt-<hex>` (db+gotrue+kong+postgrest), migrated the fresh project only
+(no reset), ran over loopback, and cleaned up by label. After the session: shared `clothing-commerce-api`
+stack **untouched** (Up 22h) and the two historical `rt-4468a861…` / `rt-ef31d4a4…` stacks **untouched**; no
+leaked `rt-<hex>` containers. No stock runner, no prune, no `supabase stop`. Per-run fixtures on the disposable
+DB only: return_settings enabled for the test tenant; stock topped up via the sanctioned
+`inventory_private.record_operation` receipt (a direct `inventory_balances` write is correctly blocked by the
+`guard_balance_write` trigger).
+
+### 18.5 Remaining for the returns slice (POS client lane) — NEXT
+
+Mirror the attendance client lane (§16/§16A): SQLite `local_return`/`return_outbox` migrations + durable
+`ReturnOutboxStore` written in one txn before any network; `offline-service` `recordReturnEvent` (holds the
+return grant + signs the canonical command) + `getLocalReturns`; preload channels; sync-worker return drain
+lane; `returns/ReturnDesk.tsx` offline path offering only grant-pre-authorized lines and showing
+"refund requested — settle on reconnect" (never a settled claim offline); POS vitest (capture atomicity,
+exactly-once replay, fail-closed) + packaged-Electron crash/restart acceptance (mirror `acceptance:attendance`).
+Then verify with the existing offline-returns server path (already proven here).
+
+### 18.6 ADR-041 Decision A status
+
+Decision A direction was owner-approved (§ADR-041 log). The server implementation now exists behind the
+server contract; **A-i (refund budget), A-ii (grant window), A-iii (exchange vs refund-only)** remain open owner
+sub-decisions — implemented with the safe defaults above (true ceiling / approved lease / refund-only), to be
+confirmed before any production enablement. Offline execution stays feature-flagged (`offline_returns`, default
+off = today's fail-closed) until the POS client lane + packaged acceptance land.
+
+---
+
+## 19. Phase 5 — offline returns POS CLIENT LANE built & proven (2026-11-12)
+
+The second half of the returns slice (§18.5). With §18 this makes **offline returns a complete vertical**:
+server contract proven on real PostgreSQL (§18.3) + POS durable lane proven on real SQLite and in a
+packaged Electron crash/restart run (below). Uncommitted on `feat/pos-pin-login`.
+
+### 19.1 Flow (fail-closed by construction)
+
+1. **Online — grant preparation.** When an eligible order is opened on the connected Returns desk,
+   `ReturnDesk` asks main (`offline:prepare-return-grant`, best effort, non-blocking) to fetch an
+   order-bound grant. **Main** calls `issueOfflineReturnGrant` + `getOrder` with the operator's token
+   (exactly like bootstrap), binds the request to the enrolled device/register itself, validates the
+   response (tenant/device/register/order binding, schema 1, `minimumClientVersion`, window, line shape)
+   and caches it immutably (`offline_return_grant` + `_line`, server order labels for display only). A
+   cached grant for the same order is reused while ≥ 5 min of its window remains.
+2. **Offline — capture.** The offline cashier's **Offline returns** panel lists only cached, in-window
+   grants and only their lines, capped at `remainingQuantity` (= frozen eligibility − quantities this
+   device captured that the server could not have counted at issuance: pending returns + returns the
+   server received after issuance; withheld ones excluded). `recordReturn` re-checks device active, key
+   fingerprint, grant binding, window (±5 min skew, clock-rollback vs trusted time), line ∈ grant,
+   quantity, allowed reasons, then signs the canonical command and writes `local_return` +
+   `local_return_line` + `return_outbox` in **one** SQLite transaction before any network.
+3. **Copy is honest.** The UI never shows refund money offline: "Refund requested — settle on reconnect",
+   "No refund was paid", and "stock is not updated offline". The amount appears only after sync, from the
+   server response (`Synced · refund X pending settlement`); a withheld return shows "Needs review ·
+   refund withheld".
+4. **Sync.** A fourth sync-worker lane drains `return_outbox` (same lease/retry/block semantics, exact
+   persisted request re-verified by `readExactPersistedReturnRequest`). `completeDelivery` requires a
+   pending refund + canonical Return for `synced`, a reconciliation for `needs_reconciliation`, and a
+   matching `localReturnId`. Sync status now counts returns in pending/synced/blocked/needsReconciliation.
+5. **Settlement** stays the connected `settleRefund` attestation path (open the order on the Returns desk
+   → previous returns → record cash refund). Nothing settles offline.
+
+**Feature flag:** there is no separate client toggle — offline returns are gated by the server. With
+`offline_pos_policies.enabled` or `return_settings.enabled` off, `issue_return_grant` refuses, no grant is
+ever cached, and the offline panel shows "No orders are prepared for offline return" (= today's
+fail-closed behaviour).
+
+### 19.2 Files
+
+- `src/main/offline/migrations.ts` — local schema **v14 `offline_returns`** (5 tables, immutability
+  triggers on grant/grant lines/return facts/return lines/outbox command; lifecycle CHECKs tie `synced` ⇔
+  refund present and `needs_reconciliation` ⇔ reconciliation present).
+- `src/main/offline/return-service.ts` (new) — `OfflineReturnService` (`prepareGrant`, `getGrants`,
+  `recordReturn`, `getLocalReturns`) + `SdkReturnGrantIssuer`.
+- `src/main/offline/return-outbox-store.ts` (new) — `ReturnOutboxStore`.
+- `src/main/offline/sync-worker.ts` — `deliverReturn`, `readExactPersistedReturnRequest`, `drainReturns`,
+  status aggregation. `runtime.ts` / `ipc.ts` / `preload.ts` / `shared/offline.ts` — 4 new allowlisted
+  channels (`prepare-return-grant`, `get-return-grants`, `record-return`, `get-local-returns`) with
+  main-side input parsing. `bootstrap.ts` exports `compareVersions`.
+- Renderer: `returns/OfflineReturnPanel.tsx` (new), `offline/cashier.tsx` (the previously disabled
+  returns button now opens the panel), `returns/ReturnDesk.tsx` (grant preparation + "Prepared for offline
+  return until …"), `App.tsx`, `shell/i18n.tsx` (EN + AR).
+- Tests: `tests/offline/returns.test.ts` (new, 21), `src/renderer/returns/OfflineReturnPanel.test.tsx`
+  (new, 3), allowlist update in `ipc-security.test.ts`, delivery-double updates in `sync-worker.test.ts` /
+  `attendance-sync.test.ts`. Packaged: `tests/runtime/offline-returns/*` +
+  `scripts/run-offline-returns-acceptance.mjs` + `pnpm acceptance:offline-returns`.
+
+### 19.3 Tests actually run (this session)
+
+| Suite                                                                             | Result                                                                                                                                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| POS `pnpm typecheck`                                                              | **clean**                                                                                                                                                                                                                                                                                                   |
+| POS `pnpm lint`                                                                   | **clean**                                                                                                                                                                                                                                                                                                   |
+| POS `pnpm test` (vitest, real SQLite)                                             | **251 passed / 4 skipped** (was 228)                                                                                                                                                                                                                                                                        |
+| **POS `pnpm acceptance:offline-returns`** (packaged Electron, disposable profile) | **PASS** — crash-before-send recovers the exact provisional return (no refund shown), sends once with the original key while the sale outbox is empty, reaches `synced` + refund `pending`; commit-then-crash replays the same single identity (2 dispatches, 1 key) → `synced`; 2 local returns, 0 pending |
+| POS `pnpm acceptance:attendance` (regression)                                     | **PASS**                                                                                                                                                                                                                                                                                                    |
+| POS `pnpm acceptance:returns` (connected returns regression)                      | **PASS**                                                                                                                                                                                                                                                                                                    |
+| POS `build:main` + `build:renderer`                                               | **green**                                                                                                                                                                                                                                                                                                   |
+| POS `pnpm build` (`electron-builder --dir`)                                       | **NOT COMPLETED — host lock**: `EPERM` renaming `release\win-unpacked.tmp` → `win-unpacked` (reproduced 3×, also outside the command sandbox; plain directory renames work, so a scanner holding the fresh `electron.exe` is the likely cause). No packaging config was changed.                            |
+
+Unit coverage (`returns.test.ts`): grant caching + reuse + server labels; device-bound request; binding/
+tenant mismatch rejects with nothing cached; unenrolled fail-closed; expired grants hidden; atomic signed
+capture (canonical = SDK canonicalizer, sha256, Ed25519 verifies, no money in command); immutability
+triggers; cumulative over-return refused; ungranted line / over-quantity / disallowed reason / expired /
+unknown grant rejected with **no partial write**; IPC input validation; sync → synced with server PENDING
+refund; drift → `needs_reconciliation` with refund withheld (and capacity released); transient retry
+without duplication; crashed-lease recovery replays the same command; 4xx → blocked, local stays
+provisional; mismatched response refused; tampered persisted request detected.
+
+### 19.4 Not yet proven / remaining
+
+- **Cross-repo real-API run** (POS lane → real Next.js + disposable PostgreSQL). The POS builds the command
+  with the same SDK 0.28.0 canonicalizer and the same shape the server suite proved (R1–R7), but no single
+  run has driven _this_ client against the real server yet. Next step: a small harness in the API repo's
+  isolated runner that installs a grant via `issueOfflineReturnGrant`, feeds the POS-produced
+  `request_json` to `ingestOfflineReturn`, and asserts R1/R2/R6 outcomes.
+- **Production packaging** on a host without the `EPERM` lock (above).
+- **Owner sub-decisions A-i / A-ii / A-iii** still open (safe defaults implemented, §18.6) — confirm before
+  production enablement.
+- Nothing committed or pushed. Phases 2–4 and 6–10 remain.
+
+---
+
+## 20. Phase 5 — cross-repo real-API proof of the POS returns lane (2026-11-12)
+
+Closes the first gap in §19.4: the **POS client lane itself** (not commands built in the API repo) now runs
+against the **real Next.js API + a disposable PostgreSQL**.
+
+**How:** new API-repo suite `tests/pos-client-returns-http/pos-client-offline-returns.integration.test.ts`,
+run by `pnpm test:pos:offline:returns-client` (the existing isolated HTTP runner with
+`--dir tests/pos-client-returns-http`, so it gets its own fresh `rt-<hex>` stack). It loads this repo's
+compiled `dist-electron/main/offline/*` modules, which resolve this repo's vendored SDK 0.28.0, and drives
+them over HTTP. Documented in the API repo's `docs/pos/offline-pos-v1.md`.
+
+| Case  | What the real POS code did against the real server                                                                                                                                                                                                                                                      | Verdict  |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| setup | `OfflineBootstrapService` enrolled a POS-generated Ed25519 key and installed a real offline bootstrap; `OfflineSaleService` + `OfflineSyncWorker` rang and synced a real returnable order                                                                                                               | **PASS** |
+| P1    | `OfflineReturnService.prepareGrant` fetched a real grant (`issueOfflineReturnGrant` + `getOrder`); `recordReturn` captured offline; the worker synced it → local `synced`, refund **pending** at the server-computed amount; DB: refund pending + `settled_at` null, one ingestion, **stock unchanged** | **PASS** |
+| P2    | The exact POS-persisted `request_json` replayed via `SdkOfflineDeliveryClient` → same ingestion, same Return, no new row                                                                                                                                                                                | **PASS** |
+| P3    | A concurrent connected return consumed the unit; the till captured it offline under its frozen grant → `needs_reconciliation` / `eligibility_drift_at_ingestion`, no refund, no canonical Return                                                                                                        | **PASS** |
+| P4    | The synced offline refund was settled only through connected `settleRefund` → `succeeded`, `settled_at` set                                                                                                                                                                                             | **PASS** |
+
+**Result: 4/4 passed** (exit 0). Regression: the default `pnpm test:pos:offline:http` re-run **25/25** after
+the runner change. API `lint` / `typecheck` clean, API `pnpm test` **413 passed**.
+
+**Runner change (API repo):** for this suite's run only, `scripts/test-offline-pos-http-isolated.mjs`
+grants `returns.create`, `returns.read`, `payments.refund` to the seeded POS role (the same grant as
+`phase_2m_returns.setup.sql`); the first attempt failed P3/P4 with 403 on the connected calls because
+`pos-full` lacked those permissions. That was a test-fixture gap, not a product defect. The default matrix's
+fixture is unchanged.
+
+**Isolation:** each run used its own disposable `rt-<hex>` stack; afterwards 19 running containers (same
+as before), only the shared + the two historical `rt-4468a861…` / `rt-ef31d4a4…` stacks remain, no leaked
+`rt-*` containers/volumes/networks or temp workdirs. No prune, no `supabase stop`.
+
+**Still open:** production packaging on a host without the `EPERM` lock (§19.3); owner sub-decisions
+A-i/A-ii/A-iii (§18.6); `packages/sdk/src/index.ts` fails `format:check` in the API repo (from the prior
+session's SDK change). It was deliberately not reformatted here, because that would change the source of
+the vendored, SHA-pinned 0.28.0 tarball; format it together with the next SDK bump. Nothing committed.
+
+---
+
+## 21. All-desks program — Phases 0–11 executed (2026-11-13)
+
+Owner goal: every intended desk action has an offline behaviour that is (1) executable under bounded
+authority, (2) durably recordable as an explicit provisional intent with exact server
+acceptance/rejection on reconnect, or (3) an owner-approved online-only exception. Row-per-action status
+lives in **`docs/offline-completion-matrix.md`**. Nothing committed, pushed, published or deployed.
+
+### 21.0 Baseline (recorded before any change)
+
+| Repo         | Branch                            | HEAD      | Upstream                            | Pre-existing working tree                                        |
+| ------------ | --------------------------------- | --------- | ----------------------------------- | ---------------------------------------------------------------- |
+| api          | `feat/pos-pin-provider`           | `0a747db` | `origin/feat/pos-pin-provider`, 0/0 | 33 entries (returns slice, storefront merchandising in progress) |
+| pos          | `feat/pos-pin-login`              | `1a40f49` | `origin/feat/pos-pin-login`, 0/0    | 28 entries (returns client lane, SDK 0.28.0 vendor)              |
+| storefront   | `feat/home-hero-redesign`         | `08a5b84` | 0/0                                 | 9 entries — not touched                                          |
+| admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `2dc4234` | 0/0                                 | 79 entries — not touched                                         |
+
+Baseline tests: POS typecheck/lint clean, vitest **252 passed / 4 skipped**. API typecheck clean, contracts
+22, unit **410/413** — the 3 failures were OpenAPI drift from the in-progress (uncommitted) storefront
+merchandising work, not offline code. **Concurrent activity:** during this session another process kept
+editing the API repo (merchandising: `openapi/openapi.json` regenerated at 02:05, `src/http/management-route.ts`,
+`src/management/server-management-boundary.ts`, `app/api/v1/sales/`, docs). This program did not touch those
+files; after that work landed the API suite became 424/424 and OpenAPI 16/16.
+
+### 21.1 Report reconciliation (claims vs code)
+
+- **"Returns done"**: capture + server acceptance are proven; inventory posting is deliberately deferred
+  (`non_restock`), settlement is connected-only, exchanges are absent and A-i/ii/iii are unapproved. That is a
+  complete _provisional_ workflow, not "done".
+- **"needs review UI missing"**: true; now built (§21.3).
+- **"packaging blocked by a Windows file lock"**: true; root-caused and fixed (§21.8). The earlier
+  "scanner holding electron.exe" guess was wrong: files inside the directory rename fine; only the single
+  whole-directory rename of the freshly extracted `win-unpacked.tmp` fails, persistently.
+- **"offline authority expires until the till reconnects"**: true by design (grant/lease); unchanged.
+- **Tender truthfulness**: gap found. The offline pay dialog did not say non-cash tenders are only recorded.
+  Fixed (offline-only notice + `PayModal.test.tsx`).
+
+### 21.2 Shared provisional-intent lane (new; reused by Phases 3–9)
+
+One signed append-only lane instead of a ledger per desk. Server: migration
+`20261114120000_offline_operation_intents.sql` (additive): `offline_operation_intents` (immutable,
+`received` / **`pending_review` only**, idempotent by `(tenant, syncCommandId)` + fingerprint), RPC
+`record_offline_intent` (grant binding incl. operator, schema version, acceptedAt window,
+credential-at-acceptance, register opt-in `offline_pos_policies.offline_intent_operations` with **default
+empty = disabled**, dependency ordering `OI424`), `get_intent_operations` (delivered in the bootstrap as
+`policy.intentOperations`). Route `POST /api/v1/pos/offline-intents`; per-operation Zod payload schemas;
+OpenAPI; SDK **0.29.0** `ingestOfflineIntent` + `canonicalizeOfflineIntentCommand`. POS: local schema **v15**
+(`local_intent`, `intent_outbox`, `review_action`, immutability triggers), `OfflineIntentService`,
+`IntentOutboxStore` (client-side dependency ordering), fifth sync-worker lane, 5 allowlisted IPC channels
+with main-side validation. **No intent changes canonical stock, AP, payroll, roles, settings or devices,
+locally or on the server.**
+
+### 21.3 Phase 2 — review center (done)
+
+`OfflineReviewService` + "Sync review" desk (visible to every operator, local-only, EN/AR, table + detail,
+filters/search). Lists all five lanes with honest statuses (saved locally / sending / will retry / refused /
+server received pending review / accepted / needs review), local vs server ids, and safe evidence (no
+keys/signatures/canonical bytes/PII). Actions: **exact retry** of a blocked command (only scheduling columns
+change; immutability triggers guard the signed bytes) and a **signed resolution request** (a
+`review.resolution_request` intent, once per item). Both are idempotent by caller action id and audited in
+append-only `review_action`. Nothing can be edited or deleted. `LocalDatabase.transaction` was made
+re-entrant so the audit row and the intent commit atomically.
+
+### 21.4 Phases 3–9 per domain
+
+- **Customers (3):** the POS desk has no add/edit action; cashier capture is snapshot-only (no free-form PII
+  offline). `customers.create/update` plumbing exists server-side with a minimal field set (name, phone) and
+  is **disabled** pending decision 1.
+- **Orders (4):** the POS Orders desk issues no mutations, so cached read covers it; nothing to make offline.
+- **Inventory (5):** receive / adjust / count can be recorded offline as provisional requests from the desk
+  (cached catalog picker; the advisory snapshot is recorded as evidence only). No stock allocation is spent,
+  so double allocation is impossible; canonical stock is asserted unchanged. Transfer stays online (no
+  destination scope cached). Decision E open.
+- **Promotions (6):** the offline cashier has no code entry and never computes a discount (verified);
+  unavailable until decision D. No infrastructure enabled.
+- **Suppliers (7):** `purchase_draft` / `goods_receipt` / `payment_intent` are supported by the lane; a
+  payment intent creates **no** supplier payment (API I9). No desk UI offline because the supplier directory
+  is not cached (gap). Decision AP open.
+- **Staff (8):** attendance E2E unchanged (re-run). `attendance_correction_request` / `role_change_request`
+  are in the lane and never grant local privilege; no desk UI (directories not cached). Payroll decision open.
+- **Settings / governance (9):** `settings.change_request` and "revoke this device" requests from the
+  Settings desk while offline; the copy states the device keeps working within its current lease. Lease
+  length unchanged (decision G). Reports remain labelled device-only.
+
+### 21.5 Tests actually run this session
+
+| Suite                                                                                | Backend                                        | Result                                                                                                              |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| POS typecheck / lint                                                                 | n/a                                            | clean                                                                                                               |
+| POS vitest                                                                           | real SQLite + jsdom                            | **274 passed / 4 skipped** (+13 intent/review, +7 review UI, +2 tender)                                             |
+| API typecheck / lint / unit / contracts / OpenAPI                                    | n/a                                            | clean / clean / **424** / **22** / **16**                                                                           |
+| API `test:pos:offline:http` (sale 8, attendance 8, returns 9, **intents I0–I10**)    | real Next.js over HTTP + disposable PostgreSQL | **36/36** (`rt-70415aa6…`); first run 35/36, a test-access gap fixed with a read-only fixture grant                 |
+| API `test:pos:offline:intents-client` (**real POS modules**, C0–C4)                  | real HTTP + disposable PostgreSQL              | **5/5** (`rt-20c1c1bf…`)                                                                                            |
+| API `test:pos:offline:returns-client` (regression on the POS v15 build)              | real HTTP + disposable PostgreSQL              | **4/4** (`rt-095fe73f…`)                                                                                            |
+| API `test:pos:offline:rls` (plan 11, incl. intents table)                            | disposable PostgreSQL (pgTAP)                  | **PASS** (`rt-25706a0f…`)                                                                                           |
+| POS `acceptance:offline-intents` (**new**, packaged Electron crash/restart)          | packaged Electron + real SQLite                | **PASS**                                                                                                            |
+| POS acceptance: attendance, offline-returns, sale-recovery, offline-ack, persistence | packaged Electron                              | **PASS**                                                                                                            |
+| POS `acceptance:returns` (connected returns vs real API)                             | disposable stack                               | first run FAIL (`ECONNRESET`), caused by running it concurrently with another stack; re-run alone **PASS** (19+1+3) |
+| POS `pnpm build` (electron-builder --dir)                                            | n/a                                            | **PASS** after the fix in §21.8                                                                                     |
+| POS `acceptance:sqlite-packaged`                                                     | packaged probe                                 | one transient launch error (the probe report was valid), then **PASS ×2**                                           |
+
+Isolation: every server run minted its own `rt-<hex>` (db + gotrue + kong + postgrest), migrated the fresh
+project only, ran loopback-only and cleaned up by label; one stack at a time apart from the one mistake above.
+Afterwards only the shared dev stack and the two protected historical stacks (`rt-4468a861…`,
+`rt-ef31d4a4…`, 4 containers each) remain. No prune, no `supabase stop`, no shared-DB writes.
+
+### 21.6 SDK / artifact provenance
+
+API `packages/sdk` **0.28.0 → 0.29.0**, packed to `artifacts/shifted-clothing-commerce-sdk-0.29.0.tgz`
+(sha256 `81a68103e8d5860a61b7c49c0c7c433487e598cf799614fbee9ee650e70de8bd`) and vendored byte-identical into
+POS `vendor/` (the 0.28.0 tarball was left in place); the `boundaries.test.ts` lock was updated. The packaged
+`app.asar` contains SDK 0.29.0 whose `dist/index.cjs` is byte-identical to the vendored install. Caveat: the
+tarball was packed from the API working tree at about 01:40, so it also contains the then-current uncommitted
+merchandising SDK additions, and later concurrent edits to `packages/sdk/src/index.ts` are not in it.
+Re-pack before release. Storefront (0.12.0) and admin-mobile (0.26.0) are unchanged and do not use the route.
+
+### 21.7 Feature flags / rollout
+
+Server opt-in is per register (`offline_intent_operations`, default `{}`). With it empty the POS shows
+"Offline requests are not enabled for this register" and behaves exactly as before. Online desk behaviour is
+unchanged (the request panel renders only while offline). The review center is read-only over local state
+apart from its two audited actions.
+
+### 21.8 Phase 10 — packaging root cause and fix
+
+Evidence (real build log plus controlled experiments inside the owned `release/` folder): electron-builder
+26.15.3 extracts Electron into `release/win-unpacked.tmp`, then does one non-retried `fs.rename` of the whole
+directory (`electronGet.js`, `extractArchive`). That rename fails with `EPERM` persistently, while renaming
+every child file and subdirectory succeeds, fresh directories containing copies of the same exe/dlls rename
+fine, and ACLs/attributes match a fresh directory. So some process holds an open handle on that directory.
+The tree is watched by several unrelated processes (editor, desktop apps, dev servers); none were stopped.
+**Fix:** `package.json` `build.electronDist: "node_modules/electron/dist"` (electron-builder's supported
+pre-unpacked path: it copies the already-installed, checksum-verified electron@43.3.0, with no directory
+rename) plus `build.afterPack: scripts/electron-after-pack.cjs` (replicates the default cleanup that is
+skipped for custom dists: removes `resources/default_app.asar` and `version`). `pnpm build` now passes from a
+clean run.
+
+### 21.9 Consolidated owner decision packet (nothing below is approved; safe defaults are in place)
+
+1. **Customers offline.** Recommend: no fields beyond today's snapshot capture; if needed, name + phone for
+   new customers only, no edits to existing identities; retention: purge the local customer snapshot on the
+   next successful bootstrap (no indefinite retention). Alternative: allow edits, which adds duplicate/merge
+   workload. Blocks: enabling `customers.*`.
+2. **Orders.** No POS order mutations exist. Recommend: keep cached-read only. Alternative: add order actions
+   online first, then choose an offline rule (server wins, both facts kept).
+3. **Inventory (E).** Recommend: provisional requests only (current), no per-till allocation, no oversell
+   tolerance beyond what offline sales already allow. Alternative: per-till allocation envelopes (needs an
+   allocation design and reconciliation against storefront drain). Blocks: enabling `inventory.*` and any
+   canonical posting of accepted requests.
+4. **Promotions (D).** Recommend: no offline discounts. Alternative: a server-issued per-till budget grant
+   with a fixed calculation version and no stacking. Blocks: offline redemption.
+5. **Suppliers / AP.** Recommend: goods-receipt and purchase-draft requests only; payments always online.
+   Alternative: offline payment intents visible to managers (already non-settling). Blocks: enabling
+   `suppliers.*` and caching a supplier directory for the desk UI.
+6. **Device revocation / lease (G).** Recommend: keep the current approved lease and enable
+   `settings.device_revoke_request`. Alternatives: a shorter lease (more reconnects) or a longer one (larger
+   exposure window).
+7. **Payroll / attendance attribution.** Recommend: the grant operator (C-i) is the subject; corrections only
+   as manager-approved requests; no payroll-final effect from offline events. Blocks: the payroll effect of
+   received events and `staff.*` requests.
+8. **Returns (A-i/ii/iii).** Recommend: cap = server eligibility ceiling (current), grant lifetime = operator
+   lease (current), refund-only (current; exchanges absent). Blocks: production enablement.
+9. **Settings change requests.** Recommend: enable `settings.change_request` and `review.resolution_request`.
+   Alternative: keep settings online-only.
+
+### 21.10 Remaining gaps / launch blockers
+
+- No server-side **adjudication workflow** yet: intents are received `pending_review`, but there is no manager
+  UI/API to accept, reject or apply them (needs decisions 1–7). Until then the lane is evidence capture.
+- Supplier and staff request UIs need cached directories (suppliers, roles); not built.
+- Offline inventory transfer: not supported.
+- Customer and order offline mutations: absent by product scope.
+- SDK 0.29.0 must be re-packed from the final API tree before release; storefront/admin-mobile need no
+  re-vendor.
+- Not run: multi-device intent contention (no shared budget is spent, so there is no double-spend surface),
+  disk-full and corruption fault injection for the new tables (the existing persistence acceptance covers the
+  DB layer).
+- **The POS is not "fully offline".** Every in-scope action now has an honest offline behaviour or an explicit
+  gate, but canonical application of provisional requests awaits the decisions above.
+
+### 21.11 Resume point
+
+Next safe actions: (1) the owner answers §21.9; (2) build a manager adjudication endpoint + admin UI for
+`offline_operation_intents` (applying through the existing connected services, idempotent and audited), one
+operation at a time behind the same opt-in list; (3) cache the supplier directory and roles to add supplier
+and staff request UIs; (4) after the concurrent API work lands, re-pack the SDK, re-vendor, and re-run
+`test:pos:offline:http`, `test:pos:offline:intents-client`, `test:pos:offline:rls`,
+`acceptance:offline-intents` and `pnpm build`.
+
+## 22. No-human-approval rework — automatic server disposition of offline intents (2026-11-14)
+
+Owner clarification: **no administrator/manager approval step for offline operations.** §21.2–§21.3 and
+§21.10–§21.11 (intents stored `pending_review`; "manager adjudication endpoint + admin UI" as next step;
+"signed resolution request") are **superseded** by this section. Row-per-action status:
+`docs/offline-completion-matrix.md` (rewritten 2026-11-14). Nothing committed, pushed, published or deployed.
+
+### 22.0 Baseline (recorded before any change, 2026-11-14 ~01:22 +0200)
+
+| Repo         | Branch                            | HEAD      | Divergence | Working tree entries |
+| ------------ | --------------------------------- | --------- | ---------- | -------------------- |
+| api          | `feat/pos-pin-provider`           | `0a747db` | 0/0        | 75                   |
+| pos          | `feat/pos-pin-login`              | `1a40f49` | 0/0        | 69                   |
+| storefront   | `feat/home-hero-redesign`         | `08a5b84` | 0/0        | 26 — not touched     |
+| admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `2dc4234` | 0/0        | 96 — not touched     |
+
+Contradictions found and reconciled:
+
+- **SDK provenance:** the report named 0.29.0, but the API was already at **0.30.0** (packed 2026-11-13
+  11:22, vendored in POS), and API sources (`openapi.json`, `packages/sdk/src/staff.test.ts`) changed after
+  that pack. Neither 0.29.0 nor 0.30.0 matched source. Resolved by packing **0.31.0** from a verified-stable
+  snapshot (§22.4).
+- **Other work landed between runs** (not this program's): API migrations `20261113121000`–`20261113125000`
+  (staff without login, auto barcodes, payroll cycles, apply offline attendance, staff profiles), POS local
+  schema v16 `team_attendance`, payroll-cycle/TeamClock UI. Preserved untouched.
+- **Concurrent sessions:** a peer Claude session "POS UI layout redesign" (idle) last edited POS renderer
+  files at 01:07 (`App.tsx`, `cashier.tsx`, `styles.css`, `AppShell.tsx`, `i18n.tsx`, `icons.tsx`). This
+  program never touched `App.tsx`/`cashier.tsx`/`styles.css`/`AppShell.tsx`/`icons.tsx`; it edited only the
+  `review.*`/`intent.*` keys in `i18n.tsx` after confirming no write since 00:51. mtimes were re-checked
+  before every generation/packaging step; no API file changed during the run except this program's.
+- **"Returns done"** remains a provisional workflow (restock deferred, settlement online) — matrix updated.
+- **Generic lane vs completed workflow:** before this run no intent produced any business effect. Now
+  inventory receive/adjust/count and self-revocation have typed automatic handlers; every other kind is an
+  honest `blocked_policy`.
+
+### 22.1 Server: automatic disposition (API)
+
+New forward-only migration `20261114130000_offline_intent_auto_adjudication.sql` (sha256
+`163576075bc0fb64cd2d59ed4b91a565fab0b521d146713dece286eed5c8b58b`):
+
+- `offline_pos_policies.offline_intent_handler_policies jsonb default '{}'` — owner handler policy per
+  operation (`{"version", <limits>}`); absent ⇒ `blocked_policy`; every limit must come from the owner (no
+  defaults shipped).
+- `offline_operation_intents`: `adjudication_status` now ∈ `applied | rejected | needs_reconciliation |
+blocked_policy` (CHECK `NOT VALID` so only legacy disposable-DB rows keep `pending_review`; replay maps them
+  to `needs_reconciliation/OIX_LEGACY_UNADJUDICATED`), plus `disposition_code`, `disposition_detail`,
+  `policy_version`, `decided_at`. Rows remain write-once (immutability trigger unchanged).
+- `record_offline_intent` (replaced): same authority checks, per-sync-id advisory lock, then
+  `adjudicate_intent` → typed handler, and a single insert carrying the final disposition. No pending state.
+- Handlers: `inventory.receive|adjust|count` via `inventory_private.record_operation` (idempotency key
+  `offline-intent:<sync>`, stock key locked with `lock_balance_for_offline_sale`, ledger refusal caught in a
+  rolled-back subtransaction ⇒ `needs_reconciliation/OIX_LEDGER_REFUSED`); `settings.device_revoke_request`
+  self-only via `revoke_device`. `review.resolution_request` ⇒ `rejected/OIX_KIND_RETIRED`. All others ⇒
+  `blocked_policy/OIP_HANDLER_NOT_IMPLEMENTED`. Handlers are not executable by any role, not even
+  `service_role`.
+- Contract/SDK: response `intent { operation, disposition, code, policyVersion, decidedAt, detail }`
+  (`detail` allowlisted/stripped safe evidence). OpenAPI regenerated. SDK **0.31.0**.
+- No approval endpoint, queue, or screen was added anywhere. API docs: `docs/pos/offline-pos-v1.md`.
+
+### 22.2 POS: store and show the automatic outcome
+
+- Local schema **v17** `offline_intent_server_disposition`: `local_intent.server_disposition`
+  (+ code/detail/policy version/decided at), write-once trigger.
+- `IntentOutboxStore.completeDelivery` stores the disposition atomically with `received`.
+- `OfflineReviewService` = operator reconciliation only: statuses `accepted` (applied), `rejected`,
+  `needs_review` (conflict), `policy_blocked`; only exact retry of a transport-blocked command; server
+  decisions cannot be retried/overridden. The former resolution request is a deterministic, audited
+  refusal (IPC kept for compatibility; UI removed).
+- Sync review + offline request panel copy (EN/AR) no longer mention manager review; panel shows the
+  disposition and code.
+
+### 22.3 Tests actually run (2026-11-14), serial, one disposable stack at a time
+
+| Suite                                                                                                                            | Backend                                       | Result                                                                                                                                                                                                                      |
+| -------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| API typecheck / lint / OpenAPI generate                                                                                          | n/a                                           | clean                                                                                                                                                                                                                       |
+| API unit (`pnpm test`)                                                                                                           | n/a                                           | **425/425** (1 version-pin update 0.30→0.31)                                                                                                                                                                                |
+| API `test:openapi`                                                                                                               | n/a                                           | **16/16**                                                                                                                                                                                                                   |
+| API `test:pos:offline:http` (sale, attendance, returns, I0–I10, **A1–A9**)                                                       | real Next.js loopback + disposable PostgreSQL | run 1 fixture error (variant option-signature unique; own fixture bug, stack cleaned) → run 2 **47/47** (`rt-04d24b3b…`)                                                                                                    |
+| API `test:pos:offline:rls` (pgTAP plan 11)                                                                                       | disposable PostgreSQL                         | run 1 **FAIL** test 8 (asserted service_role may execute every function; internal handlers deliberately not) → test 8 scoped to entry points, test 9 strengthened (handlers callable by nobody) → **PASS** (`rt-c1151488…`) |
+| API `test:pos:offline:intents-client` (real POS compiled modules)                                                                | real HTTP + disposable PostgreSQL             | run 1 3 FAIL (stale `dist-electron`, C0 list) → rebuilt POS main → **5/5** (`rt-8c964120…`)                                                                                                                                 |
+| API `test:pos:offline:returns-client` (regression on POS v17)                                                                    | real HTTP + disposable PostgreSQL             | **4/4** (`rt-6a21516f…`)                                                                                                                                                                                                    |
+| POS typecheck / lint                                                                                                             | n/a                                           | clean                                                                                                                                                                                                                       |
+| POS vitest                                                                                                                       | real SQLite + jsdom                           | **279 passed / 4 skipped**                                                                                                                                                                                                  |
+| POS clean package build into a fresh owned dir                                                                                   | electron-builder 26.15.3 `--dir`              | **PASS** (scratch `pkg-clean-86a6b2ad`)                                                                                                                                                                                     |
+| POS `pnpm build`                                                                                                                 | electron-builder                              | **PASS**                                                                                                                                                                                                                    |
+| POS packaged acceptances: offline-intents, sqlite-packaged, attendance, offline-returns, sale-recovery, offline-ack, persistence | Electron + real SQLite                        | **all PASS** (sqlite: WAL, synchronous=2, foreign_keys=1; intents replay ⇒ `accepted`/`applied`)                                                                                                                            |
+
+Isolation: each server run minted its own `rt-<32hex>` project (runner `assertNotSharedProject`), loopback
+API, cleaned by owner label. After the run the Docker container set is **identical by ID** to the baseline
+(32 containers: shared dev stack, protected `rt-4468a861…` and `rt-ef31d4a4…` ×4 each, unrelated). No prune,
+no `supabase stop`, no shared-DB write.
+
+### 22.4 Artifact chain (one stable snapshot)
+
+- API source manifest (SDK src, contracts, package.json, openapi.json, both intent migrations) sha256
+  `7fcc536eae2533d4e37fc903a2db25e17f823a51dd4ff574200b2618a8eb7442` (manifest kept in the session
+  scratchpad); no API file changed between tests and pack except this program's.
+- `artifacts/shifted-clothing-commerce-sdk-0.31.0.tgz` sha256
+  `e0e257f31d883fe03bbc265818cd9802243788a6f449839c77893521b3fe5b46`, vendored byte-identical to POS
+  `vendor/`; POS `package.json` + `tests/boundaries.test.ts` lock updated; installed
+  `dist/index.cjs` sha256 `4fdcb184…bc55` = tarball = packaged `app.asar` copy.
+- `openapi/openapi.json` sha256 `00c9cf9a4c28e34ff676c5b7d42e1226feb53b807fce33f573a6a1171232b50a`.
+- Clean package: `app.asar` sha256 `a6d937d8…c330`, 2291 entries, local schema const 17, no
+  `default_app.asar`, no `version`, `LICENSE.electron.txt` present.
+- Older tarballs (0.27–0.30) left in place (not created by this run). Storefront / admin-mobile do not call
+  the intents route and were not re-vendored.
+
+### 22.5 Packaging workaround — validated
+
+`build.electronDist: "node_modules/electron/dist"` is electron-builder's supported "custom unpacked Electron
+distribution" path (`ElectronFramework.js`: copies, no directory rename). For custom dists electron-builder
+skips `cleanupAfterUnpack`'s full cleanup; `scripts/electron-after-pack.cjs` removes exactly those two
+files (`resources/default_app.asar`, `version`); the LICENSE rename still runs. The dist is the installed
+`electron@43.3.0` (`dist/version` = 43.3.0, fetched by electron's checksum-verified installer). No signing
+or security setting was changed; no antivirus or process was touched. Reproduced cleanly in a fresh owned
+output directory.
+
+### 22.6 Not done / NOT RUN (honest)
+
+- Customers add/edit, order actions, inventory transfer/issue, promotion redemption, supplier and staff
+  forms/handlers: **not implemented** (no typed handler; policy decisions 1–5, 7 open). Their lane kinds
+  dispose `blocked_policy`. Supplier/staff forms would need scoped directory caches.
+- `settings.change_request` has a form but no per-setting handler ⇒ `blocked_policy`.
+- No owner handler policy is configured anywhere outside disposable test DBs, so **in a real deployment
+  every intent currently disposes `blocked_policy`** until the owner sets `offline_intent_handler_policies`.
+- NOT RUN: corruption / disk-full fault injection for v17 columns, multi-device packaged contention (proven
+  at the API layer by A8 instead), report coverage audit (Phase 8), browser/visual check of the renamed
+  statuses (covered by jsdom tests only), storefront/admin-mobile suites (untouched).
+
+### 22.7 Consolidated owner decision packet
+
+See the final run report (same numbering as §21.9, revised for automatic disposition). Defaults in code:
+every operation disabled (`offline_intent_operations = {}`) and no handler policy
+(`offline_intent_handler_policies = {}`).
+
+### 22.8 Resume point
+
+1. Owner answers the decision packet. 2. For each approved kind: set the register's opt-in + handler policy
+   (version + limits) and re-run `test:pos:offline:http` with those values. 3. Typed handlers still to build
+   (each one transaction, idempotent, no approval): transfer (source+destination scope), customers.create
+   (no merge, duplicate ⇒ reconciliation), supplier goods receipt (AP posting rule), attendance correction
+   (payroll rule). 4. Re-pack the SDK only from a stable snapshot and record hashes as in §22.4.
+
+## 23. ADR-042 follow-up program — six work packets (2026-11-14)
+
+Owner scope unchanged (ADR-042 §2). Nothing committed, pushed, published or deployed; no shared-dev write, no
+production activation. Every server run used its own disposable `rt-<32hex>` Supabase stack or a disposable
+`postgres:17.6-alpine` container, one at a time; after every run the Docker container set was identical by ID
+to the baseline (32 containers: shared dev stack + protected `rt-4468a861…`/`rt-ef31d4a4…`, untouched).
+
+### 23.0 Baseline (before any change)
+
+| Repo         | Branch                            | HEAD      | Divergence | Dirty entries |
+| ------------ | --------------------------------- | --------- | ---------- | ------------- |
+| api          | `feat/pos-pin-provider`           | `0a747db` | 0/0        | 120           |
+| pos          | `feat/pos-pin-login`              | `1a40f49` | 0/0        | 80            |
+| storefront   | `feat/home-hero-redesign`         | `08a5b84` | 0/0        | 27            |
+| admin-mobile | `feat/mobile-ui-refresh-sdk-0.19` | `2dc4234` | 0/0        | 104           |
+
+SDK 0.33.0 tarball byte-identical in all three consumers (sha256 `6af6c6c8…7611`); no contract source had
+changed since that pack (four migrations had). Shared dev DB (read-only check): register lease 43 200 s,
+catalog 86 400 s (outside D-5), both locations `legacy`, `lease_bounds` constraint `NOT VALID`, no generic
+intent opt-in. A Codex host daemon was running; no file in any repo changed in the 3 h before the run.
+
+### 23.1 Point 1 — tests, isolation, types, format — PASS
+
+- Stale `pos-client-intents-http` suite (asserted retired inventory intents; 2 type errors) rewritten as an
+  ADR-042 §9 retirement proof (R0–R4): every retired kind refused locally with nothing stored; the till's
+  grant row is immutable (no opt-in can be faked); a command persisted by a pre-retirement build is recorded
+  and disposed `rejected / OIX_KIND_OUT_OF_SCOPE` with no stock, customer or device effect; exact replay.
+- Isolation guard: `assertIsolatedDbContainer()` (only `supabase_db_rt-<32hex>`; missing/shared/other names
+  throw before any SQL) wired into the three direct-SQL suites and five runners; regression tests in
+  `tests/runner-safety` (incl. a source scan that every direct-SQL file routes through it).
+- Known failure kept visible: `test:catalog:persistence` / returns RLS bundle — `phase_2a` inserts an explicit
+  primary barcode for a fresh variant, but `20261113122000_auto_variant_barcodes.sql` (catalog workstream, out
+  of scope) already auto-creates one ⇒ `variant_barcodes_one_active_primary_idx` (line 433). Fixture needs
+  updating by the catalog owner.
+
+### 23.2 Point 5 — override password — v1 FAILED review, replaced (verifier v2) — PASS
+
+v1 stored the password AES-GCM-sealed under the server KEK and decrypted it at every bootstrap (its own unit
+test asserted `decrypt(material) === password`). Replaced before activation by
+`20261114200000_pos_override_password_verifier_v2.sql`: one-way `scrypt` verifier only (N=2^15), CHECK forbids
+ciphertext and weak work factors, v1 rows wiped + version bumped (re-enrol once). Bootstrap sends an HMAC tag of
+the verifier bound to device + admin + version; the till re-derives it (`override-roster.ts`, sealed file v2,
+non-v2 entries dropped, v1 lockouts carried over). UI: "Manager approval" → "Admin credentials required"
+(EN/AR), limitation disclosed; codes `ADMIN_CREDENTIALS_*`.
+
+### 23.3 Point 3 — offline new customer → installment / paydown — PASS
+
+Local schema **v19** `local_customer_dependency` (write-once resolution, retained evidence). Installments and
+paydowns may name a customer created offline; the dependency is written in the same transaction; sale and
+payment outboxes never claim a dependent until the customer is accepted with the same canonical id
+(server creates it with the till's UUID). Definitive server rejection ⇒ dependents held + their outbox rows
+blocked `CUSTOMER_DEPENDENCY_REJECTED`; id mismatch ⇒ `CUSTOMER_DEPENDENCY_MISMATCH`; never relinked or merged.
+Accepted profiles are purged at the next successful sync and the outbox copy redacted (name + last 4 digits
+kept on the dependency). Customer outbox now counted in sync status.
+
+### 23.4 Points 2, 4, 6 — see the tests table; findings
+
+- Stock grant + vouchers over real HTTP at an enforced location (gate unlocked on the disposable DB only;
+  explicit TEST-ONLY caps): S1–S5 PASS.
+- **Finding A (held sale × stock grant):** a held dependent sale is an ordinal the server never receives, so
+  the grant can neither close nor expire-release and the next bootstrap is refused (N4 reproduces it).
+  Needs an owner/design decision.
+- **Finding B (tender status):** offline non-cash tenders are stored `captured` (cashier-attested); no
+  "recorded, not externally confirmed" status exists.
+- **Finding C (stale split):** the split's `expectedBalanceVersion` guards canonical stock only; concurrent
+  admin splits are last-writer-wins on intent (conservation and reservations still hold).
+- Lease: `20261114210000_offline_grant_lease_hard_bound.sql` clamps every new grant (operator ≤ 24 h,
+  catalog ≤ operator) and lists non-compliant rows; no settings row was changed.
+
+### 23.5 Tests actually run (2026-11-14), serial
+
+| Suite                                                                                                              | Backend                                              | Result                                     |
+| ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------ |
+| API typecheck / lint / format / OpenAPI generate                                                                   | n/a                                                  | clean                                      |
+| API `pnpm test`                                                                                                    | n/a                                                  | 453/453                                    |
+| API `test:openapi`                                                                                                 | n/a                                                  | 16/16                                      |
+| API `tests/runner-safety`                                                                                          | n/a                                                  | 33/33 → incl. new guard cases              |
+| API `test:pos:offline:intents-client` (R0–R4)                                                                      | real HTTP + disposable Supabase                      | 3 fixture-bug runs → **5/5**               |
+| API `test:pos:offline:adr042-client` (S1–S5, N1–N4, O1–O4)                                                         | real HTTP + disposable Supabase + compiled POS       | **13/13**                                  |
+| API `test:pos:offline:http`                                                                                        | real HTTP + disposable Supabase                      | **35/35**                                  |
+| API `test:inventory:channels:persistence` (3a incl. website return, 3c, 3d incl. v2 P1–P11 + lease L3–L11, 3e, 3f) | disposable Postgres                                  | **5/5 PASS**                               |
+| API `test:inventory:write:integration` (incl. concurrency)                                                         | disposable Supabase                                  | **19/19**                                  |
+| API `test:catalog:persistence`                                                                                     | disposable Postgres                                  | **FAIL (known, out of scope; §23.1)**      |
+| POS typecheck / lint / format                                                                                      | n/a                                                  | clean                                      |
+| POS vitest                                                                                                         | real SQLite + jsdom                                  | 306+ passed / 4 skipped (see final report) |
+| POS `acceptance:customer-installment`                                                                              | Electron + real SQLite, `process.reallyExit` crashes | **PASS**                                   |
+| storefront vitest / typecheck                                                                                      | n/a                                                  | 165/165, clean                             |
+| admin-mobile vitest / typecheck                                                                                    | n/a                                                  | 858/858, clean                             |
+
+### 23.6 Artifact chain
+
+API source manifest sha256 `20ca6fac…1f87` (scratchpad); `artifacts/shifted-clothing-commerce-sdk-0.34.0.tgz`
+sha256 `ee1d3493eae58833d6afc60fe24427dfd02f0cbd206a5f6346592e8275466f07`, vendored byte-identical into POS;
+installed `dist/index.cjs` sha256 `29680486…9952` = tarball. `openapi/openapi.json` sha256
+`079f44d8e6faba40327d180b57cd31c764fdf434c11c3079f4256cd222975918`. Storefront/admin-mobile stay on 0.33.0 (they
+do not consume the changed roster shape).
+
+### 23.7 Resume point
+
+Owner decisions (program report): D-7 caps, Finding A, Finding B, Finding C, sign-in PIN recoverability, lease
+row correction on each register. Then: per-location activation checklist (program report) — nothing is enabled.
+
+## 24. Blocker program — Findings A/B/C, acceptance gaps, security and lease review (2026-11-14, evening)
+
+Owner scope unchanged. Nothing committed, pushed, published or deployed; no shared-dev write; nothing enabled.
+Every server run used its own disposable `rt-<32hex>` stack/container (one at a time; the 19 legacy
+pid-named postgres runners were renamed to `rt-<32hex>`); the Docker container set was 32 before and after
+every run (shared dev + protected stacks untouched).
+
+### 24.0 Baseline (verified, not assumed)
+
+HEADs api `0a747db`, pos `1a40f49`, storefront `08a5b84`, admin-mobile `2dc4234`, all 0/0 against upstream;
+SDK 0.34.0 vendored byte-identically in POS only. Shared dev (read-only, `begin read only … rollback`): last
+applied migration `20261114190000` (v2 verifier, lease clamp and the three new migrations are NOT applied);
+register lease 43 200 s / catalog 86 400 s; both locations `legacy`; enforcement gate locked;
+`offline_pos_policies_lease_bounds` `NOT VALID`; 0 offline voucher policies; 0 stock grants.
+
+### 24.1 Finding A — held customer-dependent sale (FIXED)
+
+- A rejected new customer holds its dependent installment sale (v19). In the SAME transaction the till now
+  enqueues a terminal HOLD (local schema **v20** `sale_hold_outbox`): body fixed at enqueue (stable
+  `requestedAt`), signed exactly once on first claim (signature/request immutable by trigger), retained.
+- The sync worker drains holds after customers and before sales; `previousGrantClose()` offers the grant
+  close only when every `accepted_pending_sync` sale is synced or has a SERVER-ACKNOWLEDGED hold.
+- Server (`POST /api/v1/pos/offline-sale-holds`, migration `20261115120000`): verifies the original sale
+  signature and the hold signature, the binding (sale id, local id, grant, device, register, ordinal,
+  customer, fingerprint), grant window, ordinal unused and customer absent; writes one immutable
+  `held_for_reconciliation` record; moves the sale's grant units to `held_qty` (still reserved: never
+  released, never consumed). Any later ingestion of that ordinal / sale / local id is refused
+  (`OFFLINE_SALE_ORDINAL_CONFLICT`); a different hold for the sale is `IDEMPOTENCY_CONFLICT`; an exact replay
+  returns the original receipt.
+- Why replay cannot duplicate or lose the sale: one terminal record per ordinal (unique constraints + an
+  ingestion trigger under the same advisory lock); the hold names the sale's signed fingerprint; the sale
+  row, signed command and receipt are never modified; stock moves reserved → held once (immutable ledger).
+- Not a void: the paid deposit and receipt stand; no order, payment, debt or customer link is created;
+  nothing is relinked. Resolving a hold needs owner policy **O-A1** (held units stay reserved and are listed
+  by `inventory_private.offline_stock_grants_awaiting_close`). A `held_customer_mismatch` dependency is not
+  covered (the server would refuse: the customer exists) and remains a visible blocked item.
+
+### 24.2 Finding B — offline card/wallet tender (FIXED)
+
+| Tender (offline)         | At the till (receipt)                                                                      | Server row after sync                                                                           | After provider confirmation                                                                            |
+| ------------------------ | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Cash                     | `received_cash`                                                                            | `payments.status = captured`, cash received / change                                            | n/a                                                                                                    |
+| Card / InstaPay / wallet | `awaiting_provider_confirmation` ("recorded offline, awaiting confirmation (not settled)") | `status = pending`, `captured_at` NULL; response `confirmation: awaiting_provider_confirmation` | only the sanctioned `transition_payment` → captured / failed / cancelled (no route calls it: **O-B1**) |
+
+Historic offline non-cash rows keep `captured` (payments are immutable) and are reported as
+`legacy_captured_unverified` by `payments_private.offline_tender_confirmation_report`. Returns refuse refunds
+against a non-captured payment; sales KPIs are order-based and unchanged.
+
+### 24.3 Finding C — concurrent stock split (FIXED)
+
+`allocate_channel_stock_v2` requires both expected versions per line; the balance row locks serialize
+splits; a stale request is refused (409) with the current values of each stale line in `error.details`; all
+lines of one request commit or none; replay returns the original run; same key + different content ⇒ 409.
+The unguarded function is no longer callable by `service_role`. Admin-mobile now sends
+`expectedAllocationVersion` from the channel state itself and already reloads and explains on 409.
+
+### 24.4 Acceptance coverage
+
+| Gap                                                 | Status                                     | Evidence / reason                                                                                                                                                                                                                                                   |
+| --------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Website + POS checkout in one run                   | **PARTIAL**                                | Website reservation/return vs channels on real Postgres (phase_3a); POS grant/sale/replay over real HTTP (S1–S3); no single run drives the storefront app checkout and the till together.                                                                           |
+| Time-based expiry                                   | **PARTIAL**                                | Retention after expiry; a sale accepted before expiry and synced after consumes the retained grant; the till close ends it (3c X2–X9); acceptedAt window ±5 min enforced server-side; lease clamp L3–L11. No controllable-clock test of the exact boundary instant. |
+| Admin-mobile allocation UI vs authenticated backend | **NOT RUN**                                | Needs an interactive Clerk sign-in in the Expo app against a disposable backend; not automatable safely here. Screen logic (versions, 409 reload) is covered by the 223 inventory tests.                                                                            |
+| Catalog barcode fixture                             | **PASS**                                   | Root cause confirmed (auto-primary trigger); fixtures corrected; persistence ×2 from empty schema + RLS 43/43.                                                                                                                                                      |
+| Electron runtime crash/restart                      | **PASS** (Electron runtime, compiled main) | `acceptance:sale-hold`, `acceptance:customer-installment` with real safeStorage + SQLite and `process.reallyExit` crashes. Not an installer-packaged build.                                                                                                         |
+
+### 24.5 Security review — override password v2 and sign-in PIN
+
+Override password v2 (read in code: `override-password-crypto.ts`, `override-roster.ts`, migrations
+`20261114165000`/`20261114200000`): the server stores only `scrypt(pw, 16-byte salt; N=2^15, r=8, p=1, 32 B)`;
+bootstrap sends `HMAC-SHA256(verifier, "pos-override-v2" ‖ deviceId ‖ membershipId ‖ version)` plus salt and
+params; the till re-derives from the typed password (constant-time) in the main process; the roster file is
+sealed with the OS key store; the 5-failure lockout is persisted (survives restart, O4); entries expire with
+the grant (`acceptedUntil`); a change/clear bumps the version so old tags die at the next bootstrap; only
+holders of `promotions.manage` / `payments.refund` can enrol (re-auth with POS username + PIN). Plaintext
+never persists, is not logged, and never reaches the renderer, outbox or API after enrolment. The server
+cannot recover it (a DB dump permits only offline guessing at one scrypt per guess). A stolen roster file is
+device-bound and costs a scrypt + HMAC per guess after breaking the OS key store.
+
+**Residual (HIGH — keeps credential-gated vouchers/returns disabled):** the admin assertion carried by a
+command (`{assertionId, adminMembershipId, permission, verifierVersion, commandId, offlineGrantId}`) is bound to
+the exact command, user, permission, version and grant and is single-use server-side, but carries NO
+password-derived proof — the server trusts the device's attestation, so a compromised till/device key could
+forge it for any rostered admin. Proposed fix: `proof = HMAC(scrypt(typed, salt), "pos-override-assert-v1" ‖
+commandId ‖ deviceId ‖ membershipId ‖ version)`, recomputed by the server from the stored verifier (no
+plaintext needed). Revocation delay: up to the lease (target ≤ 12 h) for a till that stays offline.
+
+Sign-in PIN: offline material is minted at bootstrap from a KEK-sealed (AES-256-GCM) PIN copy, so it is
+recoverable by anyone holding the KEK and a DB copy. For 4–8 digit PINs any verifier (recoverable or not) is
+brute-forced in seconds once its material is obtained; the real controls are KEK secrecy, the OS-sealed device
+roster, the persisted lockout and PIN length. Compatible migration (proposed, not implemented): derive the
+device tag from the EXISTING one-way online verifier (`HMAC(onlineVerifier, "pos-pin-v2" ‖ deviceId ‖
+membershipId ‖ version)`; the till re-derives from `scrypt(typed, onlineSalt)`); ship the till verifier first,
+then switch the bootstrap, then drop the sealed copy; accounts without an online verifier reset their PIN
+once. Production offline stays disabled until this is remediated or explicitly accepted.
+
+### 24.6 Lease / configuration
+
+Policy model (source): operator lease ≤ 24 h hard bound, catalog ≤ operator, target 12 h (D-5); every new
+grant is clamped (`20261114210000`); `lease_policy_violations` lists non-compliant rows. The shared-dev row
+(12 h / 24 h) is out of policy and was NOT changed (separate authorization needed: set
+`catalog_grant_seconds ≤ 43 200`, then `VALIDATE CONSTRAINT offline_pos_policies_lease_bounds`). Production
+configuration was NOT inspected. Stock and voucher grants are no longer released at expiry without the till's
+final ordinal.
+
+### 24.7 Owner values still required (dependent capability stays OFF)
+
+| Value                                | Unit / scope                           | Behaviour while unset                                   |
+| ------------------------------------ | -------------------------------------- | ------------------------------------------------------- |
+| Max discount per offline redemption  | minor units, per POS voucher policy    | no offline voucher grant issued                         |
+| Max discount per grant               | minor units, per policy per grant      | no offline voucher grant issued                         |
+| Offline refund cap per grant         | minor units, per return grant          | return grants refused (`OFFLINE_RETURN_BUDGET_MISSING`) |
+| O-A1 hold resolution                 | policy                                 | held units stay reserved, listed                        |
+| O-B1 card/wallet confirmation source | provider or terminal settlement report | offline non-cash stays `pending`                        |
+
+## 25. Owner direction change — online-first POS, bounded emergency offline, post-sync conflicts (2026-11-14 night / 2026-11-15)
+
+The owner superseded the Website/POS stock split, per-till stock grants, reserved voucher quota, offline returns
+and the "all desks" scope. The authoritative decision, disposition table (applied vs pending migrations) and
+evidence are in `clothing-commerce-api/docs/decisions/ADR-042-PROPOSED-channel-stock-pools-and-offline-pos-scope.md`
+§13; the current-vs-target grid is at the top of `docs/offline-completion-matrix.md`. Sections 13–24 above are
+history: where they describe channel buckets, stock grants, grant close-before-bootstrap, offline returns or
+"awaiting provider confirmation" tenders, they no longer describe intended behaviour.
+
+## 26. Completion pass — vouchers hardened, offline PIN enrollment UI + step-up, sign-in lockout bug (2026-11-15 evening)
+
+Evidence and disposition: ADR-042 §13.10 (API repo). Summary for this repo:
+
+- **Vouchers:** cached-policy redemption was already built (§13.6). The local integrity hash now binds each row to
+  its snapshot + lease (`ovp2`); new real-SQLite tests for a row copied from another till/lease and a policy issued
+  for another business. HTTP 9/9 PASS; `acceptance:voucher-crash` PASS. Credential-gated vouchers stay BLOCKED.
+- **Offline PIN:** new sidebar section **My offline PIN** (`src/renderer/offline/OfflinePinEnrollment.tsx`); the main
+  process requires the person's current sign-in PIN (the server re-verifies it — step-up), refuses weak PINs and the
+  sign-in PIN, and mirrors the lockout into the OS-sealed file (`staff-roster.ts`, `offline-pin-enrollment.ts`).
+  New Electron acceptance `pnpm acceptance:offline-pin` (real DPAPI). SDK 0.39.0 vendored here only. Grade
+  **PARTIAL**, gated off server-side (`POS_OFFLINE_PIN_V2`) until the owner decides the same-user-malware question.
+- **Server bug found by this work:** a failed connected sign-in crashed `pos_login_record` (API migration
+  `20261115190000` fixes it); before the fix the connected sign-in lockout never engaged.
+- **Stock shortfall:** re-run 11/11 PASS (10 scenario cases + F1); Website order fulfilment still has no HTTP transport (not an HTTP claim).
+- Tests: POS 338 passed / 4 skipped; typecheck, lint, format clean; production package builds.
+
+## 27. Offline PIN — owner accepts residual risk; shifted-cafe "same PIN" login (2026-11-15, later)
+
+The owner accepted the same-Windows-user malware risk ("Accept risk, harden OS") and set the login specification
+to shifted-cafe-v2 as is: one PIN, the same roster/PIN-pad screen online and offline. The separate offline PIN
+screen (§26) and its renderer IPC were removed. `PosSessionManager` now hands the just-accepted credential to
+`OfflineRuntime.refreshOfflinePinAfterSignIn` (main process only), which enrols this till with the sign-in PIN.
+Offline, `LocalLogin` already falls back to `verifyStaffPin` with the same PIN. The threat model, the required
+OS safeguards and the incident response are in the API repo `docs/pos/offline-pin-v2.md`; the disposition is in
+ADR-042 §13.11. Activation in any shared or production environment needs separate owner authorization.
+
+## 28. POS-native PIN accounts, no Clerk in the POS, bounded offline sign-in (2026-11-18)
+
+Authoritative record: `clothing-commerce-api/docs/decisions/ADR-043-pos-native-accounts-no-clerk-in-pos.md`
+(baseline, traced flow, decisions, test evidence, open owner decisions). Uncommitted; nothing deployed.
+
+- **No Clerk in the POS.** `@clerk/react` removed; no provider, hook, key (`VITE_CLERK_PUBLISHABLE_KEY` no
+  longer read or defined), owner mode or `StaffPinSignIn`. CSP tightened (`script-src 'self'`, `frame-src
+'none'`, `form-action 'none'`). Renderer bundle contains no Clerk string.
+- **One credential authority.** API online; device-bound offline verifier offline. `pos_users` is a display-only
+  roster cache: local login/create/set-PIN/verify IPC removed, local schema **v24** erases legacy hashes and
+  refuses new ones (triggers).
+- **PIN rule.** Digits, min 4, no product max, never truncated (pad, keyboard, IPC, offline enrolment pattern
+  `^[0-9]{4,}$`, Team desk, override-password panel). IPC transport ceiling 16 384 chars (= API 16 KiB body).
+- **Fallback semantics.** `classifyPosAuthFailure`: network/502/503/504 → OFFLINE (offline verifier allowed);
+  every 4xx → definitive; 500/contract/unknown → ERROR (fail closed). `LocalLogin` falls back only on OFFLINE.
+- **Admin step-up.** Server only (`verifyCredentials`, session untouched); fails closed offline.
+- **Fresh till.** Username entry + pointer to Admin Mobile → Staff → POS sign-in accounts (new screen).
+- **Server (API).** 16 KiB body cap (413) on credential routes; migration `20261118120000` (PIN reset revokes
+  offline enrollments; last active POS admin guard, 409 `LAST_POS_ADMIN`); PIN-reset 500 bug fixed; SDK 0.40.0
+  (sha256 `aaed3de8…6bd6ba`) vendored here.
+- Tests: POS 376 unit/component (+ boot-without-Clerk, LocalLogin, AdminGate, boundary proofs), runtime
+  `acceptance:offline-pin` with a 20-digit PIN (real DPAPI); API `test:pos:auth:client` 10/10 real HTTP,
+  `test:pos:auth:lifecycle:persistence` PASS.
+- Offline operator attribution (ADR-043 §5.1, same day): each offline sale's signed command carries
+  `unlockedByMembershipId` (main-process state: verified offline PIN unlock, else the online operator; cleared by
+  `offline:end-staff-session` or an online sign-in); local schema **v25**; SDK 0.41.0. The server verifies it
+  against the device's PIN enrollments at acceptance and reports `OFFLINE_OPERATOR_UNVERIFIED` /
+  `OFFLINE_OPERATOR_CHANGED_BEFORE_SYNC` in the existing conflict screens. Tests: `tests/offline/
+operator-attribution.test.ts`, `operator-session.test.ts`; API K10 (real HTTP) and O1–O10 persistence.
